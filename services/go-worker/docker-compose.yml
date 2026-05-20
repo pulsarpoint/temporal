@@ -1,0 +1,17 @@
+services:
+  go-worker:
+    build: .
+    restart: always
+    env_file: .env
+    volumes:
+      - results:/var/lib/data-pipelines/results
+    environment:
+      OUTPUT_DIR: /var/lib/data-pipelines/results
+
+volumes:
+  results:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${RESULTS_HOST_PATH:-/var/lib/data-pipelines/results}
