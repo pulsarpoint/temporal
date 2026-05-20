@@ -117,13 +117,19 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 			TaskQueue:         "corpscout-pipelines",
 			ParentClosePolicy: enumspb.PARENT_CLOSE_POLICY_ABANDON,
 		})
-		workflow.ExecuteChildWorkflow(childCtx, EnrichCompanyDomains, contracts.EnrichCompanyDomainsInput{
+		childFuture := workflow.ExecuteChildWorkflow(childCtx, EnrichCompanyDomains, contracts.EnrichCompanyDomainsInput{
 			Source:    "brreg",
 			Country:   "NO",
 			Companies: allCompanies,
 			Force:     false,
 		})
-		logger.Info("domain enrichment child workflow started", "companies", len(allCompanies))
+		var childExec workflow.Execution
+		if err := childFuture.GetChildWorkflowExecution().Get(ctx, &childExec); err != nil {
+			logger.Warn("domain enrichment child workflow failed to start", "error", err)
+		} else {
+			logger.Info("domain enrichment child workflow started",
+				"workflow_id", childExec.ID, "companies", len(allCompanies))
+		}
 	}
 
 	return total, nil
