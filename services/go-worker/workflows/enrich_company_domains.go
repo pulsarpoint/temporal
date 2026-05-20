@@ -76,13 +76,11 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 	}
 
 	totalDomainsFound := 0
+	var allDiscoveries []contracts.DomainDiscovery
 	need := filterResult.NeedDiscovery
 
 	for i := 0; i < len(need); i += domainBatchSize {
-		end := i + domainBatchSize
-		if end > len(need) {
-			end = len(need)
-		}
+		end := min(i+domainBatchSize, len(need))
 		batch := need[i:end]
 
 		batchCompanies := make([]contracts.CompanyLookup, 0, len(batch))
@@ -112,6 +110,7 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 				return contracts.EnrichCompanyDomainsResult{}, err
 			}
 			totalDomainsFound += len(discoverResult.Discoveries)
+			allDiscoveries = append(allDiscoveries, discoverResult.Discoveries...)
 		}
 
 		// Mark whole batch as searched regardless of whether domains were found.
@@ -131,5 +130,6 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 	return contracts.EnrichCompanyDomainsResult{
 		CompaniesProcessed: len(filterResult.NeedDiscovery),
 		DomainsFound:       totalDomainsFound,
+		Discoveries:        allDiscoveries,
 	}, nil
 }

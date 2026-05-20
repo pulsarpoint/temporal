@@ -114,11 +114,8 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		return total, err
 	}
 
-	// Fire-and-forget child workflow for domain enrichment.
-	// ABANDON policy: child continues independently after parent completes.
-	// We must wait for GetChildWorkflowExecution() before returning — otherwise
-	// the parent can finish before Temporal records the child's start event and
-	// the child workflow never actually launches.
+	// Run domain enrichment as a child workflow and wait for its result.
+	// ABANDON policy: if this workflow is killed mid-run, the child keeps going.
 	if len(allCompanies) > 0 {
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			TaskQueue:         "corpscout-pipelines",
@@ -130,12 +127,16 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 			Companies: allCompanies,
 			Force:     false,
 		})
-		var childExec workflow.Execution
-		if err := childFuture.GetChildWorkflowExecution().Get(ctx, &childExec); err != nil {
-			logger.Warn("domain enrichment child workflow failed to start", "error", err)
+		var enrichResult contracts.EnrichCompanyDomainsResult
+		if err := childFuture.Get(ctx, &enrichResult); err != nil {
+			logger.Warn("domain enrichment child workflow failed", "error", err)
 		} else {
-			logger.Info("domain enrichment child workflow started",
-				"workflow_id", childExec.ID, "companies", len(allCompanies))
+			total.DomainsFound = enrichResult.DomainsFound
+			total.CompaniesSearched = enrichResult.CompaniesProcessed
+			total.Discoveries = enrichResult.Discoveries
+			logger.Info("domain enrichment complete",
+				"domains_found", enrichResult.DomainsFound,
+				"companies_searched", enrichResult.CompaniesProcessed)
 		}
 	}
 

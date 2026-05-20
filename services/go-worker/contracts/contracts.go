@@ -22,9 +22,12 @@ type PullBrregInput struct {
 // PullCompaniesResult is returned by the pull workflows.
 // Actual records are already written to the DB; this is metadata only.
 type PullCompaniesResult struct {
-	RecordsWritten int      `json:"records_written"`
-	PagesFetched   int      `json:"pages_fetched"`
-	Errors         []string `json:"errors,omitempty"`
+	RecordsWritten    int               `json:"records_written"`
+	PagesFetched      int               `json:"pages_fetched"`
+	Errors            []string          `json:"errors,omitempty"`
+	DomainsFound      int               `json:"domains_found,omitempty"`
+	CompaniesSearched int               `json:"companies_searched,omitempty"`
+	Discoveries       []DomainDiscovery `json:"discoveries,omitempty"`
 }
 
 // ── List-sync activity types ──────────────────────────────────────────────────
@@ -91,8 +94,9 @@ type EnrichCompanyDomainsInput struct {
 
 // EnrichCompanyDomainsResult is returned by the EnrichCompanyDomains workflow.
 type EnrichCompanyDomainsResult struct {
-	CompaniesProcessed int `json:"companies_processed"`
-	DomainsFound       int `json:"domains_found"`
+	CompaniesProcessed int               `json:"companies_processed"`
+	DomainsFound       int               `json:"domains_found"`
+	Discoveries        []DomainDiscovery `json:"discoveries,omitempty"`
 }
 
 // FilterForDomainDiscoveryParams is the input for FilterForDomainDiscovery.

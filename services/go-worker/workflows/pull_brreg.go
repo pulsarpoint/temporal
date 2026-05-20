@@ -123,12 +123,16 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 			Companies: allCompanies,
 			Force:     false,
 		})
-		var childExec workflow.Execution
-		if err := childFuture.GetChildWorkflowExecution().Get(ctx, &childExec); err != nil {
-			logger.Warn("domain enrichment child workflow failed to start", "error", err)
+		var enrichResult contracts.EnrichCompanyDomainsResult
+		if err := childFuture.Get(ctx, &enrichResult); err != nil {
+			logger.Warn("domain enrichment child workflow failed", "error", err)
 		} else {
-			logger.Info("domain enrichment child workflow started",
-				"workflow_id", childExec.ID, "companies", len(allCompanies))
+			total.DomainsFound = enrichResult.DomainsFound
+			total.CompaniesSearched = enrichResult.CompaniesProcessed
+			total.Discoveries = enrichResult.Discoveries
+			logger.Info("domain enrichment complete",
+				"domains_found", enrichResult.DomainsFound,
+				"companies_searched", enrichResult.CompaniesProcessed)
 		}
 	}
 
