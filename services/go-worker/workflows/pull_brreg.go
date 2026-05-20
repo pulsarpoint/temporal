@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -53,8 +52,6 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 	cursor := ""
 	page := 1
 
-	var allCompanies []contracts.CompanyLookup
-
 	for {
 		var fetchResult contracts.FetchResult
 		if err := workflow.ExecuteActivity(listCtx, "fetch_brreg_list", contracts.FetchPageInput{
@@ -85,45 +82,12 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 		total.RecordsWritten += written
 		total.PagesFetched++
 
-		for _, r := range fetchResult.Records {
-			if r.NativeID != "" {
-				allCompanies = append(allCompanies, contracts.CompanyLookup{
-					NativeID: r.NativeID,
-					Name:     r.Name,
-				})
-			}
-		}
-
 		if !fetchResult.HasMore {
 			logger.Info("no more pages", "total_pages", total.PagesFetched)
 			break
 		}
 		cursor = fetchResult.NextCursor
 		page++
-	}
-
-	if len(allCompanies) > 0 {
-		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
-			TaskQueue:         "corpscout-pipelines",
-			ParentClosePolicy: enumspb.PARENT_CLOSE_POLICY_ABANDON,
-		})
-		childFuture := workflow.ExecuteChildWorkflow(childCtx, EnrichCompanyDomains, contracts.EnrichCompanyDomainsInput{
-			Source:    "brreg",
-			Country:   "NO",
-			Companies: allCompanies,
-			Force:     false,
-		})
-		var enrichResult contracts.EnrichCompanyDomainsResult
-		if err := childFuture.Get(ctx, &enrichResult); err != nil {
-			logger.Warn("domain enrichment child workflow failed", "error", err)
-		} else {
-			total.DomainsFound = enrichResult.DomainsFound
-			total.CompaniesSearched = enrichResult.CompaniesProcessed
-			total.Discoveries = enrichResult.Discoveries
-			logger.Info("domain enrichment complete",
-				"domains_found", enrichResult.DomainsFound,
-				"companies_searched", enrichResult.CompaniesProcessed)
-		}
 	}
 
 	if err := workflow.ExecuteActivity(goCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{

@@ -30,9 +30,6 @@ func (s *PullCompaniesHouseSuite) SetupTest() {
 	)
 	var goAct *activities.GoActivities
 	s.env.RegisterActivity(goAct)
-
-	// Register EnrichCompanyDomains as a child workflow stub.
-	s.env.RegisterWorkflow(workflows.EnrichCompanyDomains)
 }
 
 func (s *PullCompaniesHouseSuite) AfterTest(_, _ string) {
@@ -64,10 +61,6 @@ func (s *PullCompaniesHouseSuite) Test_SinglePage_WritesRecords() {
 	s.env.OnActivity(goAct.MarkExecutionComplete, mock.Anything, mock.MatchedBy(func(p contracts.MarkCompleteParams) bool {
 		return p.CorpscoutRunID == "exec-123" && p.Result.RecordsWritten == 2
 	})).Return(nil)
-
-	// Child workflow runs independently — stub it out.
-	s.env.OnWorkflow(workflows.EnrichCompanyDomains, mock.Anything, mock.Anything).
-		Return(contracts.EnrichCompanyDomainsResult{}, nil)
 
 	s.env.ExecuteWorkflow(workflows.PullCompaniesHouse, contracts.PullCompaniesHouseInput{
 		Country:        "GB",
@@ -105,8 +98,6 @@ func (s *PullCompaniesHouseSuite) Test_MultiPage_FetchesAll() {
 
 	s.env.OnActivity(goAct.WriteRawInputs, mock.Anything, mock.Anything).Return(1, nil).Times(2)
 	s.env.OnActivity(goAct.MarkExecutionComplete, mock.Anything, mock.Anything).Return(nil)
-	s.env.OnWorkflow(workflows.EnrichCompanyDomains, mock.Anything, mock.Anything).
-		Return(contracts.EnrichCompanyDomainsResult{}, nil)
 
 	s.env.ExecuteWorkflow(workflows.PullCompaniesHouse, contracts.PullCompaniesHouseInput{
 		Country:        "GB",
