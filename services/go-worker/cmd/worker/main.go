@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -18,21 +17,27 @@ import (
 
 func main() {
 	temporalHost := getEnv("TEMPORAL_HOST", "localhost:7233")
-	corpscoutDB := mustEnv("CORPSCOUT_DB_URL")
 	outputDir := getEnv("OUTPUT_DIR", "/var/lib/data-pipelines/results")
+	corpscoutDB := os.Getenv("CORPSCOUT_DB_URL") // optional — omit to run in file-only mode
 
 	ctx := context.Background()
 
-	pool, err := pgxpool.New(ctx, corpscoutDB)
-	if err != nil {
-		slog.Error("connect to corpscout db", "error", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
-
-	if err := pool.Ping(ctx); err != nil {
-		slog.Error("ping corpscout db", "error", err)
-		os.Exit(1)
+	var pool *pgxpool.Pool
+	if corpscoutDB != "" {
+		var err error
+		pool, err = pgxpool.New(ctx, corpscoutDB)
+		if err != nil {
+			slog.Error("connect to corpscout db", "error", err)
+			os.Exit(1)
+		}
+		if err := pool.Ping(ctx); err != nil {
+			slog.Error("ping corpscout db", "error", err)
+			os.Exit(1)
+		}
+		defer pool.Close()
+		slog.Info("database mode: writing records to corpscout DB")
+	} else {
+		slog.Info("file-only mode: writing records to output directory", "output_dir", outputDir)
 	}
 
 	c, err := client.Dial(client.Options{
@@ -71,12 +76,4 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-func mustEnv(key string) string {
-	v := os.Getenv(key)
-	if v == "" {
-		panic(fmt.Sprintf("required env var not set: %s", key))
-	}
-	return v
 }

@@ -8,48 +8,44 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/pulsarpoint/data-pipelines/contracts"
 )
 
-// dbPool is the minimal pgx interface needed by GoActivities.
-// Satisfied by both *pgxpool.Pool (production) and pgxmock (tests).
-type dbPool interface {
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+var supportedSources = map[string]bool{
+	"companies_house": true,
 }
 
 // GoActivities holds dependencies for all Go-side Temporal activities.
+// When pool is nil, WriteRawInputs falls back to JSON file output.
 type GoActivities struct {
-	pool      dbPool
+	pool      *pgxpool.Pool // nil = file-only mode
 	outputDir string
 }
 
-// NewGoActivities constructs GoActivities for production use.
+// NewGoActivities constructs GoActivities for production.
+// Pass a nil pool to run in file-only mode (no DB required).
 func NewGoActivities(pool *pgxpool.Pool, outputDir string) *GoActivities {
 	return &GoActivities{pool: pool, outputDir: outputDir}
 }
 
-// NewGoActivitiesForTest constructs GoActivities with a mock pool and temp dir for testing.
-func NewGoActivitiesForTest(pool dbPool, outputDir string) *GoActivities {
-	return &GoActivities{pool: pool, outputDir: outputDir}
-}
-
-// WriteRawInputs inserts raw records into the appropriate source raw_inputs table.
-// Idempotent: ON CONFLICT updates last_seen_at only.
+// WriteRawInputs writes records to the DB when a pool is configured,
+// otherwise dumps them as a JSON file in the output directory.
 func (a *GoActivities) WriteRawInputs(ctx context.Context, params contracts.WriteRawInputsParams) (int, error) {
-	switch params.Source {
-	case "companies_house":
-		return a.writeCompaniesHouse(ctx, params.RunID, params.Records)
-	default:
+	if !supportedSources[params.Source] {
 		return 0, fmt.Errorf("unsupported source: %s", params.Source)
 	}
+	if a.pool != nil {
+		return a.writeToDatabase(ctx, params)
+	}
+	return a.writeToFile(params)
 }
 
-func (a *GoActivities) writeCompaniesHouse(ctx context.Context, runID string, records []contracts.RawRecord) (int, error) {
+func (a *GoActivities) writeToDatabase(ctx context.Context, params contracts.WriteRawInputsParams) (int, error) {
 	written := 0
-	for _, rec := range records {
+	for _, rec := range params.Records {
 		if rec.NativeID == "" {
 			continue
 		}
@@ -61,7 +57,7 @@ func (a *GoActivities) writeCompaniesHouse(ctx context.Context, runID string, re
 				(NULL, $1, $1, $2, $3, $4, NULL, $5, $6, $7)
 			ON CONFLICT (company_number, payload_hash) DO UPDATE
 				SET last_seen_at = now(), run_id = EXCLUDED.run_id
-		`, rec.NativeID, rec.Name, rec.Status, rec.CompanyType, []byte(rec.RawJSON), rec.Hash, runID)
+		`, rec.NativeID, rec.Name, rec.Status, rec.CompanyType, []byte(rec.RawJSON), rec.Hash, params.RunID)
 		if err != nil {
 			return written, fmt.Errorf("insert row %s: %w", rec.NativeID, err)
 		}
@@ -70,7 +66,41 @@ func (a *GoActivities) writeCompaniesHouse(ctx context.Context, runID string, re
 	return written, nil
 }
 
-// MarkExecutionComplete writes a JSON result file to the configured output directory.
+func (a *GoActivities) writeToFile(params contracts.WriteRawInputsParams) (int, error) {
+	type batchFile struct {
+		RunID          string                `json:"run_id"`
+		Source         string                `json:"source"`
+		BatchWrittenAt string                `json:"batch_written_at"`
+		RecordsCount   int                   `json:"records_count"`
+		Records        []contracts.RawRecord `json:"records"`
+	}
+
+	out := batchFile{
+		RunID:          params.RunID,
+		Source:         params.Source,
+		BatchWrittenAt: time.Now().UTC().Format(time.RFC3339),
+		RecordsCount:   len(params.Records),
+		Records:        params.Records,
+	}
+
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return 0, fmt.Errorf("marshal batch: %w", err)
+	}
+
+	if err := os.MkdirAll(a.outputDir, 0o755); err != nil {
+		return 0, fmt.Errorf("create output dir: %w", err)
+	}
+
+	path := filepath.Join(a.outputDir, params.RunID+"_batch_"+uuid.New().String()+".json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return 0, fmt.Errorf("write batch file %s: %w", path, err)
+	}
+
+	return len(params.Records), nil
+}
+
+// MarkExecutionComplete writes a summary JSON file to the output directory.
 // File name: {run_id}.json
 func (a *GoActivities) MarkExecutionComplete(_ context.Context, params contracts.MarkCompleteParams) error {
 	type resultFile struct {
