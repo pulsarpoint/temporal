@@ -3,6 +3,8 @@ package activities_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pashagolub/pgxmock/v3"
@@ -31,7 +33,7 @@ func TestWriteRawInputs_CompaniesHouse(t *testing.T) {
 			[]byte(`{"company_number":"12345678"}`), "abc123", "run-001").
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
-	acts := activities.NewGoActivitiesForTest(mock)
+	acts := activities.NewGoActivitiesForTest(mock, t.TempDir())
 	written, err := acts.WriteRawInputs(context.Background(), contracts.WriteRawInputsParams{
 		Source:  "companies_house",
 		RunID:   "run-001",
@@ -47,7 +49,7 @@ func TestWriteRawInputs_UnsupportedSource(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	acts := activities.NewGoActivitiesForTest(mock)
+	acts := activities.NewGoActivitiesForTest(mock, t.TempDir())
 	_, err = acts.WriteRawInputs(context.Background(), contracts.WriteRawInputsParams{
 		Source:  "unknown_source",
 		RunID:   "run-001",
@@ -61,15 +63,27 @@ func TestMarkExecutionComplete(t *testing.T) {
 	require.NoError(t, err)
 	defer mock.Close()
 
-	mock.ExpectExec("UPDATE temporal_executions").
-		WithArgs("550e8400-e29b-41d4-a716-446655440000", 42, 3).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	dir := t.TempDir()
+	acts := activities.NewGoActivitiesForTest(mock, dir)
 
-	acts := activities.NewGoActivitiesForTest(mock)
+	runID := "550e8400-e29b-41d4-a716-446655440000"
 	err = acts.MarkExecutionComplete(context.Background(), contracts.MarkCompleteParams{
-		CorpscoutRunID: "550e8400-e29b-41d4-a716-446655440000",
-		Result:         contracts.PullCompaniesResult{RecordsWritten: 42, PagesFetched: 3},
+		RunID:   runID,
+		Source:  "companies_house",
+		Country: "GB",
+		Result:  contracts.PullCompaniesResult{RecordsWritten: 42, PagesFetched: 3},
 	})
 	require.NoError(t, err)
-	require.NoError(t, mock.ExpectationsWereMet())
+
+	data, err := os.ReadFile(filepath.Join(dir, runID+".json"))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(data, &result))
+	require.Equal(t, runID, result["run_id"])
+	require.Equal(t, "companies_house", result["source"])
+	require.Equal(t, "GB", result["country"])
+	require.InDelta(t, 42, result["records_written"], 0)
+	require.InDelta(t, 3, result["pages_fetched"], 0)
+	require.NotEmpty(t, result["completed_at"])
 }

@@ -91,9 +91,12 @@ func PullCompanies(ctx workflow.Context, input contracts.PullCompaniesInput) (co
 		page++
 	}
 
-	// Step 3: mark execution complete in corpscout
+	// Step 3: write result JSON to output directory
 	markParams := contracts.MarkCompleteParams{
+		RunID:          runIDStr,
 		CorpscoutRunID: input.CorpscoutRunID,
+		Source:         input.Source,
+		Country:        input.Country,
 		Result:         total,
 	}
 	if err := workflow.ExecuteActivity(writeCtx, goAct.MarkExecutionComplete, markParams).Get(ctx, nil); err != nil {

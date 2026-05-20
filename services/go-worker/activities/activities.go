@@ -2,7 +2,11 @@ package activities
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,17 +22,18 @@ type dbPool interface {
 
 // GoActivities holds dependencies for all Go-side Temporal activities.
 type GoActivities struct {
-	pool dbPool
+	pool      dbPool
+	outputDir string
 }
 
-// NewGoActivities constructs GoActivities with a real pgxpool for production use.
-func NewGoActivities(pool *pgxpool.Pool) *GoActivities {
-	return &GoActivities{pool: pool}
+// NewGoActivities constructs GoActivities for production use.
+func NewGoActivities(pool *pgxpool.Pool, outputDir string) *GoActivities {
+	return &GoActivities{pool: pool, outputDir: outputDir}
 }
 
-// NewGoActivitiesForTest constructs GoActivities with a mock pool for testing.
-func NewGoActivitiesForTest(pool dbPool) *GoActivities {
-	return &GoActivities{pool: pool}
+// NewGoActivitiesForTest constructs GoActivities with a mock pool and temp dir for testing.
+func NewGoActivitiesForTest(pool dbPool, outputDir string) *GoActivities {
+	return &GoActivities{pool: pool, outputDir: outputDir}
 }
 
 // WriteRawInputs inserts raw records into the appropriate source raw_inputs table.
@@ -65,18 +70,44 @@ func (a *GoActivities) writeCompaniesHouse(ctx context.Context, runID string, re
 	return written, nil
 }
 
-// MarkExecutionComplete marks a temporal_executions row as completed.
-func (a *GoActivities) MarkExecutionComplete(ctx context.Context, params contracts.MarkCompleteParams) error {
-	_, err := a.pool.Exec(ctx, `
-		UPDATE temporal_executions
-		SET status          = 'completed',
-		    records_written = $2,
-		    pages_fetched   = $3,
-		    completed_at    = now()
-		WHERE id = $1::uuid
-	`, params.CorpscoutRunID, params.Result.RecordsWritten, params.Result.PagesFetched)
-	if err != nil {
-		return fmt.Errorf("mark execution complete: %w", err)
+// MarkExecutionComplete writes a JSON result file to the configured output directory.
+// File name: {run_id}.json
+func (a *GoActivities) MarkExecutionComplete(_ context.Context, params contracts.MarkCompleteParams) error {
+	type resultFile struct {
+		RunID          string   `json:"run_id"`
+		CorpscoutRunID string   `json:"corpscout_run_id,omitempty"`
+		Source         string   `json:"source"`
+		Country        string   `json:"country"`
+		RecordsWritten int      `json:"records_written"`
+		PagesFetched   int      `json:"pages_fetched"`
+		Errors         []string `json:"errors,omitempty"`
+		CompletedAt    string   `json:"completed_at"`
 	}
+
+	out := resultFile{
+		RunID:          params.RunID,
+		CorpscoutRunID: params.CorpscoutRunID,
+		Source:         params.Source,
+		Country:        params.Country,
+		RecordsWritten: params.Result.RecordsWritten,
+		PagesFetched:   params.Result.PagesFetched,
+		Errors:         params.Result.Errors,
+		CompletedAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal result: %w", err)
+	}
+
+	if err := os.MkdirAll(a.outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+
+	path := filepath.Join(a.outputDir, params.RunID+".json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return fmt.Errorf("write result file %s: %w", path, err)
+	}
+
 	return nil
 }

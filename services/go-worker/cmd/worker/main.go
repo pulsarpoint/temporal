@@ -19,6 +19,7 @@ import (
 func main() {
 	temporalHost := getEnv("TEMPORAL_HOST", "localhost:7233")
 	corpscoutDB := mustEnv("CORPSCOUT_DB_URL")
+	outputDir := getEnv("OUTPUT_DIR", "/var/lib/data-pipelines/results")
 
 	ctx := context.Background()
 
@@ -44,7 +45,7 @@ func main() {
 	}
 	defer c.Close()
 
-	goActs := activities.NewGoActivities(pool)
+	goActs := activities.NewGoActivities(pool, outputDir)
 
 	w := worker.New(c, "corpscout-pipelines", worker.Options{})
 	w.RegisterWorkflow(workflows.PullCompanies)

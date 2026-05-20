@@ -55,6 +55,9 @@ type WriteRawInputsParams struct {
 
 // MarkCompleteParams is the input for the MarkExecutionComplete Go activity.
 type MarkCompleteParams struct {
-	CorpscoutRunID string              `json:"corpscout_run_id"`
+	RunID          string              `json:"run_id"`                     // stable UUID from workflow SideEffect
+	CorpscoutRunID string              `json:"corpscout_run_id,omitempty"` // original trigger ID, empty when started from Temporal UI
+	Source         string              `json:"source"`
+	Country        string              `json:"country"`
 	Result         PullCompaniesResult `json:"result"`
 }
