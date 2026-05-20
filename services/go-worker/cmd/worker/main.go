@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -13,42 +12,30 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/pulsarpoint/data-pipelines/activities"
-	"github.com/pulsarpoint/data-pipelines/cache"
 	"github.com/pulsarpoint/data-pipelines/workflows"
 )
 
 func main() {
 	temporalHost := getEnv("TEMPORAL_HOST", "localhost:7233")
-	outputDir := getEnv("OUTPUT_DIR", "/var/lib/data-pipelines/results")
 	corpscoutDB := os.Getenv("CORPSCOUT_DB_URL")
+	if corpscoutDB == "" {
+		slog.Error("CORPSCOUT_DB_URL is required")
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 
-	var pool *pgxpool.Pool
-	if corpscoutDB != "" {
-		var err error
-		pool, err = pgxpool.New(ctx, corpscoutDB)
-		if err != nil {
-			slog.Error("connect to corpscout db", "error", err)
-			os.Exit(1)
-		}
-		if err := pool.Ping(ctx); err != nil {
-			slog.Error("ping corpscout db", "error", err)
-			os.Exit(1)
-		}
-		defer pool.Close()
-		slog.Info("database mode: writing records to corpscout DB")
-	} else {
-		slog.Info("file-only mode: writing records to output directory", "output_dir", outputDir)
-	}
-
-	workerCache, err := cache.New(filepath.Join(outputDir, "cache.db"))
+	pool, err := pgxpool.New(ctx, corpscoutDB)
 	if err != nil {
-		slog.Error("open worker cache", "error", err)
+		slog.Error("connect to corpscout db", "error", err)
 		os.Exit(1)
 	}
-	defer workerCache.Close()
-	slog.Info("worker cache opened", "path", filepath.Join(outputDir, "cache.db"))
+	if err := pool.Ping(ctx); err != nil {
+		slog.Error("ping corpscout db", "error", err)
+		os.Exit(1)
+	}
+	defer pool.Close()
+	slog.Info("connected to corpscout DB")
 
 	c, err := client.Dial(client.Options{
 		HostPort:  temporalHost,
@@ -60,22 +47,16 @@ func main() {
 	}
 	defer c.Close()
 
-	goActs := activities.NewGoActivities(pool, outputDir, workerCache)
+	goActs := activities.NewGoActivities(pool)
 
 	w := worker.New(c, "corpscout-pipelines", worker.Options{})
 
-	// Source-specific list-sync workflows.
 	w.RegisterWorkflow(workflows.PullCompaniesHouse)
 	w.RegisterWorkflow(workflows.PullBrreg)
-
-	// Domain enrichment workflow (child of pull workflows).
 	w.RegisterWorkflow(workflows.EnrichCompanyDomains)
 
-	// List-sync activities.
 	w.RegisterActivity(goActs.WriteRawInputs)
 	w.RegisterActivity(goActs.MarkExecutionComplete)
-
-	// Domain enrichment activities.
 	w.RegisterActivity(goActs.FilterForDomainDiscovery)
 	w.RegisterActivity(goActs.WriteDiscoveredDomains)
 	w.RegisterActivity(goActs.MarkDomainsSearched)

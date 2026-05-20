@@ -6,28 +6,29 @@ import "encoding/json"
 
 // PullCompaniesHouseInput is the input for the PullCompaniesHouse workflow.
 // IDs nil means bulk pull; populated means individual company lookup.
+// Force re-inserts records even if already present in the raw_inputs table.
 type PullCompaniesHouseInput struct {
 	Country        string   `json:"country"`
 	IDs            []string `json:"ids,omitempty"`
 	CorpscoutRunID string   `json:"corpscout_run_id,omitempty"`
+	Force          bool     `json:"force,omitempty"`
 }
 
 // PullBrregInput is the input for the PullBrreg workflow.
 // Country is always NO — hardcoded in the workflow.
+// Force re-inserts records even if already present in the raw_inputs table.
 type PullBrregInput struct {
 	IDs            []string `json:"ids,omitempty"`
 	CorpscoutRunID string   `json:"corpscout_run_id,omitempty"`
+	Force          bool     `json:"force,omitempty"`
 }
 
 // PullCompaniesResult is returned by the pull workflows.
 // Actual records are already written to the DB; this is metadata only.
 type PullCompaniesResult struct {
-	RecordsWritten    int               `json:"records_written"`
-	PagesFetched      int               `json:"pages_fetched"`
-	Errors            []string          `json:"errors,omitempty"`
-	DomainsFound      int               `json:"domains_found,omitempty"`
-	CompaniesSearched int               `json:"companies_searched,omitempty"`
-	Discoveries       []DomainDiscovery `json:"discoveries,omitempty"`
+	RecordsWritten int      `json:"records_written"`
+	PagesFetched   int      `json:"pages_fetched"`
+	Errors         []string `json:"errors,omitempty"`
 }
 
 // ── List-sync activity types ──────────────────────────────────────────────────
@@ -59,9 +60,11 @@ type FetchResult struct {
 }
 
 // WriteRawInputsParams is the input for the WriteRawInputs Go activity.
+// Force re-inserts records even if the company already has a row in the table.
 type WriteRawInputsParams struct {
 	Source  string      `json:"source"`
 	RunID   string      `json:"run_id"`
+	Force   bool        `json:"force,omitempty"`
 	Records []RawRecord `json:"records"`
 }
 

@@ -75,6 +75,7 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 		if err := workflow.ExecuteActivity(goCtx, goAct.WriteRawInputs, contracts.WriteRawInputsParams{
 			Source:  "brreg",
 			RunID:   runIDStr,
+			Force:   input.Force,
 			Records: fetchResult.Records,
 		}).Get(ctx, &written); err != nil {
 			return total, err
