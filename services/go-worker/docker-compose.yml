@@ -2,6 +2,7 @@ services:
   go-worker:
     build: .
     restart: always
+    network_mode: host
     env_file: .env
     volumes:
       - results:/var/lib/data-pipelines/results
