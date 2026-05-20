@@ -102,16 +102,6 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 		page++
 	}
 
-	if err := workflow.ExecuteActivity(goCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{
-		RunID:          runIDStr,
-		CorpscoutRunID: input.CorpscoutRunID,
-		Source:         "brreg",
-		Country:        "NO",
-		Result:         total,
-	}).Get(ctx, nil); err != nil {
-		return total, err
-	}
-
 	if len(allCompanies) > 0 {
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			TaskQueue:         "corpscout-pipelines",
@@ -134,6 +124,16 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 				"domains_found", enrichResult.DomainsFound,
 				"companies_searched", enrichResult.CompaniesProcessed)
 		}
+	}
+
+	if err := workflow.ExecuteActivity(goCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{
+		RunID:          runIDStr,
+		CorpscoutRunID: input.CorpscoutRunID,
+		Source:         "brreg",
+		Country:        "NO",
+		Result:         total,
+	}).Get(ctx, nil); err != nil {
+		return total, err
 	}
 
 	return total, nil

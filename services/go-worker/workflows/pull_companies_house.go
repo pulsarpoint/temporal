@@ -104,18 +104,7 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		page++
 	}
 
-	if err := workflow.ExecuteActivity(goCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{
-		RunID:          runIDStr,
-		CorpscoutRunID: input.CorpscoutRunID,
-		Source:         "companies_house",
-		Country:        input.Country,
-		Result:         total,
-	}).Get(ctx, nil); err != nil {
-		return total, err
-	}
-
-	// Run domain enrichment as a child workflow and wait for its result.
-	// ABANDON policy: if this workflow is killed mid-run, the child keeps going.
+	// Run domain enrichment first so MarkExecutionComplete records the full picture.
 	if len(allCompanies) > 0 {
 		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
 			TaskQueue:         "corpscout-pipelines",
@@ -138,6 +127,16 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 				"domains_found", enrichResult.DomainsFound,
 				"companies_searched", enrichResult.CompaniesProcessed)
 		}
+	}
+
+	if err := workflow.ExecuteActivity(goCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{
+		RunID:          runIDStr,
+		CorpscoutRunID: input.CorpscoutRunID,
+		Source:         "companies_house",
+		Country:        input.Country,
+		Result:         total,
+	}).Get(ctx, nil); err != nil {
+		return total, err
 	}
 
 	return total, nil
