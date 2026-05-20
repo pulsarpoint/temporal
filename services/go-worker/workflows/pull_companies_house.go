@@ -48,6 +48,18 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		},
 	})
 
+	// Detail activity: same Python task queue but shorter timeout per company.
+	detailCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:           "corpscout-pipelines-python",
+		StartToCloseTimeout: 30 * time.Second,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts:    5,
+			InitialInterval:    10 * time.Second,
+			MaximumInterval:    60 * time.Second,
+			BackoffCoefficient: 2.0,
+		},
+	})
+
 	logger := workflow.GetLogger(ctx)
 	var goAct *activities.GoActivities
 	total := contracts.PullCompaniesResult{}
@@ -99,7 +111,38 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 			return total, err
 		}
 		logger.Info("enrichment filter", "page", page, "total", len(nativeIDs), "need_enrichment", len(filterResult.NeedEnrichment))
-		// TODO Phase 2: dispatch fetch_companies_house_detail for filterResult.NeedEnrichment
+
+		if len(filterResult.NeedEnrichment) > 0 {
+			details := make([]contracts.CompanyDetailResult, 0, len(filterResult.NeedEnrichment))
+			var fetchedIDs []string
+			for _, nativeID := range filterResult.NeedEnrichment {
+				var detail contracts.CompanyDetailResult
+				err := workflow.ExecuteActivity(detailCtx, "fetch_companies_house_detail",
+					contracts.FetchCompanyDetailInput{Source: "companies_house", NativeID: nativeID}).
+					Get(ctx, &detail)
+				if err != nil {
+					logger.Warn("detail fetch failed, skipping", "native_id", nativeID, "error", err)
+					continue
+				}
+				details = append(details, detail)
+				fetchedIDs = append(fetchedIDs, nativeID)
+			}
+
+			if len(details) > 0 {
+				if err := workflow.ExecuteActivity(goCtx, goAct.WriteCompanyDetails,
+					contracts.WriteCompanyDetailsParams{Source: "companies_house", Details: details}).
+					Get(ctx, nil); err != nil {
+					return total, err
+				}
+			}
+			if len(fetchedIDs) > 0 {
+				if err := workflow.ExecuteActivity(goCtx, goAct.MarkEnriched,
+					contracts.MarkEnrichedParams{Source: "companies_house", NativeIDs: fetchedIDs}).
+					Get(ctx, nil); err != nil {
+					return total, err
+				}
+			}
+		}
 
 		if !fetchResult.HasMore {
 			logger.Info("no more pages", "country", input.Country, "total_pages", total.PagesFetched)

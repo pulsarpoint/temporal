@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -39,23 +40,32 @@ func (c *Cache) Close() error {
 	return c.db.Close()
 }
 
-// FilterUnfetched returns the subset of nativeIDs that are not yet in the cache
-// for the given source.
-func (c *Cache) FilterUnfetched(source string, nativeIDs []string) ([]string, error) {
+// FilterUnfetched returns the subset of nativeIDs that either have never been
+// fetched or were last fetched more than ttl ago. Pass ttl=0 to use the
+// default 24-hour window.
+func (c *Cache) FilterUnfetched(source string, nativeIDs []string, ttl time.Duration) ([]string, error) {
 	if len(nativeIDs) == 0 {
 		return nil, nil
 	}
+	if ttl <= 0 {
+		ttl = 24 * time.Hour
+	}
 
 	placeholders := make([]string, len(nativeIDs))
-	args := make([]any, 0, len(nativeIDs)+1)
+	args := make([]any, 0, len(nativeIDs)+2)
 	args = append(args, source)
+	cutoff := time.Now().UTC().Add(-ttl).Format("2006-01-02T15:04:05Z")
+	args = append(args, cutoff)
 	for i, id := range nativeIDs {
 		placeholders[i] = "?"
 		args = append(args, id)
 	}
 
+	// Returns IDs that are "fresh" (in cache AND fetched within ttl).
+	// IDs missing from the result need (re-)fetching.
 	query := fmt.Sprintf(
-		`SELECT native_id FROM enrichment_cache WHERE source = ? AND native_id IN (%s)`,
+		`SELECT native_id FROM enrichment_cache
+		 WHERE source = ? AND fetched_at > ? AND native_id IN (%s)`,
 		strings.Join(placeholders, ","),
 	)
 	rows, err := c.db.Query(query, args...)
@@ -64,13 +74,13 @@ func (c *Cache) FilterUnfetched(source string, nativeIDs []string) ([]string, er
 	}
 	defer rows.Close()
 
-	already := make(map[string]struct{}, len(nativeIDs))
+	fresh := make(map[string]struct{}, len(nativeIDs))
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		already[id] = struct{}{}
+		fresh[id] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -78,7 +88,7 @@ func (c *Cache) FilterUnfetched(source string, nativeIDs []string) ([]string, er
 
 	out := make([]string, 0, len(nativeIDs))
 	for _, id := range nativeIDs {
-		if _, ok := already[id]; !ok {
+		if _, ok := fresh[id]; !ok {
 			out = append(out, id)
 		}
 	}

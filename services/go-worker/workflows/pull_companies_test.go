@@ -28,6 +28,12 @@ func (s *PullCompaniesHouseSuite) SetupTest() {
 		},
 		activity.RegisterOptions{Name: "fetch_companies_house_list"},
 	)
+	s.env.RegisterActivityWithOptions(
+		func(ctx context.Context, input contracts.FetchCompanyDetailInput) (contracts.CompanyDetailResult, error) {
+			return contracts.CompanyDetailResult{}, nil
+		},
+		activity.RegisterOptions{Name: "fetch_companies_house_detail"},
+	)
 	var goAct *activities.GoActivities
 	s.env.RegisterActivity(goAct)
 }
@@ -60,6 +66,21 @@ func (s *PullCompaniesHouseSuite) Test_SinglePage_WritesRecords() {
 
 	s.env.OnActivity(goAct.FilterForEnrichment, mock.Anything, mock.Anything).
 		Return(contracts.FilterForEnrichmentResult{NeedEnrichment: []string{"12345678", "87654321"}}, nil)
+
+	s.env.OnActivity("fetch_companies_house_detail", mock.Anything, contracts.FetchCompanyDetailInput{
+		Source: "companies_house", NativeID: "12345678",
+	}).Return(contracts.CompanyDetailResult{NativeID: "12345678", Name: "ACME LTD", Status: "active"}, nil)
+	s.env.OnActivity("fetch_companies_house_detail", mock.Anything, contracts.FetchCompanyDetailInput{
+		Source: "companies_house", NativeID: "87654321",
+	}).Return(contracts.CompanyDetailResult{NativeID: "87654321", Name: "GLOBEX LTD", Status: "active"}, nil)
+
+	s.env.OnActivity(goAct.WriteCompanyDetails, mock.Anything, mock.MatchedBy(func(p contracts.WriteCompanyDetailsParams) bool {
+		return p.Source == "companies_house" && len(p.Details) == 2
+	})).Return(nil)
+
+	s.env.OnActivity(goAct.MarkEnriched, mock.Anything, mock.MatchedBy(func(p contracts.MarkEnrichedParams) bool {
+		return p.Source == "companies_house" && len(p.NativeIDs) == 2
+	})).Return(nil)
 
 	s.env.OnActivity(goAct.MarkExecutionComplete, mock.Anything, mock.MatchedBy(func(p contracts.MarkCompleteParams) bool {
 		return p.CorpscoutRunID == "exec-123" && p.Result.RecordsWritten == 2

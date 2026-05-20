@@ -17,6 +17,7 @@ import (
 
 var supportedSources = map[string]bool{
 	"companies_house": true,
+	"brreg":           true,
 }
 
 // GoActivities holds dependencies for all Go-side Temporal activities.
@@ -109,7 +110,7 @@ func (a *GoActivities) FilterForEnrichment(_ context.Context, params contracts.F
 	if a.cache == nil {
 		return contracts.FilterForEnrichmentResult{NeedEnrichment: params.NativeIDs}, nil
 	}
-	unfetched, err := a.cache.FilterUnfetched(params.Source, params.NativeIDs)
+	unfetched, err := a.cache.FilterUnfetched(params.Source, params.NativeIDs, 0)
 	if err != nil {
 		return contracts.FilterForEnrichmentResult{}, fmt.Errorf("filter unfetched: %w", err)
 	}
@@ -124,6 +125,73 @@ func (a *GoActivities) MarkEnriched(_ context.Context, params contracts.MarkEnri
 	}
 	if err := a.cache.MarkFetched(params.Source, params.NativeIDs); err != nil {
 		return fmt.Errorf("mark fetched: %w", err)
+	}
+	return nil
+}
+
+// WriteCompanyDetails persists enriched company detail records. When a DB pool
+// is configured it upserts into company_addresses; otherwise it writes a JSON
+// file to the output directory for inspection.
+func (a *GoActivities) WriteCompanyDetails(ctx context.Context, params contracts.WriteCompanyDetailsParams) error {
+	if len(params.Details) == 0 {
+		return nil
+	}
+	if a.pool != nil {
+		return a.writeCompanyDetailsToDB(ctx, params)
+	}
+	return a.writeCompanyDetailsToFile(params)
+}
+
+func (a *GoActivities) writeCompanyDetailsToDB(ctx context.Context, params contracts.WriteCompanyDetailsParams) error {
+	for _, d := range params.Details {
+		if d.NativeID == "" {
+			continue
+		}
+		_, err := a.pool.Exec(ctx, `
+			INSERT INTO company_addresses
+				(native_id, source, address_line_1, address_line_2, locality, postal_code, country, region)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			ON CONFLICT (native_id, source) DO UPDATE
+				SET address_line_1 = EXCLUDED.address_line_1,
+				    address_line_2 = EXCLUDED.address_line_2,
+				    locality       = EXCLUDED.locality,
+				    postal_code    = EXCLUDED.postal_code,
+				    country        = EXCLUDED.country,
+				    region         = EXCLUDED.region,
+				    last_seen_at   = now()
+		`, d.NativeID, params.Source, d.AddressLine1, d.AddressLine2, d.Locality, d.PostalCode, d.Country, d.Region)
+		if err != nil {
+			return fmt.Errorf("upsert company_addresses %s: %w", d.NativeID, err)
+		}
+	}
+	return nil
+}
+
+func (a *GoActivities) writeCompanyDetailsToFile(params contracts.WriteCompanyDetailsParams) error {
+	type detailFile struct {
+		Source      string                        `json:"source"`
+		WrittenAt   string                        `json:"written_at"`
+		RecordCount int                           `json:"record_count"`
+		Details     []contracts.CompanyDetailResult `json:"details"`
+	}
+
+	out := detailFile{
+		Source:      params.Source,
+		WrittenAt:   time.Now().UTC().Format(time.RFC3339),
+		RecordCount: len(params.Details),
+		Details:     params.Details,
+	}
+
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal details: %w", err)
+	}
+	if err := os.MkdirAll(a.outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	path := filepath.Join(a.outputDir, "details_"+params.Source+"_"+uuid.New().String()+".json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return fmt.Errorf("write details file %s: %w", path, err)
 	}
 	return nil
 }

@@ -77,6 +77,34 @@ type MarkEnrichedParams struct {
 	NativeIDs []string `json:"native_ids"`
 }
 
+// FetchCompanyDetailInput is the input for the fetch_companies_house_detail Python activity.
+type FetchCompanyDetailInput struct {
+	Source   string `json:"source"`
+	NativeID string `json:"native_id"`
+}
+
+// CompanyDetailResult is returned by the fetch_companies_house_detail Python activity.
+type CompanyDetailResult struct {
+	NativeID       string   `json:"native_id"`
+	Name           string   `json:"name"`
+	Status         string   `json:"status"`
+	Type           string   `json:"type,omitempty"`
+	DateOfCreation string   `json:"date_of_creation,omitempty"`
+	AddressLine1   *string  `json:"address_line_1,omitempty"`
+	AddressLine2   *string  `json:"address_line_2,omitempty"`
+	Locality       *string  `json:"locality,omitempty"`
+	PostalCode     *string  `json:"postal_code,omitempty"`
+	Country        *string  `json:"country,omitempty"`
+	Region         *string  `json:"region,omitempty"`
+	SICCodes       []string `json:"sic_codes,omitempty"`
+}
+
+// WriteCompanyDetailsParams is the input for the WriteCompanyDetails Go activity.
+type WriteCompanyDetailsParams struct {
+	Source  string                `json:"source"`
+	Details []CompanyDetailResult `json:"details"`
+}
+
 // MarkCompleteParams is the input for the MarkExecutionComplete Go activity.
 type MarkCompleteParams struct {
 	RunID          string              `json:"run_id"`                     // stable UUID from workflow SideEffect

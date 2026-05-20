@@ -60,6 +60,45 @@ func TestWriteRawInputs_UnsupportedSource(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported source")
 }
 
+func TestWriteCompanyDetails_FileMode(t *testing.T) {
+	dir := t.TempDir()
+	acts := activities.NewGoActivities(nil, dir, nil)
+
+	addr1 := "10 Downing Street"
+	locality := "London"
+	postal := "SW1A 2AA"
+	country := "England"
+
+	err := acts.WriteCompanyDetails(context.Background(), contracts.WriteCompanyDetailsParams{
+		Source: "companies_house",
+		Details: []contracts.CompanyDetailResult{
+			{
+				NativeID:     "12345678",
+				Name:         "ACME LTD",
+				Status:       "active",
+				AddressLine1: &addr1,
+				Locality:     &locality,
+				PostalCode:   &postal,
+				Country:      &country,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.True(t, strings.HasPrefix(entries[0].Name(), "details_companies_house_"))
+
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(data, &result))
+	require.Equal(t, "companies_house", result["source"])
+	require.InDelta(t, 1, result["record_count"], 0)
+}
+
 func TestMarkExecutionComplete(t *testing.T) {
 	dir := t.TempDir()
 	acts := activities.NewGoActivities(nil, dir, nil)
