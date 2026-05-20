@@ -47,6 +47,7 @@ func PullCompanies(ctx workflow.Context, input contracts.PullCompaniesInput) (co
 		},
 	})
 
+	logger := workflow.GetLogger(ctx)
 	var goAct *activities.GoActivities
 	total := contracts.PullCompaniesResult{}
 	cursor := ""
@@ -67,8 +68,16 @@ func PullCompanies(ctx workflow.Context, input contracts.PullCompaniesInput) (co
 		}
 
 		if len(fetchResult.Records) == 0 {
+			logger.Info("fetch_page returned 0 records, stopping",
+				"source", input.Source,
+				"country", input.Country,
+				"page", page,
+				"cursor", cursor,
+			)
 			break
 		}
+
+		logger.Info("page fetched", "page", page, "records", len(fetchResult.Records), "has_more", fetchResult.HasMore)
 
 		// Step 2: write records to corpscout DB (Go activity)
 		writeParams := contracts.WriteRawInputsParams{
@@ -85,6 +94,7 @@ func PullCompanies(ctx workflow.Context, input contracts.PullCompaniesInput) (co
 		total.PagesFetched++
 
 		if !fetchResult.HasMore {
+			logger.Info("no more pages, stopping", "source", input.Source, "country", input.Country, "total_pages", total.PagesFetched)
 			break
 		}
 		cursor = fetchResult.NextCursor
