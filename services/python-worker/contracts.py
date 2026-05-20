@@ -30,22 +30,26 @@ class FetchResult:
 
 
 @dataclass
-class FetchCompanyDetailInput:
-    source: str
+class CompanyLookup:
     native_id: str
+    name: str
 
 
 @dataclass
-class CompanyDetailResult:
+class DiscoverDomainsInput:
+    source: str
+    country: str
+    companies: list[CompanyLookup]
+
+
+@dataclass
+class DomainDiscovery:
     native_id: str
-    name: str
-    status: str
-    type: str = ""
-    date_of_creation: str = ""
-    address_line_1: str | None = None
-    address_line_2: str | None = None
-    locality: str | None = None
-    postal_code: str | None = None
-    country: str | None = None
-    region: str | None = None
-    sic_codes: list[str] = field(default_factory=list)
+    domain: str
+    signal: str
+    confidence: int
+
+
+@dataclass
+class DiscoverDomainsResult:
+    discoveries: list[DomainDiscovery] = field(default_factory=list)

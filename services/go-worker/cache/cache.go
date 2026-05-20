@@ -9,8 +9,8 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Cache tracks which companies have had their detail profile fetched.
-// Backed by a local SQLite file so state survives worker restarts.
+// Cache persists enrichment and domain-discovery state across worker restarts.
+// Backed by a local SQLite file.
 type Cache struct {
 	db *sql.DB
 }
@@ -27,10 +27,16 @@ func New(path string) (*Cache, error) {
 			source     TEXT NOT NULL,
 			fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 			PRIMARY KEY (native_id, source)
-		)
+		);
+		CREATE TABLE IF NOT EXISTS domain_cache (
+			native_id   TEXT NOT NULL,
+			source      TEXT NOT NULL,
+			searched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+			PRIMARY KEY (native_id, source)
+		);
 	`); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("create enrichment_cache: %w", err)
+		return nil, fmt.Errorf("create cache tables: %w", err)
 	}
 	return &Cache{db: db}, nil
 }
@@ -39,6 +45,8 @@ func New(path string) (*Cache, error) {
 func (c *Cache) Close() error {
 	return c.db.Close()
 }
+
+// ── enrichment_cache ──────────────────────────────────────────────────────────
 
 // FilterUnfetched returns the subset of nativeIDs that either have never been
 // fetched or were last fetched more than ttl ago. Pass ttl=0 to use the
@@ -61,8 +69,6 @@ func (c *Cache) FilterUnfetched(source string, nativeIDs []string, ttl time.Dura
 		args = append(args, id)
 	}
 
-	// Returns IDs that are "fresh" (in cache AND fetched within ttl).
-	// IDs missing from the result need (re-)fetching.
 	query := fmt.Sprintf(
 		`SELECT native_id FROM enrichment_cache
 		 WHERE source = ? AND fetched_at > ? AND native_id IN (%s)`,
@@ -70,7 +76,7 @@ func (c *Cache) FilterUnfetched(source string, nativeIDs []string, ttl time.Dura
 	)
 	rows, err := c.db.Query(query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query cache: %w", err)
+		return nil, fmt.Errorf("query enrichment cache: %w", err)
 	}
 	defer rows.Close()
 
@@ -95,8 +101,7 @@ func (c *Cache) FilterUnfetched(source string, nativeIDs []string, ttl time.Dura
 	return out, nil
 }
 
-// MarkFetched records that detail profiles have been successfully fetched for nativeIDs.
-// Idempotent: calling it again for an already-cached ID updates fetched_at.
+// MarkFetched records that detail profiles have been fetched. Idempotent.
 func (c *Cache) MarkFetched(source string, nativeIDs []string) error {
 	if len(nativeIDs) == 0 {
 		return nil
@@ -120,6 +125,89 @@ func (c *Cache) MarkFetched(source string, nativeIDs []string) error {
 		if _, err := stmt.Exec(id, source); err != nil {
 			tx.Rollback()
 			return fmt.Errorf("insert %s: %w", id, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// ── domain_cache ──────────────────────────────────────────────────────────────
+
+// FilterNeedsDiscovery returns the subset of nativeIDs that have not yet had a
+// domain search. If force is true, all IDs are returned regardless of cache.
+func (c *Cache) FilterNeedsDiscovery(source string, nativeIDs []string, force bool) ([]string, error) {
+	if len(nativeIDs) == 0 {
+		return nil, nil
+	}
+	if force {
+		out := make([]string, len(nativeIDs))
+		copy(out, nativeIDs)
+		return out, nil
+	}
+
+	placeholders := make([]string, len(nativeIDs))
+	args := make([]any, 0, len(nativeIDs)+1)
+	args = append(args, source)
+	for i, id := range nativeIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+
+	query := fmt.Sprintf(
+		`SELECT native_id FROM domain_cache WHERE source = ? AND native_id IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := c.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query domain cache: %w", err)
+	}
+	defer rows.Close()
+
+	already := make(map[string]struct{}, len(nativeIDs))
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		already[id] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]string, 0, len(nativeIDs))
+	for _, id := range nativeIDs {
+		if _, ok := already[id]; !ok {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+// MarkDomainsSearched records that domain discovery was run for the given IDs.
+// Idempotent: calling it again updates searched_at.
+func (c *Cache) MarkDomainsSearched(source string, nativeIDs []string) error {
+	if len(nativeIDs) == 0 {
+		return nil
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	stmt, err := tx.Prepare(`
+		INSERT INTO domain_cache (native_id, source)
+		VALUES (?, ?)
+		ON CONFLICT (native_id, source) DO UPDATE
+			SET searched_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+	`)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("prepare: %w", err)
+	}
+	defer stmt.Close()
+	for _, id := range nativeIDs {
+		if _, err := stmt.Exec(id, source); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("insert domain_cache %s: %w", id, err)
 		}
 	}
 	return tx.Commit()

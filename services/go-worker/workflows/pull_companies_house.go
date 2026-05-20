@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -11,13 +12,12 @@ import (
 	"github.com/pulsarpoint/data-pipelines/contracts"
 )
 
-// PullCompaniesHouse paginates the Companies House advanced-search list endpoint,
-// writes raw records, and tracks which companies still need detail enrichment.
+// PullCompaniesHouse paginates the Companies House advanced-search list endpoint
+// and writes raw records. After all pages are fetched it fires off an
+// EnrichCompanyDomains child workflow (abandon policy — runs independently).
 //
 // Python activity: fetch_companies_house_list  (task queue: corpscout-pipelines-python)
-// Go activities:   WriteRawInputs, FilterForEnrichment, MarkExecutionComplete
-//
-// TODO Phase 2: call fetch_companies_house_detail for filterResult.NeedEnrichment
+// Go activities:   WriteRawInputs, MarkExecutionComplete
 func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouseInput) (contracts.PullCompaniesResult, error) {
 	var runIDStr string
 	if err := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
@@ -26,7 +26,6 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		return contracts.PullCompaniesResult{}, err
 	}
 
-	// Python list activity runs on the dedicated Python task queue.
 	listCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:           "corpscout-pipelines-python",
 		StartToCloseTimeout: 5 * time.Minute,
@@ -38,7 +37,6 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		},
 	})
 
-	// Go activities run on the main Go task queue.
 	goCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:           "corpscout-pipelines",
 		StartToCloseTimeout: 2 * time.Minute,
@@ -48,23 +46,14 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		},
 	})
 
-	// Detail activity: same Python task queue but shorter timeout per company.
-	detailCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		TaskQueue:           "corpscout-pipelines-python",
-		StartToCloseTimeout: 30 * time.Second,
-		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts:    5,
-			InitialInterval:    10 * time.Second,
-			MaximumInterval:    60 * time.Second,
-			BackoffCoefficient: 2.0,
-		},
-	})
-
 	logger := workflow.GetLogger(ctx)
 	var goAct *activities.GoActivities
 	total := contracts.PullCompaniesResult{}
 	cursor := ""
 	page := 1
+
+	// Accumulated across all pages for the child enrichment workflow.
+	var allCompanies []contracts.CompanyLookup
 
 	for {
 		var fetchResult contracts.FetchResult
@@ -97,50 +86,13 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		total.RecordsWritten += written
 		total.PagesFetched++
 
-		nativeIDs := make([]string, 0, len(fetchResult.Records))
+		// Collect company lookups for enrichment.
 		for _, r := range fetchResult.Records {
 			if r.NativeID != "" {
-				nativeIDs = append(nativeIDs, r.NativeID)
-			}
-		}
-		var filterResult contracts.FilterForEnrichmentResult
-		if err := workflow.ExecuteActivity(goCtx, goAct.FilterForEnrichment, contracts.FilterForEnrichmentParams{
-			Source:    "companies_house",
-			NativeIDs: nativeIDs,
-		}).Get(ctx, &filterResult); err != nil {
-			return total, err
-		}
-		logger.Info("enrichment filter", "page", page, "total", len(nativeIDs), "need_enrichment", len(filterResult.NeedEnrichment))
-
-		if len(filterResult.NeedEnrichment) > 0 {
-			details := make([]contracts.CompanyDetailResult, 0, len(filterResult.NeedEnrichment))
-			var fetchedIDs []string
-			for _, nativeID := range filterResult.NeedEnrichment {
-				var detail contracts.CompanyDetailResult
-				err := workflow.ExecuteActivity(detailCtx, "fetch_companies_house_detail",
-					contracts.FetchCompanyDetailInput{Source: "companies_house", NativeID: nativeID}).
-					Get(ctx, &detail)
-				if err != nil {
-					logger.Warn("detail fetch failed, skipping", "native_id", nativeID, "error", err)
-					continue
-				}
-				details = append(details, detail)
-				fetchedIDs = append(fetchedIDs, nativeID)
-			}
-
-			if len(details) > 0 {
-				if err := workflow.ExecuteActivity(goCtx, goAct.WriteCompanyDetails,
-					contracts.WriteCompanyDetailsParams{Source: "companies_house", Details: details}).
-					Get(ctx, nil); err != nil {
-					return total, err
-				}
-			}
-			if len(fetchedIDs) > 0 {
-				if err := workflow.ExecuteActivity(goCtx, goAct.MarkEnriched,
-					contracts.MarkEnrichedParams{Source: "companies_house", NativeIDs: fetchedIDs}).
-					Get(ctx, nil); err != nil {
-					return total, err
-				}
+				allCompanies = append(allCompanies, contracts.CompanyLookup{
+					NativeID: r.NativeID,
+					Name:     r.Name,
+				})
 			}
 		}
 
@@ -160,6 +112,23 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		Result:         total,
 	}).Get(ctx, nil); err != nil {
 		return total, err
+	}
+
+	// Fire-and-forget child workflow for domain enrichment.
+	// ABANDON policy: child continues independently after parent completes.
+	if len(allCompanies) > 0 {
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			TaskQueue:         "corpscout-pipelines",
+			ParentClosePolicy: enumspb.PARENT_CLOSE_POLICY_ABANDON,
+		})
+		workflow.ExecuteChildWorkflow(childCtx, EnrichCompanyDomains, contracts.EnrichCompanyDomainsInput{
+			Source:    "companies_house",
+			Country:   input.Country,
+			Companies: allCompanies,
+			Force:     false,
+		})
+		logger.Info("domain enrichment child workflow started",
+			"companies", len(allCompanies))
 	}
 
 	return total, nil

@@ -21,22 +21,22 @@ var supportedSources = map[string]bool{
 }
 
 // GoActivities holds dependencies for all Go-side Temporal activities.
-// When pool is nil, WriteRawInputs falls back to JSON file output.
+// When pool is nil, write activities fall back to JSON file output.
 type GoActivities struct {
 	pool      *pgxpool.Pool // nil = file-only mode
 	outputDir string
-	cache     *cache.Cache // nil = enrichment tracking disabled
+	cache     *cache.Cache // nil = caching disabled
 }
 
-// NewGoActivities constructs GoActivities for production.
-// Pass a nil pool to run in file-only mode (no DB required).
-// Pass a nil cache to disable enrichment tracking.
+// NewGoActivities constructs GoActivities.
+// Pass nil pool to run in file-only mode. Pass nil cache to disable caching.
 func NewGoActivities(pool *pgxpool.Pool, outputDir string, c *cache.Cache) *GoActivities {
 	return &GoActivities{pool: pool, outputDir: outputDir, cache: c}
 }
 
-// WriteRawInputs writes records to the DB when a pool is configured,
-// otherwise dumps them as a JSON file in the output directory.
+// ── List-sync activities ──────────────────────────────────────────────────────
+
+// WriteRawInputs writes records to the DB (or a JSON file in file-only mode).
 func (a *GoActivities) WriteRawInputs(ctx context.Context, params contracts.WriteRawInputsParams) (int, error) {
 	if !supportedSources[params.Source] {
 		return 0, fmt.Errorf("unsupported source: %s", params.Source)
@@ -91,113 +91,17 @@ func (a *GoActivities) writeToFile(params contracts.WriteRawInputsParams) (int, 
 	if err != nil {
 		return 0, fmt.Errorf("marshal batch: %w", err)
 	}
-
 	if err := os.MkdirAll(a.outputDir, 0o755); err != nil {
 		return 0, fmt.Errorf("create output dir: %w", err)
 	}
-
 	path := filepath.Join(a.outputDir, params.RunID+"_batch_"+uuid.New().String()+".json")
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		return 0, fmt.Errorf("write batch file %s: %w", path, err)
 	}
-
 	return len(params.Records), nil
 }
 
-// FilterForEnrichment returns the subset of native IDs that do not yet have
-// a cached detail profile. Returns all IDs when the cache is unavailable.
-func (a *GoActivities) FilterForEnrichment(_ context.Context, params contracts.FilterForEnrichmentParams) (contracts.FilterForEnrichmentResult, error) {
-	if a.cache == nil {
-		return contracts.FilterForEnrichmentResult{NeedEnrichment: params.NativeIDs}, nil
-	}
-	unfetched, err := a.cache.FilterUnfetched(params.Source, params.NativeIDs, 0)
-	if err != nil {
-		return contracts.FilterForEnrichmentResult{}, fmt.Errorf("filter unfetched: %w", err)
-	}
-	return contracts.FilterForEnrichmentResult{NeedEnrichment: unfetched}, nil
-}
-
-// MarkEnriched records in the local cache that detail profiles have been
-// fetched for the given native IDs. Call this after a successful detail fetch.
-func (a *GoActivities) MarkEnriched(_ context.Context, params contracts.MarkEnrichedParams) error {
-	if a.cache == nil {
-		return nil
-	}
-	if err := a.cache.MarkFetched(params.Source, params.NativeIDs); err != nil {
-		return fmt.Errorf("mark fetched: %w", err)
-	}
-	return nil
-}
-
-// WriteCompanyDetails persists enriched company detail records. When a DB pool
-// is configured it upserts into company_addresses; otherwise it writes a JSON
-// file to the output directory for inspection.
-func (a *GoActivities) WriteCompanyDetails(ctx context.Context, params contracts.WriteCompanyDetailsParams) error {
-	if len(params.Details) == 0 {
-		return nil
-	}
-	if a.pool != nil {
-		return a.writeCompanyDetailsToDB(ctx, params)
-	}
-	return a.writeCompanyDetailsToFile(params)
-}
-
-func (a *GoActivities) writeCompanyDetailsToDB(ctx context.Context, params contracts.WriteCompanyDetailsParams) error {
-	for _, d := range params.Details {
-		if d.NativeID == "" {
-			continue
-		}
-		_, err := a.pool.Exec(ctx, `
-			INSERT INTO company_addresses
-				(native_id, source, address_line_1, address_line_2, locality, postal_code, country, region)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-			ON CONFLICT (native_id, source) DO UPDATE
-				SET address_line_1 = EXCLUDED.address_line_1,
-				    address_line_2 = EXCLUDED.address_line_2,
-				    locality       = EXCLUDED.locality,
-				    postal_code    = EXCLUDED.postal_code,
-				    country        = EXCLUDED.country,
-				    region         = EXCLUDED.region,
-				    last_seen_at   = now()
-		`, d.NativeID, params.Source, d.AddressLine1, d.AddressLine2, d.Locality, d.PostalCode, d.Country, d.Region)
-		if err != nil {
-			return fmt.Errorf("upsert company_addresses %s: %w", d.NativeID, err)
-		}
-	}
-	return nil
-}
-
-func (a *GoActivities) writeCompanyDetailsToFile(params contracts.WriteCompanyDetailsParams) error {
-	type detailFile struct {
-		Source      string                        `json:"source"`
-		WrittenAt   string                        `json:"written_at"`
-		RecordCount int                           `json:"record_count"`
-		Details     []contracts.CompanyDetailResult `json:"details"`
-	}
-
-	out := detailFile{
-		Source:      params.Source,
-		WrittenAt:   time.Now().UTC().Format(time.RFC3339),
-		RecordCount: len(params.Details),
-		Details:     params.Details,
-	}
-
-	b, err := json.MarshalIndent(out, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal details: %w", err)
-	}
-	if err := os.MkdirAll(a.outputDir, 0o755); err != nil {
-		return fmt.Errorf("create output dir: %w", err)
-	}
-	path := filepath.Join(a.outputDir, "details_"+params.Source+"_"+uuid.New().String()+".json")
-	if err := os.WriteFile(path, b, 0o644); err != nil {
-		return fmt.Errorf("write details file %s: %w", path, err)
-	}
-	return nil
-}
-
 // MarkExecutionComplete writes a summary JSON file to the output directory.
-// File name: {run_id}.json
 func (a *GoActivities) MarkExecutionComplete(_ context.Context, params contracts.MarkCompleteParams) error {
 	type resultFile struct {
 		RunID          string   `json:"run_id"`
@@ -225,15 +129,100 @@ func (a *GoActivities) MarkExecutionComplete(_ context.Context, params contracts
 	if err != nil {
 		return fmt.Errorf("marshal result: %w", err)
 	}
-
 	if err := os.MkdirAll(a.outputDir, 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
-
 	path := filepath.Join(a.outputDir, params.RunID+".json")
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		return fmt.Errorf("write result file %s: %w", path, err)
 	}
+	return nil
+}
 
+// ── Domain enrichment activities ──────────────────────────────────────────────
+
+// FilterForDomainDiscovery returns the subset of native IDs that have not yet
+// had a domain search run for them. If force is true, all IDs are returned.
+// When the cache is unavailable, all IDs are returned.
+func (a *GoActivities) FilterForDomainDiscovery(_ context.Context, params contracts.FilterForDomainDiscoveryParams) (contracts.FilterForDomainDiscoveryResult, error) {
+	if a.cache == nil {
+		return contracts.FilterForDomainDiscoveryResult{NeedDiscovery: params.NativeIDs}, nil
+	}
+	need, err := a.cache.FilterNeedsDiscovery(params.Source, params.NativeIDs, params.Force)
+	if err != nil {
+		return contracts.FilterForDomainDiscoveryResult{}, fmt.Errorf("filter domain cache: %w", err)
+	}
+	return contracts.FilterForDomainDiscoveryResult{NeedDiscovery: need}, nil
+}
+
+// WriteDiscoveredDomains persists domain discovery results to the DB (or a
+// JSON file in file-only mode).
+func (a *GoActivities) WriteDiscoveredDomains(ctx context.Context, params contracts.WriteDiscoveredDomainsParams) error {
+	if len(params.Discoveries) == 0 {
+		return nil
+	}
+	if a.pool != nil {
+		return a.writeDiscoveriesToDB(ctx, params)
+	}
+	return a.writeDiscoveriesToFile(params)
+}
+
+func (a *GoActivities) writeDiscoveriesToDB(ctx context.Context, params contracts.WriteDiscoveredDomainsParams) error {
+	for _, d := range params.Discoveries {
+		if d.NativeID == "" || d.Domain == "" {
+			continue
+		}
+		_, err := a.pool.Exec(ctx, `
+			INSERT INTO company_domains (native_id, source, domain, signal, confidence)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (native_id, source, domain) DO UPDATE
+				SET signal     = EXCLUDED.signal,
+				    confidence = EXCLUDED.confidence,
+				    last_seen_at = now()
+		`, d.NativeID, params.Source, d.Domain, d.Signal, d.Confidence)
+		if err != nil {
+			return fmt.Errorf("upsert company_domain %s/%s: %w", d.NativeID, d.Domain, err)
+		}
+	}
+	return nil
+}
+
+func (a *GoActivities) writeDiscoveriesToFile(params contracts.WriteDiscoveredDomainsParams) error {
+	type domainsFile struct {
+		Source      string                     `json:"source"`
+		WrittenAt   string                     `json:"written_at"`
+		Count       int                        `json:"count"`
+		Discoveries []contracts.DomainDiscovery `json:"discoveries"`
+	}
+
+	out := domainsFile{
+		Source:      params.Source,
+		WrittenAt:   time.Now().UTC().Format(time.RFC3339),
+		Count:       len(params.Discoveries),
+		Discoveries: params.Discoveries,
+	}
+	b, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal domains: %w", err)
+	}
+	if err := os.MkdirAll(a.outputDir, 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+	path := filepath.Join(a.outputDir, "domains_"+params.Source+"_"+uuid.New().String()+".json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		return fmt.Errorf("write domains file %s: %w", path, err)
+	}
+	return nil
+}
+
+// MarkDomainsSearched marks all IDs in the batch as searched in the domain
+// cache, preventing repeat discovery on future workflow runs.
+func (a *GoActivities) MarkDomainsSearched(_ context.Context, params contracts.MarkDomainsSearchedParams) error {
+	if a.cache == nil {
+		return nil
+	}
+	if err := a.cache.MarkDomainsSearched(params.Source, params.NativeIDs); err != nil {
+		return fmt.Errorf("mark domains searched: %w", err)
+	}
 	return nil
 }

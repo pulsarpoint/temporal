@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
@@ -11,14 +12,13 @@ import (
 	"github.com/pulsarpoint/data-pipelines/contracts"
 )
 
-// PullBrreg paginates the Brønnøysund Register Centre (Brreg) list endpoint,
-// writes raw records, and tracks which companies still need detail enrichment.
+// PullBrreg paginates the Brønnøysund Register Centre (Brreg) list endpoint
+// and writes raw records. After all pages are fetched it fires off an
+// EnrichCompanyDomains child workflow (abandon policy — runs independently).
 // Country is always NO — the Brreg register covers Norway only.
 //
 // Python activity: fetch_brreg_list  (task queue: corpscout-pipelines-python)
-// Go activities:   WriteRawInputs, FilterForEnrichment, MarkExecutionComplete
-//
-// TODO Phase 2: call fetch_brreg_detail for filterResult.NeedEnrichment
+// Go activities:   WriteRawInputs, MarkExecutionComplete
 func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.PullCompaniesResult, error) {
 	var runIDStr string
 	if err := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
@@ -53,6 +53,8 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 	cursor := ""
 	page := 1
 
+	var allCompanies []contracts.CompanyLookup
+
 	for {
 		var fetchResult contracts.FetchResult
 		if err := workflow.ExecuteActivity(listCtx, "fetch_brreg_list", contracts.FetchPageInput{
@@ -83,21 +85,14 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 		total.RecordsWritten += written
 		total.PagesFetched++
 
-		nativeIDs := make([]string, 0, len(fetchResult.Records))
 		for _, r := range fetchResult.Records {
 			if r.NativeID != "" {
-				nativeIDs = append(nativeIDs, r.NativeID)
+				allCompanies = append(allCompanies, contracts.CompanyLookup{
+					NativeID: r.NativeID,
+					Name:     r.Name,
+				})
 			}
 		}
-		var filterResult contracts.FilterForEnrichmentResult
-		if err := workflow.ExecuteActivity(goCtx, goAct.FilterForEnrichment, contracts.FilterForEnrichmentParams{
-			Source:    "brreg",
-			NativeIDs: nativeIDs,
-		}).Get(ctx, &filterResult); err != nil {
-			return total, err
-		}
-		logger.Info("enrichment filter", "page", page, "total", len(nativeIDs), "need_enrichment", len(filterResult.NeedEnrichment))
-		// TODO Phase 2: dispatch fetch_brreg_detail for filterResult.NeedEnrichment
 
 		if !fetchResult.HasMore {
 			logger.Info("no more pages", "total_pages", total.PagesFetched)
@@ -115,6 +110,20 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 		Result:         total,
 	}).Get(ctx, nil); err != nil {
 		return total, err
+	}
+
+	if len(allCompanies) > 0 {
+		childCtx := workflow.WithChildOptions(ctx, workflow.ChildWorkflowOptions{
+			TaskQueue:         "corpscout-pipelines",
+			ParentClosePolicy: enumspb.PARENT_CLOSE_POLICY_ABANDON,
+		})
+		workflow.ExecuteChildWorkflow(childCtx, EnrichCompanyDomains, contracts.EnrichCompanyDomainsInput{
+			Source:    "brreg",
+			Country:   "NO",
+			Companies: allCompanies,
+			Force:     false,
+		})
+		logger.Info("domain enrichment child workflow started", "companies", len(allCompanies))
 	}
 
 	return total, nil

@@ -2,6 +2,8 @@ package contracts
 
 import "encoding/json"
 
+// ── Pull workflow inputs ──────────────────────────────────────────────────────
+
 // PullCompaniesHouseInput is the input for the PullCompaniesHouse workflow.
 // IDs nil means bulk pull; populated means individual company lookup.
 type PullCompaniesHouseInput struct {
@@ -17,7 +19,7 @@ type PullBrregInput struct {
 	CorpscoutRunID string   `json:"corpscout_run_id,omitempty"`
 }
 
-// PullCompaniesResult is returned by the PullCompanies workflow.
+// PullCompaniesResult is returned by the pull workflows.
 // Actual records are already written to the DB; this is metadata only.
 type PullCompaniesResult struct {
 	RecordsWritten int      `json:"records_written"`
@@ -25,7 +27,9 @@ type PullCompaniesResult struct {
 	Errors         []string `json:"errors,omitempty"`
 }
 
-// FetchPageInput is the input for the FetchPage Python activity.
+// ── List-sync activity types ──────────────────────────────────────────────────
+
+// FetchPageInput is the input for the fetch_*_list Python activities.
 type FetchPageInput struct {
 	Source  string   `json:"source"`
 	Country string   `json:"country"`
@@ -34,18 +38,17 @@ type FetchPageInput struct {
 	Cursor  string   `json:"cursor,omitempty"`
 }
 
-// RawRecord is a single raw company record returned by FetchPage.
-// It carries the fields needed to INSERT into raw_inputs tables.
+// RawRecord is a single raw company record returned by a list activity.
 type RawRecord struct {
 	NativeID    string          `json:"native_id"`
 	Name        string          `json:"name"`
 	Status      string          `json:"status"`
 	CompanyType string          `json:"company_type,omitempty"`
 	RawJSON     json.RawMessage `json:"raw_json"`
-	Hash        string          `json:"hash"` // SHA-256 of RawJSON for dedup
+	Hash        string          `json:"hash"`
 }
 
-// FetchResult is returned by the FetchPage Python activity.
+// FetchResult is returned by the list Python activities.
 type FetchResult struct {
 	Records    []RawRecord `json:"records"`
 	HasMore    bool        `json:"has_more"`
@@ -59,57 +62,80 @@ type WriteRawInputsParams struct {
 	Records []RawRecord `json:"records"`
 }
 
-// FilterForEnrichmentParams is the input for the FilterForEnrichment Go activity.
-type FilterForEnrichmentParams struct {
-	Source    string   `json:"source"`
-	NativeIDs []string `json:"native_ids"`
-}
-
-// FilterForEnrichmentResult lists company IDs that have no cached detail profile yet.
-type FilterForEnrichmentResult struct {
-	NeedEnrichment []string `json:"need_enrichment"`
-}
-
-// MarkEnrichedParams is the input for the MarkEnriched Go activity.
-// Called after company details have been successfully fetched and stored.
-type MarkEnrichedParams struct {
-	Source    string   `json:"source"`
-	NativeIDs []string `json:"native_ids"`
-}
-
-// FetchCompanyDetailInput is the input for the fetch_companies_house_detail Python activity.
-type FetchCompanyDetailInput struct {
-	Source   string `json:"source"`
-	NativeID string `json:"native_id"`
-}
-
-// CompanyDetailResult is returned by the fetch_companies_house_detail Python activity.
-type CompanyDetailResult struct {
-	NativeID       string   `json:"native_id"`
-	Name           string   `json:"name"`
-	Status         string   `json:"status"`
-	Type           string   `json:"type,omitempty"`
-	DateOfCreation string   `json:"date_of_creation,omitempty"`
-	AddressLine1   *string  `json:"address_line_1,omitempty"`
-	AddressLine2   *string  `json:"address_line_2,omitempty"`
-	Locality       *string  `json:"locality,omitempty"`
-	PostalCode     *string  `json:"postal_code,omitempty"`
-	Country        *string  `json:"country,omitempty"`
-	Region         *string  `json:"region,omitempty"`
-	SICCodes       []string `json:"sic_codes,omitempty"`
-}
-
-// WriteCompanyDetailsParams is the input for the WriteCompanyDetails Go activity.
-type WriteCompanyDetailsParams struct {
-	Source  string                `json:"source"`
-	Details []CompanyDetailResult `json:"details"`
-}
-
 // MarkCompleteParams is the input for the MarkExecutionComplete Go activity.
 type MarkCompleteParams struct {
-	RunID          string              `json:"run_id"`                     // stable UUID from workflow SideEffect
-	CorpscoutRunID string              `json:"corpscout_run_id,omitempty"` // original trigger ID, empty when started from Temporal UI
+	RunID          string              `json:"run_id"`
+	CorpscoutRunID string              `json:"corpscout_run_id,omitempty"`
 	Source         string              `json:"source"`
 	Country        string              `json:"country"`
 	Result         PullCompaniesResult `json:"result"`
+}
+
+// ── Domain enrichment workflow ────────────────────────────────────────────────
+
+// CompanyLookup is a minimal company reference passed to child workflows.
+type CompanyLookup struct {
+	NativeID string `json:"native_id"`
+	Name     string `json:"name"`
+}
+
+// EnrichCompanyDomainsInput is the input for the EnrichCompanyDomains workflow.
+type EnrichCompanyDomainsInput struct {
+	Source    string          `json:"source"`
+	Country   string          `json:"country"`
+	Companies []CompanyLookup `json:"companies"`
+	// Force bypasses the domain_cache and re-runs discovery even for
+	// companies already searched.
+	Force bool `json:"force,omitempty"`
+}
+
+// EnrichCompanyDomainsResult is returned by the EnrichCompanyDomains workflow.
+type EnrichCompanyDomainsResult struct {
+	CompaniesProcessed int `json:"companies_processed"`
+	DomainsFound       int `json:"domains_found"`
+}
+
+// FilterForDomainDiscoveryParams is the input for FilterForDomainDiscovery.
+type FilterForDomainDiscoveryParams struct {
+	Source    string   `json:"source"`
+	NativeIDs []string `json:"native_ids"`
+	Force     bool     `json:"force"`
+}
+
+// FilterForDomainDiscoveryResult lists company IDs that still need domain search.
+type FilterForDomainDiscoveryResult struct {
+	NeedDiscovery []string `json:"need_discovery"`
+}
+
+// DiscoverDomainsInput is the input for the discover_company_domains Python activity.
+type DiscoverDomainsInput struct {
+	Source    string          `json:"source"`
+	Country   string          `json:"country"`
+	Companies []CompanyLookup `json:"companies"`
+}
+
+// DomainDiscovery is a single domain candidate discovered for a company.
+type DomainDiscovery struct {
+	NativeID   string `json:"native_id"`
+	Domain     string `json:"domain"`
+	Signal     string `json:"signal"`     // "wikidata", "duckduckgo", "certsh", "heuristic"
+	Confidence int    `json:"confidence"` // 0-100
+}
+
+// DiscoverDomainsResult is returned by the discover_company_domains Python activity.
+type DiscoverDomainsResult struct {
+	Discoveries []DomainDiscovery `json:"discoveries"`
+}
+
+// WriteDiscoveredDomainsParams is the input for the WriteDiscoveredDomains Go activity.
+type WriteDiscoveredDomainsParams struct {
+	Source      string            `json:"source"`
+	Discoveries []DomainDiscovery `json:"discoveries"`
+}
+
+// MarkDomainsSearchedParams is the input for the MarkDomainsSearched Go activity.
+// AllSearched includes every native_id in the batch, even those with no domain found.
+type MarkDomainsSearchedParams struct {
+	Source    string   `json:"source"`
+	NativeIDs []string `json:"native_ids"`
 }

@@ -9,7 +9,7 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 
 from activities.fetch_companies_house_list import fetch_companies_house_list
-from activities.fetch_companies_house_detail import fetch_companies_house_detail
+from activities.discover_company_domains import discover_company_domains
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -23,7 +23,7 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue="corpscout-pipelines-python",
-        activities=[fetch_companies_house_list, fetch_companies_house_detail],
+        activities=[fetch_companies_house_list, discover_company_domains],
     )
 
     logging.info("Python activity worker started on queue: corpscout-pipelines-python")

@@ -60,27 +60,15 @@ func TestWriteRawInputs_UnsupportedSource(t *testing.T) {
 	require.ErrorContains(t, err, "unsupported source")
 }
 
-func TestWriteCompanyDetails_FileMode(t *testing.T) {
+func TestWriteDiscoveredDomains_FileMode(t *testing.T) {
 	dir := t.TempDir()
 	acts := activities.NewGoActivities(nil, dir, nil)
 
-	addr1 := "10 Downing Street"
-	locality := "London"
-	postal := "SW1A 2AA"
-	country := "England"
-
-	err := acts.WriteCompanyDetails(context.Background(), contracts.WriteCompanyDetailsParams{
+	err := acts.WriteDiscoveredDomains(context.Background(), contracts.WriteDiscoveredDomainsParams{
 		Source: "companies_house",
-		Details: []contracts.CompanyDetailResult{
-			{
-				NativeID:     "12345678",
-				Name:         "ACME LTD",
-				Status:       "active",
-				AddressLine1: &addr1,
-				Locality:     &locality,
-				PostalCode:   &postal,
-				Country:      &country,
-			},
+		Discoveries: []contracts.DomainDiscovery{
+			{NativeID: "12345678", Domain: "acme.co.uk", Signal: "heuristic", Confidence: 40},
+			{NativeID: "87654321", Domain: "globex.com", Signal: "duckduckgo", Confidence: 70},
 		},
 	})
 	require.NoError(t, err)
@@ -88,7 +76,7 @@ func TestWriteCompanyDetails_FileMode(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	require.Len(t, entries, 1)
-	require.True(t, strings.HasPrefix(entries[0].Name(), "details_companies_house_"))
+	require.True(t, strings.HasPrefix(entries[0].Name(), "domains_companies_house_"))
 
 	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
 	require.NoError(t, err)
@@ -96,7 +84,22 @@ func TestWriteCompanyDetails_FileMode(t *testing.T) {
 	var result map[string]any
 	require.NoError(t, json.Unmarshal(data, &result))
 	require.Equal(t, "companies_house", result["source"])
-	require.InDelta(t, 1, result["record_count"], 0)
+	require.InDelta(t, 2, result["count"], 0)
+}
+
+func TestWriteDiscoveredDomains_Empty(t *testing.T) {
+	dir := t.TempDir()
+	acts := activities.NewGoActivities(nil, dir, nil)
+
+	err := acts.WriteDiscoveredDomains(context.Background(), contracts.WriteDiscoveredDomainsParams{
+		Source:      "companies_house",
+		Discoveries: nil,
+	})
+	require.NoError(t, err)
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	require.Empty(t, entries)
 }
 
 func TestMarkExecutionComplete(t *testing.T) {

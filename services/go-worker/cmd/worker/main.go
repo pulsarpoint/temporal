@@ -20,7 +20,7 @@ import (
 func main() {
 	temporalHost := getEnv("TEMPORAL_HOST", "localhost:7233")
 	outputDir := getEnv("OUTPUT_DIR", "/var/lib/data-pipelines/results")
-	corpscoutDB := os.Getenv("CORPSCOUT_DB_URL") // optional — omit to run in file-only mode
+	corpscoutDB := os.Getenv("CORPSCOUT_DB_URL")
 
 	ctx := context.Background()
 
@@ -42,13 +42,13 @@ func main() {
 		slog.Info("file-only mode: writing records to output directory", "output_dir", outputDir)
 	}
 
-	enrichCache, err := cache.New(filepath.Join(outputDir, "cache.db"))
+	workerCache, err := cache.New(filepath.Join(outputDir, "cache.db"))
 	if err != nil {
-		slog.Error("open enrichment cache", "error", err)
+		slog.Error("open worker cache", "error", err)
 		os.Exit(1)
 	}
-	defer enrichCache.Close()
-	slog.Info("enrichment cache opened", "path", filepath.Join(outputDir, "cache.db"))
+	defer workerCache.Close()
+	slog.Info("worker cache opened", "path", filepath.Join(outputDir, "cache.db"))
 
 	c, err := client.Dial(client.Options{
 		HostPort:  temporalHost,
@@ -60,19 +60,25 @@ func main() {
 	}
 	defer c.Close()
 
-	goActs := activities.NewGoActivities(pool, outputDir, enrichCache)
+	goActs := activities.NewGoActivities(pool, outputDir, workerCache)
 
 	w := worker.New(c, "corpscout-pipelines", worker.Options{})
 
-	// Register one workflow per source.
+	// Source-specific list-sync workflows.
 	w.RegisterWorkflow(workflows.PullCompaniesHouse)
 	w.RegisterWorkflow(workflows.PullBrreg)
 
-	// Shared Go activities used by all source workflows.
+	// Domain enrichment workflow (child of pull workflows).
+	w.RegisterWorkflow(workflows.EnrichCompanyDomains)
+
+	// List-sync activities.
 	w.RegisterActivity(goActs.WriteRawInputs)
-	w.RegisterActivity(goActs.FilterForEnrichment)
-	w.RegisterActivity(goActs.MarkEnriched)
 	w.RegisterActivity(goActs.MarkExecutionComplete)
+
+	// Domain enrichment activities.
+	w.RegisterActivity(goActs.FilterForDomainDiscovery)
+	w.RegisterActivity(goActs.WriteDiscoveredDomains)
+	w.RegisterActivity(goActs.MarkDomainsSearched)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

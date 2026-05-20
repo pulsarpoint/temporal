@@ -28,14 +28,11 @@ func (s *PullCompaniesHouseSuite) SetupTest() {
 		},
 		activity.RegisterOptions{Name: "fetch_companies_house_list"},
 	)
-	s.env.RegisterActivityWithOptions(
-		func(ctx context.Context, input contracts.FetchCompanyDetailInput) (contracts.CompanyDetailResult, error) {
-			return contracts.CompanyDetailResult{}, nil
-		},
-		activity.RegisterOptions{Name: "fetch_companies_house_detail"},
-	)
 	var goAct *activities.GoActivities
 	s.env.RegisterActivity(goAct)
+
+	// Register EnrichCompanyDomains as a child workflow stub.
+	s.env.RegisterWorkflow(workflows.EnrichCompanyDomains)
 }
 
 func (s *PullCompaniesHouseSuite) AfterTest(_, _ string) {
@@ -64,27 +61,13 @@ func (s *PullCompaniesHouseSuite) Test_SinglePage_WritesRecords() {
 		return p.Source == "companies_house" && len(p.Records) == 2
 	})).Return(2, nil)
 
-	s.env.OnActivity(goAct.FilterForEnrichment, mock.Anything, mock.Anything).
-		Return(contracts.FilterForEnrichmentResult{NeedEnrichment: []string{"12345678", "87654321"}}, nil)
-
-	s.env.OnActivity("fetch_companies_house_detail", mock.Anything, contracts.FetchCompanyDetailInput{
-		Source: "companies_house", NativeID: "12345678",
-	}).Return(contracts.CompanyDetailResult{NativeID: "12345678", Name: "ACME LTD", Status: "active"}, nil)
-	s.env.OnActivity("fetch_companies_house_detail", mock.Anything, contracts.FetchCompanyDetailInput{
-		Source: "companies_house", NativeID: "87654321",
-	}).Return(contracts.CompanyDetailResult{NativeID: "87654321", Name: "GLOBEX LTD", Status: "active"}, nil)
-
-	s.env.OnActivity(goAct.WriteCompanyDetails, mock.Anything, mock.MatchedBy(func(p contracts.WriteCompanyDetailsParams) bool {
-		return p.Source == "companies_house" && len(p.Details) == 2
-	})).Return(nil)
-
-	s.env.OnActivity(goAct.MarkEnriched, mock.Anything, mock.MatchedBy(func(p contracts.MarkEnrichedParams) bool {
-		return p.Source == "companies_house" && len(p.NativeIDs) == 2
-	})).Return(nil)
-
 	s.env.OnActivity(goAct.MarkExecutionComplete, mock.Anything, mock.MatchedBy(func(p contracts.MarkCompleteParams) bool {
 		return p.CorpscoutRunID == "exec-123" && p.Result.RecordsWritten == 2
 	})).Return(nil)
+
+	// Child workflow runs independently — stub it out.
+	s.env.OnWorkflow(workflows.EnrichCompanyDomains, mock.Anything, mock.Anything).
+		Return(contracts.EnrichCompanyDomainsResult{}, nil)
 
 	s.env.ExecuteWorkflow(workflows.PullCompaniesHouse, contracts.PullCompaniesHouseInput{
 		Country:        "GB",
@@ -121,9 +104,9 @@ func (s *PullCompaniesHouseSuite) Test_MultiPage_FetchesAll() {
 	}).Return(page2, nil)
 
 	s.env.OnActivity(goAct.WriteRawInputs, mock.Anything, mock.Anything).Return(1, nil).Times(2)
-	s.env.OnActivity(goAct.FilterForEnrichment, mock.Anything, mock.Anything).
-		Return(contracts.FilterForEnrichmentResult{NeedEnrichment: []string{}}, nil).Times(2)
 	s.env.OnActivity(goAct.MarkExecutionComplete, mock.Anything, mock.Anything).Return(nil)
+	s.env.OnWorkflow(workflows.EnrichCompanyDomains, mock.Anything, mock.Anything).
+		Return(contracts.EnrichCompanyDomainsResult{}, nil)
 
 	s.env.ExecuteWorkflow(workflows.PullCompaniesHouse, contracts.PullCompaniesHouseInput{
 		Country:        "GB",
