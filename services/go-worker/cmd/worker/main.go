@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,6 +13,7 @@ import (
 	"go.temporal.io/sdk/worker"
 
 	"github.com/pulsarpoint/data-pipelines/activities"
+	"github.com/pulsarpoint/data-pipelines/cache"
 	"github.com/pulsarpoint/data-pipelines/workflows"
 )
 
@@ -40,6 +42,14 @@ func main() {
 		slog.Info("file-only mode: writing records to output directory", "output_dir", outputDir)
 	}
 
+	enrichCache, err := cache.New(filepath.Join(outputDir, "cache.db"))
+	if err != nil {
+		slog.Error("open enrichment cache", "error", err)
+		os.Exit(1)
+	}
+	defer enrichCache.Close()
+	slog.Info("enrichment cache opened", "path", filepath.Join(outputDir, "cache.db"))
+
 	c, err := client.Dial(client.Options{
 		HostPort:  temporalHost,
 		Namespace: "corpscout",
@@ -50,11 +60,18 @@ func main() {
 	}
 	defer c.Close()
 
-	goActs := activities.NewGoActivities(pool, outputDir)
+	goActs := activities.NewGoActivities(pool, outputDir, enrichCache)
 
 	w := worker.New(c, "corpscout-pipelines", worker.Options{})
-	w.RegisterWorkflow(workflows.PullCompanies)
+
+	// Register one workflow per source.
+	w.RegisterWorkflow(workflows.PullCompaniesHouse)
+	w.RegisterWorkflow(workflows.PullBrreg)
+
+	// Shared Go activities used by all source workflows.
 	w.RegisterActivity(goActs.WriteRawInputs)
+	w.RegisterActivity(goActs.FilterForEnrichment)
+	w.RegisterActivity(goActs.MarkEnriched)
 	w.RegisterActivity(goActs.MarkExecutionComplete)
 
 	stop := make(chan os.Signal, 1)

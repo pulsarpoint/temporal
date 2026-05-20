@@ -2,13 +2,19 @@ package contracts
 
 import "encoding/json"
 
-// PullCompaniesInput is the input for the PullCompanies workflow.
-// IDs nil means bulk pull; populated means individual lookup.
-type PullCompaniesInput struct {
-	Source         string   `json:"source"`
+// PullCompaniesHouseInput is the input for the PullCompaniesHouse workflow.
+// IDs nil means bulk pull; populated means individual company lookup.
+type PullCompaniesHouseInput struct {
 	Country        string   `json:"country"`
 	IDs            []string `json:"ids,omitempty"`
-	CorpscoutRunID string   `json:"corpscout_run_id"`
+	CorpscoutRunID string   `json:"corpscout_run_id,omitempty"`
+}
+
+// PullBrregInput is the input for the PullBrreg workflow.
+// Country is always NO — hardcoded in the workflow.
+type PullBrregInput struct {
+	IDs            []string `json:"ids,omitempty"`
+	CorpscoutRunID string   `json:"corpscout_run_id,omitempty"`
 }
 
 // PullCompaniesResult is returned by the PullCompanies workflow.
@@ -51,6 +57,24 @@ type WriteRawInputsParams struct {
 	Source  string      `json:"source"`
 	RunID   string      `json:"run_id"`
 	Records []RawRecord `json:"records"`
+}
+
+// FilterForEnrichmentParams is the input for the FilterForEnrichment Go activity.
+type FilterForEnrichmentParams struct {
+	Source    string   `json:"source"`
+	NativeIDs []string `json:"native_ids"`
+}
+
+// FilterForEnrichmentResult lists company IDs that have no cached detail profile yet.
+type FilterForEnrichmentResult struct {
+	NeedEnrichment []string `json:"need_enrichment"`
+}
+
+// MarkEnrichedParams is the input for the MarkEnriched Go activity.
+// Called after company details have been successfully fetched and stored.
+type MarkEnrichedParams struct {
+	Source    string   `json:"source"`
+	NativeIDs []string `json:"native_ids"`
 }
 
 // MarkCompleteParams is the input for the MarkExecutionComplete Go activity.

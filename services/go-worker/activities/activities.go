@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/pulsarpoint/data-pipelines/cache"
 	"github.com/pulsarpoint/data-pipelines/contracts"
 )
 
@@ -23,12 +24,14 @@ var supportedSources = map[string]bool{
 type GoActivities struct {
 	pool      *pgxpool.Pool // nil = file-only mode
 	outputDir string
+	cache     *cache.Cache // nil = enrichment tracking disabled
 }
 
 // NewGoActivities constructs GoActivities for production.
 // Pass a nil pool to run in file-only mode (no DB required).
-func NewGoActivities(pool *pgxpool.Pool, outputDir string) *GoActivities {
-	return &GoActivities{pool: pool, outputDir: outputDir}
+// Pass a nil cache to disable enrichment tracking.
+func NewGoActivities(pool *pgxpool.Pool, outputDir string, c *cache.Cache) *GoActivities {
+	return &GoActivities{pool: pool, outputDir: outputDir, cache: c}
 }
 
 // WriteRawInputs writes records to the DB when a pool is configured,
@@ -98,6 +101,31 @@ func (a *GoActivities) writeToFile(params contracts.WriteRawInputsParams) (int, 
 	}
 
 	return len(params.Records), nil
+}
+
+// FilterForEnrichment returns the subset of native IDs that do not yet have
+// a cached detail profile. Returns all IDs when the cache is unavailable.
+func (a *GoActivities) FilterForEnrichment(_ context.Context, params contracts.FilterForEnrichmentParams) (contracts.FilterForEnrichmentResult, error) {
+	if a.cache == nil {
+		return contracts.FilterForEnrichmentResult{NeedEnrichment: params.NativeIDs}, nil
+	}
+	unfetched, err := a.cache.FilterUnfetched(params.Source, params.NativeIDs)
+	if err != nil {
+		return contracts.FilterForEnrichmentResult{}, fmt.Errorf("filter unfetched: %w", err)
+	}
+	return contracts.FilterForEnrichmentResult{NeedEnrichment: unfetched}, nil
+}
+
+// MarkEnriched records in the local cache that detail profiles have been
+// fetched for the given native IDs. Call this after a successful detail fetch.
+func (a *GoActivities) MarkEnriched(_ context.Context, params contracts.MarkEnrichedParams) error {
+	if a.cache == nil {
+		return nil
+	}
+	if err := a.cache.MarkFetched(params.Source, params.NativeIDs); err != nil {
+		return fmt.Errorf("mark fetched: %w", err)
+	}
+	return nil
 }
 
 // MarkExecutionComplete writes a summary JSON file to the output directory.

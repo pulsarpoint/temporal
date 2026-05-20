@@ -16,7 +16,7 @@ import (
 
 func TestWriteRawInputs_CompaniesHouse(t *testing.T) {
 	dir := t.TempDir()
-	acts := activities.NewGoActivities(nil, dir)
+	acts := activities.NewGoActivities(nil, dir, nil)
 
 	rec := contracts.RawRecord{
 		NativeID:    "12345678",
@@ -51,7 +51,7 @@ func TestWriteRawInputs_CompaniesHouse(t *testing.T) {
 }
 
 func TestWriteRawInputs_UnsupportedSource(t *testing.T) {
-	acts := activities.NewGoActivities(nil, t.TempDir())
+	acts := activities.NewGoActivities(nil, t.TempDir(), nil)
 	_, err := acts.WriteRawInputs(context.Background(), contracts.WriteRawInputsParams{
 		Source:  "unknown_source",
 		RunID:   "run-001",
@@ -62,7 +62,7 @@ func TestWriteRawInputs_UnsupportedSource(t *testing.T) {
 
 func TestMarkExecutionComplete(t *testing.T) {
 	dir := t.TempDir()
-	acts := activities.NewGoActivities(nil, dir)
+	acts := activities.NewGoActivities(nil, dir, nil)
 
 	runID := "550e8400-e29b-41d4-a716-446655440000"
 	err := acts.MarkExecutionComplete(context.Background(), contracts.MarkCompleteParams{
