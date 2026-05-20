@@ -64,15 +64,31 @@ _LEGAL_RE = re.compile(
     re.IGNORECASE,
 )
 
-_COUNTRY_TLD: dict[str, str] = {
-    "NO": ".no", "DK": ".dk", "SE": ".se", "FI": ".fi",
-    "GB": ".co.uk", "DE": ".de", "FR": ".fr", "NL": ".nl",
-    "IT": ".it", "ES": ".es", "PT": ".pt", "PL": ".pl",
-    "AT": ".at", "CH": ".ch", "BE": ".be", "CZ": ".cz",
-    "HU": ".hu", "RO": ".ro", "SK": ".sk", "BG": ".bg",
-    "HR": ".hr", "SI": ".si", "EE": ".ee", "LV": ".lv",
-    "LT": ".lt", "US": ".com", "CA": ".ca", "AU": ".com.au",
+# Countries where the dominant business TLD differs from the default ".<iso2_lower>"
+# pattern. For every other country, _country_tld() returns ".<code.lower()>".
+_COUNTRY_TLD_EXCEPTIONS: dict[str, str] = {
+    "GB": ".co.uk",    # British businesses use .co.uk, not .gb
+    "US": ".com",      # .us is rarely used; .com is the norm
+    "AU": ".com.au",   # .com.au is the standard business TLD
+    "NZ": ".co.nz",
+    "JP": ".co.jp",
+    "KR": ".co.kr",
+    "BR": ".com.br",
+    "MX": ".com.mx",
+    "AR": ".com.ar",
+    "ZA": ".co.za",
+    "IN": ".co.in",    # .in exists but businesses prefer .co.in
 }
+
+
+def _country_tld(country: str) -> str:
+    """Return the primary business ccTLD for an ISO-3166-1 alpha-2 country code.
+
+    Defaults to ".<code.lower()>" for the ~190 countries whose ccTLD matches
+    their code; only the handful of exceptions need explicit entries.
+    """
+    code = country.upper()
+    return _COUNTRY_TLD_EXCEPTIONS.get(code, f".{code.lower()}")
 
 
 def _safe_domain(url: str) -> str | None:
@@ -111,8 +127,8 @@ def _candidate_domains(name: str, country: str) -> list[str]:
     if len(slug_clean) < 2:
         slug_clean = slug
     tlds = [".com"]
-    country_tld = _COUNTRY_TLD.get(country.upper())
-    if country_tld and country_tld != ".com":
+    country_tld = _country_tld(country)
+    if country_tld != ".com":
         tlds = [country_tld, ".com"]
     seen: set[str] = set()
     candidates: list[str] = []
