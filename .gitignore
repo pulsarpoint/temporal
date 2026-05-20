@@ -1,4 +1,4 @@
-bin/
+services/go-worker/bin/
 __pycache__/
 *.pyc
 *.pyo
