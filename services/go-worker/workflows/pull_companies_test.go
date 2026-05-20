@@ -26,7 +26,7 @@ func (s *PullCompaniesHouseSuite) SetupTest() {
 		func(ctx context.Context, input contracts.FetchPageInput) (contracts.FetchResult, error) {
 			return contracts.FetchResult{}, nil
 		},
-		activity.RegisterOptions{Name: "fetch_page"},
+		activity.RegisterOptions{Name: "fetch_companies_house_list"},
 	)
 	var goAct *activities.GoActivities
 	s.env.RegisterActivity(goAct)
@@ -49,7 +49,7 @@ func (s *PullCompaniesHouseSuite) Test_SinglePage_WritesRecords() {
 		HasMore: false,
 	}
 
-	s.env.OnActivity("fetch_page", mock.Anything, contracts.FetchPageInput{
+	s.env.OnActivity("fetch_companies_house_list", mock.Anything, contracts.FetchPageInput{
 		Source: "companies_house", Country: "GB", Page: 1,
 	}).Return(fetchResult, nil)
 
@@ -92,10 +92,10 @@ func (s *PullCompaniesHouseSuite) Test_MultiPage_FetchesAll() {
 
 	var goAct *activities.GoActivities
 
-	s.env.OnActivity("fetch_page", mock.Anything, contracts.FetchPageInput{
+	s.env.OnActivity("fetch_companies_house_list", mock.Anything, contracts.FetchPageInput{
 		Source: "companies_house", Country: "GB", Page: 1,
 	}).Return(page1, nil)
-	s.env.OnActivity("fetch_page", mock.Anything, contracts.FetchPageInput{
+	s.env.OnActivity("fetch_companies_house_list", mock.Anything, contracts.FetchPageInput{
 		Source: "companies_house", Country: "GB", Page: 2, Cursor: "2024-01-01,1",
 	}).Return(page2, nil)
 

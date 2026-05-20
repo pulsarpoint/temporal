@@ -15,19 +15,13 @@ _CH_ENDPOINT = "https://api.company-information.service.gov.uk/advanced-search/c
 _PAGE_SIZE = 100
 
 
-@activity.defn
-async def fetch_page(input: FetchPageInput) -> FetchResult:
-    if input.source != "companies_house":
-        raise ValueError(f"unsupported source: {input.source}")
-    return await _fetch_companies_house(input)
-
-
-async def _fetch_companies_house(input: FetchPageInput) -> FetchResult:
+@activity.defn(name="fetch_companies_house_list")
+async def fetch_companies_house_list(input: FetchPageInput) -> FetchResult:
     api_key = os.environ.get("COMPANIES_HOUSE_API_KEY", "")
     if not api_key:
         raise RuntimeError("COMPANIES_HOUSE_API_KEY is not set")
 
-    # cursor format: "YYYY-MM-DD,N" where N is 0-indexed page offset
+    # cursor format: "YYYY-MM-DD,N" — incorporated_from date + 0-indexed page offset within bucket
     date_cursor: str | None = None
     page_offset = 0
     if input.cursor and "," in input.cursor:

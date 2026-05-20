@@ -4,7 +4,7 @@ import respx
 import httpx
 
 from contracts import FetchPageInput, FetchResult
-from activities.fetch_page import fetch_page
+from activities.fetch_companies_house_list import fetch_companies_house_list
 
 
 @pytest.fixture(autouse=True)
@@ -14,7 +14,7 @@ def set_api_key(monkeypatch):
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_fetch_page_returns_records():
+async def test_fetch_companies_house_list_returns_records():
     mock_response = {
         "total_results": 1,
         "items": [
@@ -30,7 +30,7 @@ async def test_fetch_page_returns_records():
         return_value=httpx.Response(200, json=mock_response)
     )
 
-    result = await fetch_page(FetchPageInput(source="companies_house", country="GB", page=1))
+    result = await fetch_companies_house_list(FetchPageInput(source="companies_house", country="GB", page=1))
 
     assert isinstance(result, FetchResult)
     assert len(result.records) == 1
@@ -42,7 +42,7 @@ async def test_fetch_page_returns_records():
 
 @respx.mock
 @pytest.mark.asyncio
-async def test_fetch_page_has_more_when_more_results():
+async def test_fetch_companies_house_list_has_more_when_more_results():
     items = [
         {"company_number": f"0000000{i}", "company_name": f"CO {i}", "company_status": "active", "company_type": "ltd"}
         for i in range(100)
@@ -52,12 +52,6 @@ async def test_fetch_page_has_more_when_more_results():
         return_value=httpx.Response(200, json=mock_response)
     )
 
-    result = await fetch_page(FetchPageInput(source="companies_house", country="GB", page=1))
+    result = await fetch_companies_house_list(FetchPageInput(source="companies_house", country="GB", page=1))
     assert result.has_more is True
     assert result.next_cursor == ",1"
-
-
-@pytest.mark.asyncio
-async def test_fetch_page_unsupported_source():
-    with pytest.raises(ValueError, match="unsupported source"):
-        await fetch_page(FetchPageInput(source="unknown", country="GB", page=1))
