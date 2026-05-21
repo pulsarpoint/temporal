@@ -86,3 +86,30 @@ class TranslateTermsResult:
     translations: list[TranslatedTerm] = field(default_factory=list)
     failures: list[TranslationFailure] = field(default_factory=list)
     model: str = ""
+
+
+@dataclass
+class DownloadSourceFilesInput:
+    source: str
+    mode: str
+    output_dir: str
+    datasets: list[str] = field(default_factory=list)
+    snapshot_id: str = ""
+    delta_window: str = ""
+
+
+@dataclass
+class DownloadedSourceFile:
+    source: str
+    dataset: str
+    file_path: str
+    snapshot_id: str
+    sha256: str
+    format: str
+
+
+@dataclass
+class DownloadSourceFilesResult:
+    source: str
+    snapshot_id: str
+    files: list[DownloadedSourceFile] = field(default_factory=list)
