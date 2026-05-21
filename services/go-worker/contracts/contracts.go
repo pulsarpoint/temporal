@@ -50,6 +50,32 @@ type ImportBrregBulkParams struct {
 	Force          bool   `json:"force,omitempty"`
 }
 
+type DownloadedSourceFile struct {
+	Source     string `json:"source"`
+	Dataset    string `json:"dataset"`
+	FilePath   string `json:"file_path"`
+	SnapshotID string `json:"snapshot_id"`
+	SHA256     string `json:"sha256"`
+	Format     string `json:"format"`
+}
+
+type DownloadSourceFilesResult struct {
+	Source     string                 `json:"source"`
+	SnapshotID string                 `json:"snapshot_id"`
+	Files      []DownloadedSourceFile `json:"files"`
+}
+
+type ImportSourceBulkParams struct {
+	Files          []DownloadedSourceFile `json:"files"`
+	RunID          string                 `json:"run_id"`
+	CorpscoutRunID string                 `json:"corpscout_run_id"`
+	Force          bool                   `json:"force,omitempty"`
+}
+
+type ImportGLEIFGoldenCopyParams = ImportSourceBulkParams
+type ImportAriregisterBulkParams = ImportSourceBulkParams
+type ImportCVRBulkParams = ImportSourceBulkParams
+
 // PullCompaniesResult is returned by the pull workflows.
 // Actual records are already written to the DB; this is metadata only.
 type PullCompaniesResult struct {

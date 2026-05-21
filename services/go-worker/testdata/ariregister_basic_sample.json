@@ -1,0 +1,12 @@
+[
+  {
+    "registry_code": "10000001",
+    "legal_name": "Example Estonia OÜ",
+    "registration_status": "registered",
+    "legal_form": "Private limited company",
+    "vat_number": "EE100000001",
+    "website": "https://example.ee",
+    "email": "info@example.ee",
+    "phone": "+3725550100"
+  }
+]

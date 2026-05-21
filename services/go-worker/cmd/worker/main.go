@@ -58,6 +58,9 @@ func main() {
 
 	w.RegisterActivity(goActs.WriteRawInputs)
 	w.RegisterActivity(goActs.ImportBrregBulk)
+	w.RegisterActivity(goActs.ImportGLEIFGoldenCopy)
+	w.RegisterActivity(goActs.ImportAriregisterBulk)
+	w.RegisterActivity(goActs.ImportCVRBulk)
 	w.RegisterActivity(goActs.MarkExecutionComplete)
 	w.RegisterActivity(goActs.SaveSyncCheckpoint)
 	w.RegisterActivity(goActs.FilterForDomainDiscovery)

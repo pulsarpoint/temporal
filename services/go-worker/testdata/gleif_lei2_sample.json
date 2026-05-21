@@ -1,0 +1,38 @@
+{
+  "data": [
+    {
+      "type": "lei-records",
+      "id": "5493001KJTIIGC8Y1R12",
+      "attributes": {
+        "lei": "5493001KJTIIGC8Y1R12",
+        "entity": {
+          "legalName": {
+            "name": "ACME GLOBAL LTD"
+          },
+          "status": "ACTIVE",
+          "headquartersAddress": {
+            "country": "GB"
+          }
+        }
+      }
+    },
+    {
+      "type": "lei-records",
+      "id": "",
+      "attributes": {
+        "entity": {
+          "legalName": {
+            "name": "MISSING LEI LTD"
+          },
+          "status": "ACTIVE"
+        }
+      }
+    },
+    {
+      "lei": "213800D1EI4B9WTWWD28",
+      "legalName": "NORDIC EXAMPLE AS",
+      "entityStatus": "ACTIVE",
+      "headquartersCountry": "DK"
+    }
+  ]
+}
