@@ -53,3 +53,36 @@ class DomainDiscovery:
 @dataclass
 class DiscoverDomainsResult:
     discoveries: list[DomainDiscovery] = field(default_factory=list)
+
+
+@dataclass
+class TranslationItem:
+    id: str
+    text: str
+
+
+@dataclass
+class TranslateTermsInput:
+    category: str
+    items: list[TranslationItem]
+    model: str = ""
+    prompt_version: str = "v1"
+
+
+@dataclass
+class TranslatedTerm:
+    id: str
+    translation: str
+
+
+@dataclass
+class TranslationFailure:
+    id: str
+    error: str
+
+
+@dataclass
+class TranslateTermsResult:
+    translations: list[TranslatedTerm] = field(default_factory=list)
+    failures: list[TranslationFailure] = field(default_factory=list)
+    model: str = ""

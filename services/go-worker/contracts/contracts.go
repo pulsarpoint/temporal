@@ -190,14 +190,87 @@ type TranslateBrregInput struct {
 	FXRateDate    string   `json:"fx_rate_date,omitempty"`
 }
 
-// TranslateBrregBatchParams is the input for the batch translation activity.
-type TranslateBrregBatchParams struct {
+// PrepareBrregTranslationBatchParams is the input for the Go activity that claims
+// raw Brreg rows, loads FX data, and finds translation cache misses.
+type PrepareBrregTranslationBatchParams struct {
 	IDs           []string `json:"ids,omitempty"`
 	PromptVersion string   `json:"prompt_version"`
 	Model         string   `json:"model"`
 	FXRateDate    string   `json:"fx_rate_date,omitempty"`
 	WorkflowRunID string   `json:"workflow_run_id"`
 	BatchSize     int      `json:"batch_size"`
+}
+
+// TranslateBrregBatchParams is retained for older workers and tests. New
+// workflows use PrepareBrregTranslationBatchParams plus the Python DSPy activity.
+type TranslateBrregBatchParams = PrepareBrregTranslationBatchParams
+
+type BrregTranslationRowPayload struct {
+	ID         string          `json:"id"`
+	RawPayload json.RawMessage `json:"raw_payload"`
+}
+
+type FXRatePayload struct {
+	Source   string             `json:"source,omitempty"`
+	RateDate string             `json:"rate_date,omitempty"`
+	EURPer   map[string]float64 `json:"eur_per,omitempty"`
+}
+
+type TranslationItem struct {
+	ID   string `json:"id"`
+	Text string `json:"text"`
+}
+
+type TranslatedTerm struct {
+	ID          string `json:"id"`
+	Translation string `json:"translation"`
+}
+
+type TranslationFailure struct {
+	ID    string `json:"id"`
+	Error string `json:"error"`
+}
+
+type TranslateTermsInput struct {
+	Category      string            `json:"category"`
+	Items         []TranslationItem `json:"items"`
+	Model         string            `json:"model,omitempty"`
+	PromptVersion string            `json:"prompt_version"`
+}
+
+type TranslateTermsResult struct {
+	Translations []TranslatedTerm     `json:"translations"`
+	Failures     []TranslationFailure `json:"failures"`
+	Model        string               `json:"model"`
+}
+
+type BrregTranslatedTerm struct {
+	ID          string `json:"id"`
+	Category    string `json:"category"`
+	Text        string `json:"text"`
+	Translation string `json:"translation"`
+}
+
+// PrepareBrregTranslationBatchResult carries claimed row payloads and cache
+// misses to the workflow. The workflow sends MissesByCategory to Python DSPy.
+type PrepareBrregTranslationBatchResult struct {
+	Claimed            int                          `json:"claimed"`
+	Rows               []BrregTranslationRowPayload `json:"rows"`
+	FX                 FXRatePayload                `json:"fx"`
+	CachedTranslations map[string]string            `json:"cached_translations"`
+	MissesByCategory   map[string][]TranslationItem `json:"misses_by_category"`
+}
+
+// WriteBrregTranslationBatchParams is the input for the Go activity that builds
+// raw_payload_en, upserts translation cache rows, and updates raw input status.
+type WriteBrregTranslationBatchParams struct {
+	PromptVersion      string                       `json:"prompt_version"`
+	Model              string                       `json:"model"`
+	Rows               []BrregTranslationRowPayload `json:"rows"`
+	FX                 FXRatePayload                `json:"fx"`
+	CachedTranslations map[string]string            `json:"cached_translations"`
+	NewTranslations    []BrregTranslatedTerm        `json:"new_translations"`
+	Failures           []TranslationFailure         `json:"failures"`
 }
 
 // TranslateBrregBatchResult reports batch progress to the workflow loop.

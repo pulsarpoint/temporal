@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"sort"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -12,10 +13,27 @@ import (
 
 const translateBrregBatchSize = 50
 const translateBrregContinueAfterBatches = 50
+const defaultBrregTranslationModel = "qwen3:6b"
 
 func TranslateBrregRawInputs(ctx workflow.Context, input contracts.TranslateBrregInput) (contracts.TranslateBrregBatchResult, error) {
+	if input.PromptVersion == "" {
+		input.PromptVersion = "v1"
+	}
+	if input.Model == "" {
+		input.Model = defaultBrregTranslationModel
+	}
 	goCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		TaskQueue:           "corpscout-pipelines",
+		StartToCloseTimeout: 5 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			MaximumAttempts:    3,
+			InitialInterval:    5 * time.Second,
+			MaximumInterval:    time.Minute,
+			BackoffCoefficient: 2,
+		},
+	})
+	pythonCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:           "corpscout-pipelines-python",
 		StartToCloseTimeout: 5 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts:    3,
@@ -31,17 +49,37 @@ func TranslateBrregRawInputs(ctx workflow.Context, input contracts.TranslateBrre
 	var goAct *activities.GoActivities
 
 	for {
-		var result contracts.TranslateBrregBatchResult
-		err := workflow.ExecuteActivity(goCtx, goAct.TranslateBrregBatch, contracts.TranslateBrregBatchParams{
+		var prepared contracts.PrepareBrregTranslationBatchResult
+		err := workflow.ExecuteActivity(goCtx, goAct.PrepareBrregTranslationBatch, contracts.PrepareBrregTranslationBatchParams{
 			IDs:           input.IDs,
 			PromptVersion: input.PromptVersion,
 			Model:         input.Model,
 			FXRateDate:    input.FXRateDate,
 			WorkflowRunID: workflowRunID,
 			BatchSize:     translateBrregBatchSize,
-		}).Get(ctx, &result)
+		}).Get(ctx, &prepared)
 		if err != nil {
 			return total, err
+		}
+
+		result := contracts.TranslateBrregBatchResult{Claimed: prepared.Claimed}
+		if prepared.Claimed > 0 {
+			newTranslations, err := translateBrregCacheMisses(ctx, pythonCtx, input, prepared.MissesByCategory)
+			if err != nil {
+				return total, err
+			}
+
+			err = workflow.ExecuteActivity(goCtx, goAct.WriteBrregTranslationBatch, contracts.WriteBrregTranslationBatchParams{
+				PromptVersion:      input.PromptVersion,
+				Model:              input.Model,
+				Rows:               prepared.Rows,
+				FX:                 prepared.FX,
+				CachedTranslations: prepared.CachedTranslations,
+				NewTranslations:    newTranslations,
+			}).Get(ctx, &result)
+			if err != nil {
+				return total, err
+			}
 		}
 
 		total.Claimed += result.Claimed
@@ -61,4 +99,52 @@ func TranslateBrregRawInputs(ctx workflow.Context, input contracts.TranslateBrre
 		}
 	}
 	return total, nil
+}
+
+func translateBrregCacheMisses(
+	ctx workflow.Context,
+	pythonCtx workflow.Context,
+	input contracts.TranslateBrregInput,
+	missesByCategory map[string][]contracts.TranslationItem,
+) ([]contracts.BrregTranslatedTerm, error) {
+	categories := make([]string, 0, len(missesByCategory))
+	for category := range missesByCategory {
+		categories = append(categories, category)
+	}
+	sort.Strings(categories)
+
+	newTranslations := []contracts.BrregTranslatedTerm{}
+	for _, category := range categories {
+		items := missesByCategory[category]
+		if len(items) == 0 {
+			continue
+		}
+		var translated contracts.TranslateTermsResult
+		err := workflow.ExecuteActivity(pythonCtx, "TranslateTermsWithDSPy", contracts.TranslateTermsInput{
+			Category:      category,
+			Items:         items,
+			Model:         input.Model,
+			PromptVersion: input.PromptVersion,
+		}).Get(ctx, &translated)
+		if err != nil {
+			return nil, err
+		}
+		itemByID := map[string]contracts.TranslationItem{}
+		for _, item := range items {
+			itemByID[item.ID] = item
+		}
+		for _, term := range translated.Translations {
+			item, ok := itemByID[term.ID]
+			if !ok || term.Translation == "" {
+				continue
+			}
+			newTranslations = append(newTranslations, contracts.BrregTranslatedTerm{
+				ID:          term.ID,
+				Category:    category,
+				Text:        item.Text,
+				Translation: term.Translation,
+			})
+		}
+	}
+	return newTranslations, nil
 }

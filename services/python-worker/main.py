@@ -12,6 +12,7 @@ from activities.download_brreg_bulk import download_brreg_bulk
 from activities.fetch_brreg_list import fetch_brreg_list
 from activities.fetch_companies_house_list import fetch_companies_house_list
 from activities.discover_company_domains import discover_company_domains
+from activities.llm_translation import translate_terms_with_dspy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -25,7 +26,13 @@ async def main() -> None:
     worker = Worker(
         client,
         task_queue="corpscout-pipelines-python",
-        activities=[download_brreg_bulk, fetch_brreg_list, fetch_companies_house_list, discover_company_domains],
+        activities=[
+            download_brreg_bulk,
+            fetch_brreg_list,
+            fetch_companies_house_list,
+            discover_company_domains,
+            translate_terms_with_dspy,
+        ],
     )
 
     logging.info("Python activity worker started on queue: corpscout-pipelines-python")

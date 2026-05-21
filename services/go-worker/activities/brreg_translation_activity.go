@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -22,6 +23,10 @@ type brregTranslationRow struct {
 }
 
 func (a *GoActivities) TranslateBrregBatch(ctx context.Context, params contracts.TranslateBrregBatchParams) (contracts.TranslateBrregBatchResult, error) {
+	return contracts.TranslateBrregBatchResult{}, fmt.Errorf("TranslateBrregBatch has been replaced by PrepareBrregTranslationBatch, TranslateTermsWithDSPy, and WriteBrregTranslationBatch")
+}
+
+func (a *GoActivities) PrepareBrregTranslationBatch(ctx context.Context, params contracts.PrepareBrregTranslationBatchParams) (contracts.PrepareBrregTranslationBatchResult, error) {
 	if params.BatchSize <= 0 {
 		params.BatchSize = 50
 	}
@@ -34,18 +39,20 @@ func (a *GoActivities) TranslateBrregBatch(ctx context.Context, params contracts
 	if params.WorkflowRunID == "" {
 		params.WorkflowRunID = "manual"
 	}
-	if a.translator == nil {
-		return contracts.TranslateBrregBatchResult{}, fmt.Errorf("brreg translator is not configured")
-	}
 	if a.loadRates == nil {
-		return contracts.TranslateBrregBatchResult{}, fmt.Errorf("brreg FX loader is not configured")
+		return contracts.PrepareBrregTranslationBatchResult{}, fmt.Errorf("brreg FX loader is not configured")
 	}
 
 	rows, err := a.claimBrregTranslationRows(ctx, params)
 	if err != nil {
-		return contracts.TranslateBrregBatchResult{}, err
+		return contracts.PrepareBrregTranslationBatchResult{}, err
 	}
-	result := contracts.TranslateBrregBatchResult{Claimed: len(rows)}
+	result := contracts.PrepareBrregTranslationBatchResult{
+		Claimed:            len(rows),
+		Rows:               make([]contracts.BrregTranslationRowPayload, 0, len(rows)),
+		CachedTranslations: map[string]string{},
+		MissesByCategory:   map[string][]contracts.TranslationItem{},
+	}
 	if len(rows) == 0 {
 		return result, nil
 	}
@@ -58,8 +65,12 @@ func (a *GoActivities) TranslateBrregBatch(ctx context.Context, params contracts
 		}
 		terms, err := ExtractBrregTranslationTerms(row.RawPayload)
 		if err != nil {
-			return result, err
+			return contracts.PrepareBrregTranslationBatchResult{}, err
 		}
+		result.Rows = append(result.Rows, contracts.BrregTranslationRowPayload{
+			ID:         row.ID,
+			RawPayload: row.RawPayload,
+		})
 		for _, term := range terms {
 			key := termKey(term.Category, term.Text)
 			uniqueTerms[key] = term
@@ -70,45 +81,67 @@ func (a *GoActivities) TranslateBrregBatch(ctx context.Context, params contracts
 	if needsFX {
 		fx, err = a.loadRates(ctx, params.FXRateDate)
 		if err != nil {
-			return result, fmt.Errorf("load brreg FX rates: %w", err)
+			return contracts.PrepareBrregTranslationBatchResult{}, fmt.Errorf("load brreg FX rates: %w", err)
+		}
+		result.FX = contracts.FXRatePayload{
+			Source:   fx.Source,
+			RateDate: fx.RateDate,
+			EURPer:   fx.EURPer,
 		}
 	}
 
-	translations := BrregTranslationSet{}
-	missesByCategory := map[string]map[string]string{}
-	for _, term := range uniqueTerms {
+	sortedKeys := make([]string, 0, len(uniqueTerms))
+	for key := range uniqueTerms {
+		sortedKeys = append(sortedKeys, key)
+	}
+	sort.Strings(sortedKeys)
+	categoryCounters := map[string]int{}
+	for _, key := range sortedKeys {
+		term := uniqueTerms[key]
 		translated, ok, err := a.lookupTranslationCache(ctx, term, params)
 		if err != nil {
-			return result, err
+			return contracts.PrepareBrregTranslationBatchResult{}, err
 		}
 		if ok {
-			translations[term.Text] = translated
+			result.CachedTranslations[term.Text] = translated
 			continue
 		}
-		if missesByCategory[term.Category] == nil {
-			missesByCategory[term.Category] = map[string]string{}
-		}
-		missesByCategory[term.Category][term.Text] = ""
+		next := categoryCounters[term.Category]
+		categoryCounters[term.Category] = next + 1
+		result.MissesByCategory[term.Category] = append(result.MissesByCategory[term.Category], contracts.TranslationItem{
+			ID:   fmt.Sprintf("t%d", next),
+			Text: term.Text,
+		})
 	}
 
+	return result, nil
+}
+
+func (a *GoActivities) WriteBrregTranslationBatch(ctx context.Context, params contracts.WriteBrregTranslationBatchParams) (contracts.TranslateBrregBatchResult, error) {
+	result := contracts.TranslateBrregBatchResult{Claimed: len(params.Rows)}
+	translations := BrregTranslationSet{}
+	for original, translated := range params.CachedTranslations {
+		if translated != "" {
+			translations[original] = translated
+		}
+	}
 	newTranslations := map[string]BrregTranslationTerm{}
-	for category, inputs := range missesByCategory {
-		translated, err := a.translator.TranslateMap(ctx, category, inputs)
-		if err != nil {
-			return result, err
+	for _, term := range params.NewTranslations {
+		if term.Text == "" || term.Translation == "" {
+			continue
 		}
-		for original, english := range translated {
-			if english == "" {
-				continue
-			}
-			translations[original] = english
-			newTranslations[termKey(category, original)] = BrregTranslationTerm{Category: category, Text: original}
-		}
+		translations[term.Text] = term.Translation
+		newTranslations[termKey(term.Category, term.Text)] = BrregTranslationTerm{Category: term.Category, Text: term.Text}
+	}
+	fx := FXRateSet{
+		Source:   params.FX.Source,
+		RateDate: params.FX.RateDate,
+		EURPer:   params.FX.EURPer,
 	}
 
 	successPayloads := map[string]json.RawMessage{}
 	failures := map[string]string{}
-	for _, row := range rows {
+	for _, row := range params.Rows {
 		payload, err := BuildBrregRawPayloadEn(ctx, row.RawPayload, translations, fx)
 		if err != nil {
 			failures[row.ID] = err.Error()
@@ -214,7 +247,7 @@ func (a *GoActivities) lookupTranslationCache(ctx context.Context, term BrregTra
 
 func (a *GoActivities) writeBrregTranslationResults(
 	ctx context.Context,
-	params contracts.TranslateBrregBatchParams,
+	params contracts.WriteBrregTranslationBatchParams,
 	fx FXRateSet,
 	translations BrregTranslationSet,
 	newTranslations map[string]BrregTranslationTerm,

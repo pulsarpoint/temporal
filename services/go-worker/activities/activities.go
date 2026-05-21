@@ -19,7 +19,6 @@ import (
 
 	"github.com/pulsarpoint/data-pipelines/contracts"
 	"github.com/pulsarpoint/data-pipelines/fxrates"
-	"github.com/pulsarpoint/data-pipelines/llm"
 )
 
 // DB is the subset of pgxpool.Pool used by GoActivities (also satisfied by pgxmock).
@@ -33,24 +32,17 @@ type DB interface {
 
 // GoActivities holds dependencies for all Go-side Temporal activities.
 type GoActivities struct {
-	pool       DB
-	translator BrregTranslator
-	loadRates  BrregRateLoader
-}
-
-type BrregTranslator interface {
-	TranslateMap(ctx context.Context, category string, inputs map[string]string) (map[string]string, error)
+	pool      DB
+	loadRates BrregRateLoader
 }
 
 type BrregRateLoader func(ctx context.Context, fxRateDate string) (FXRateSet, error)
 
 // NewGoActivities constructs GoActivities. pool must not be nil.
 func NewGoActivities(pool *pgxpool.Pool) *GoActivities {
-	model := envDefault("LLM_MODEL", "qwen3:6b")
 	return &GoActivities{
-		pool:       pool,
-		translator: llm.NewClient(envDefault("LLM_BASE_URL", "http://100.77.62.33:8080"), model),
-		loadRates:  loadBrregRates,
+		pool:      pool,
+		loadRates: loadBrregRates,
 	}
 }
 
@@ -59,15 +51,8 @@ func NewGoActivitiesWithDB(db DB) *GoActivities {
 	return &GoActivities{pool: db, loadRates: loadBrregRates}
 }
 
-func NewGoActivitiesWithTranslationDeps(db DB, translator BrregTranslator, loadRates BrregRateLoader) *GoActivities {
-	return &GoActivities{pool: db, translator: translator, loadRates: loadRates}
-}
-
-func envDefault(key, fallback string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	return fallback
+func NewGoActivitiesWithTranslationDeps(db DB, _ any, loadRates BrregRateLoader) *GoActivities {
+	return &GoActivities{pool: db, loadRates: loadRates}
 }
 
 func loadBrregRates(ctx context.Context, fxRateDate string) (FXRateSet, error) {

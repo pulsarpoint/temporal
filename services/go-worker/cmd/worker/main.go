@@ -63,7 +63,8 @@ func main() {
 	w.RegisterActivity(goActs.FilterForDomainDiscovery)
 	w.RegisterActivity(goActs.WriteDiscoveredDomains)
 	w.RegisterActivity(goActs.MarkDomainsSearched)
-	w.RegisterActivity(goActs.TranslateBrregBatch)
+	w.RegisterActivity(goActs.PrepareBrregTranslationBatch)
+	w.RegisterActivity(goActs.WriteBrregTranslationBatch)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
