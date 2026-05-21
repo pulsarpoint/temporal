@@ -7,20 +7,28 @@ import "encoding/json"
 // PullCompaniesHouseInput is the input for the PullCompaniesHouse workflow.
 // IDs nil means bulk pull; populated means individual company lookup.
 // Force re-inserts records even if already present in the raw_inputs table.
+// Cursor, RunID, and Accumulated are set by ContinueAsNew to resume across runs.
 type PullCompaniesHouseInput struct {
-	Country        string   `json:"country"`
-	IDs            []string `json:"ids,omitempty"`
-	CorpscoutRunID string   `json:"corpscout_run_id,omitempty"`
-	Force          bool     `json:"force,omitempty"`
+	Country        string             `json:"country"`
+	IDs            []string           `json:"ids,omitempty"`
+	CorpscoutRunID string             `json:"corpscout_run_id,omitempty"`
+	Force          bool               `json:"force,omitempty"`
+	Cursor         string             `json:"cursor,omitempty"`
+	RunID          string             `json:"run_id,omitempty"`
+	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
 }
 
 // PullBrregInput is the input for the PullBrreg workflow.
 // Country is always NO — hardcoded in the workflow.
 // Force re-inserts records even if already present in the raw_inputs table.
+// Cursor, RunID, and Accumulated are set by ContinueAsNew to resume across runs.
 type PullBrregInput struct {
-	IDs            []string `json:"ids,omitempty"`
-	CorpscoutRunID string   `json:"corpscout_run_id,omitempty"`
-	Force          bool     `json:"force,omitempty"`
+	IDs            []string           `json:"ids,omitempty"`
+	CorpscoutRunID string             `json:"corpscout_run_id,omitempty"`
+	Force          bool               `json:"force,omitempty"`
+	Cursor         string             `json:"cursor,omitempty"`
+	RunID          string             `json:"run_id,omitempty"`
+	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
 }
 
 // PullCompaniesResult is returned by the pull workflows.

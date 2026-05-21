@@ -12,18 +12,19 @@ import (
 )
 
 // PullBrreg paginates the Brønnøysund Register Centre (Brreg) list endpoint
-// and writes raw records. After all pages are fetched it fires off an
-// EnrichCompanyDomains child workflow (abandon policy — runs independently).
-// Country is always NO — the Brreg register covers Norway only.
+// and writes raw records. Uses ContinueAsNew every continueAfterPages pages to
+// keep history size bounded. Country is always NO.
 //
 // Python activity: fetch_brreg_list  (task queue: corpscout-pipelines-python)
 // Go activities:   WriteRawInputs, MarkExecutionComplete
 func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.PullCompaniesResult, error) {
-	var runIDStr string
-	if err := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
-		return uuid.New().String()
-	}).Get(&runIDStr); err != nil {
-		return contracts.PullCompaniesResult{}, err
+	runIDStr := input.RunID
+	if runIDStr == "" {
+		if err := workflow.SideEffect(ctx, func(ctx workflow.Context) interface{} {
+			return uuid.New().String()
+		}).Get(&runIDStr); err != nil {
+			return contracts.PullCompaniesResult{}, err
+		}
 	}
 
 	listCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -48,9 +49,11 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 
 	logger := workflow.GetLogger(ctx)
 	var goAct *activities.GoActivities
-	total := contracts.PullCompaniesResult{}
-	cursor := ""
+
+	total := input.Accumulated
+	cursor := input.Cursor
 	page := 1
+	pagesThisRun := 0
 
 	for {
 		var fetchResult contracts.FetchResult
@@ -82,13 +85,28 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 		}
 		total.RecordsWritten += written
 		total.PagesFetched++
+		pagesThisRun++
 
 		if !fetchResult.HasMore {
 			logger.Info("no more pages", "total_pages", total.PagesFetched)
 			break
 		}
+
 		cursor = fetchResult.NextCursor
 		page++
+
+		if pagesThisRun >= continueAfterPages {
+			logger.Info("continuing as new to bound history",
+				"pages_this_run", pagesThisRun, "total_pages", total.PagesFetched)
+			return total, workflow.NewContinueAsNewError(ctx, PullBrreg, contracts.PullBrregInput{
+				IDs:            input.IDs,
+				CorpscoutRunID: input.CorpscoutRunID,
+				Force:          input.Force,
+				Cursor:         cursor,
+				RunID:          runIDStr,
+				Accumulated:    total,
+			})
+		}
 	}
 
 	if err := workflow.ExecuteActivity(goCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{

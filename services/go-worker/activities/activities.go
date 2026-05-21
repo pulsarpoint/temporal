@@ -3,10 +3,13 @@ package activities
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/pulsarpoint/data-pipelines/contracts"
 )
@@ -18,14 +21,27 @@ type DB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// sourceProcessArgs is a River job that triggers raw-input processing in corpscout.
+type sourceProcessArgs struct {
+	SourceName string `json:"source_name"`
+}
+
+func (sourceProcessArgs) Kind() string { return "source_process" }
+
 // GoActivities holds dependencies for all Go-side Temporal activities.
 type GoActivities struct {
-	pool DB
+	pool   DB
+	river  *river.Client[pgx.Tx]
 }
 
 // NewGoActivities constructs GoActivities. pool must not be nil.
 func NewGoActivities(pool *pgxpool.Pool) *GoActivities {
-	return &GoActivities{pool: pool}
+	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
+	if err != nil {
+		slog.Warn("go-activities: could not create River client, source_process jobs will not be enqueued", "error", err)
+		return &GoActivities{pool: pool}
+	}
+	return &GoActivities{pool: pool, river: rc}
 }
 
 // NewGoActivitiesWithDB is used in tests to inject a mock DB.
@@ -111,21 +127,31 @@ func (a *GoActivities) writeBrregRecord(ctx context.Context, rec contracts.RawRe
 	return err == nil, err
 }
 
-// MarkExecutionComplete updates the temporal_executions row created by corpscout.
-// If CorpscoutRunID is empty (workflow triggered outside corpscout) this is a no-op.
+// MarkExecutionComplete updates the temporal_executions row created by corpscout
+// and enqueues a source_process River job so raw inputs are processed.
+// If CorpscoutRunID is empty (workflow triggered outside corpscout) the DB update
+// is skipped, but processing is still enqueued.
 func (a *GoActivities) MarkExecutionComplete(ctx context.Context, params contracts.MarkCompleteParams) error {
-	if params.CorpscoutRunID == "" {
-		return nil
+	if params.CorpscoutRunID != "" {
+		if _, err := a.pool.Exec(ctx, `
+			UPDATE temporal_executions
+			SET status          = 'completed',
+			    records_written = $1,
+			    pages_fetched   = $2,
+			    completed_at    = now()
+			WHERE id = $3
+		`, params.Result.RecordsWritten, params.Result.PagesFetched, params.CorpscoutRunID); err != nil {
+			return err
+		}
 	}
-	_, err := a.pool.Exec(ctx, `
-		UPDATE temporal_executions
-		SET status          = 'completed',
-		    records_written = $1,
-		    pages_fetched   = $2,
-		    completed_at    = now()
-		WHERE id = $3
-	`, params.Result.RecordsWritten, params.Result.PagesFetched, params.CorpscoutRunID)
-	return err
+	if a.river != nil {
+		if _, err := a.river.Insert(ctx, sourceProcessArgs{SourceName: params.Source}, &river.InsertOpts{
+			Queue: "source_process",
+		}); err != nil {
+			slog.Warn("MarkExecutionComplete: enqueue source_process job", "source", params.Source, "error", err)
+		}
+	}
+	return nil
 }
 
 // ── Domain enrichment activities ──────────────────────────────────────────────

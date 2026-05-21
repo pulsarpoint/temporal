@@ -13,6 +13,8 @@ from contracts import FetchPageInput, FetchResult, RawRecord
 _USER_AGENT = "corpscout-data-pipelines/1.0"
 _CH_ENDPOINT = "https://api.company-information.service.gov.uk/advanced-search/companies"
 _PAGE_SIZE = 100
+# CH API rejects start_index + size > 10_000. With PAGE_SIZE=100, pages 0–99 are safe.
+_CH_MAX_PAGE = 99
 
 
 @activity.defn(name="fetch_companies_house_list")
@@ -64,11 +66,17 @@ async def fetch_companies_house_list(input: FetchPageInput) -> FetchResult:
             hash=digest,
         ))
 
-    total_results: int = data.get("total_results", 0)
-    has_more = (page_offset + 1) * _PAGE_SIZE < total_results
+    # CH API doesn't reliably return total_results; use full-page check instead.
+    has_more = len(items) == _PAGE_SIZE
+
     next_cursor = ""
     if has_more:
-        date_part = date_cursor or ""
-        next_cursor = f"{date_part},{page_offset + 1}"
+        if page_offset < _CH_MAX_PAGE:
+            next_cursor = f"{date_cursor or ''},{page_offset + 1}"
+        else:
+            # Rolled past the 10k limit for this date bucket — advance the date cursor
+            # to the last item's date_of_creation to start the next bucket.
+            last_date = (items[-1].get("date_of_creation") or "") if items else ""
+            next_cursor = f"{last_date},0"
 
     return FetchResult(records=records, has_more=has_more, next_cursor=next_cursor)
