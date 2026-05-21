@@ -42,9 +42,14 @@ def _configured_datasets() -> list[dict[str, str]]:
     for item in parsed:
         if not isinstance(item, dict):
             raise RuntimeError("ARIREGISTER_DATASETS_JSON entries must be objects")
-        dataset = str(item.get("dataset", "")).strip()
-        url = str(item.get("url", "")).strip()
-        file_format = str(item.get("format", "")).strip()
+        raw_dataset = item.get("dataset")
+        raw_url = item.get("url")
+        raw_format = item.get("format")
+        if not isinstance(raw_dataset, str) or not isinstance(raw_url, str) or not isinstance(raw_format, str):
+            raise RuntimeError("ARIREGISTER_DATASETS_JSON entries require dataset, url, and format")
+        dataset = raw_dataset.strip()
+        url = raw_url.strip()
+        file_format = raw_format.strip()
         if not dataset or not url or not file_format:
             raise RuntimeError("ARIREGISTER_DATASETS_JSON entries require dataset, url, and format")
         datasets.append({"dataset": dataset, "url": url, "format": file_format})

@@ -176,6 +176,29 @@ async def test_ariregister_malformed_datasets_json_raises_configuration_error(tm
 
 
 @pytest.mark.asyncio
+async def test_ariregister_invalid_dataset_field_types_raise_configuration_error(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "ARIREGISTER_DATASETS_JSON",
+        json.dumps(
+            [
+                {"dataset": 123, "url": "https://ariregister.example.test/simple.csv.zip", "format": "csv.zip"},
+                {"dataset": "owners", "url": None, "format": "csv.zip"},
+            ]
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="ARIREGISTER_DATASETS_JSON"):
+        await download_ariregister_dataset(
+            DownloadSourceFilesInput(
+                source="ariregister",
+                mode="full",
+                output_dir=str(tmp_path),
+                snapshot_id="safe",
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_cvr_errors_when_no_credentials_are_configured(tmp_path, monkeypatch):
     monkeypatch.setenv("CVR_FILEDOWNLOAD_BASE_URL", "https://datafordeler.example.test/cvr")
     monkeypatch.setenv("CVR_FILEDOWNLOAD_DATASETS", "companies")
