@@ -91,13 +91,11 @@ func sourceDownloadActivityOptions() workflow.ActivityOptions {
 func sourceImportActivityOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		TaskQueue:           "corpscout-pipelines",
-		StartToCloseTimeout: 60 * time.Minute,
+		StartToCloseTimeout: 30 * time.Minute,
 		HeartbeatTimeout:    2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts:    3,
-			InitialInterval:    10 * time.Second,
-			MaximumInterval:    2 * time.Minute,
-			BackoffCoefficient: 2.0,
+			MaximumAttempts: 3,
+			InitialInterval: 10 * time.Second,
 		},
 	}
 }

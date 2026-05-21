@@ -17,7 +17,7 @@ func PullAriregister(ctx workflow.Context, input contracts.PullAriregisterInput)
 	}
 	mode := input.Mode
 	if mode == "" {
-		mode = "bulk"
+		mode = "refresh"
 	}
 
 	pythonCtx := workflow.WithActivityOptions(ctx, sourceDownloadActivityOptions())

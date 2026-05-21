@@ -90,3 +90,34 @@ func (s *PullAriregisterSuite) Test_Refresh_DownloadsImportsAndMarksComplete() {
 	s.Equal(13, result.RecordsWritten)
 	s.Equal(2, result.PagesFetched)
 }
+
+func (s *PullAriregisterSuite) Test_EmptyModeDefaultsToRefreshCursor() {
+	download := contracts.DownloadSourceFilesResult{
+		Source:     "ariregister",
+		SnapshotID: "ari-2026-05-21",
+		Files:      []contracts.DownloadedSourceFile{{Source: "ariregister", Dataset: "simple-data", FilePath: "/tmp/ari.csv.zip", SnapshotID: "ari-2026-05-21", SHA256: "abc", Format: "csv.zip"}},
+	}
+
+	s.env.OnActivity("download_ariregister_dataset", mock.Anything, mock.MatchedBy(func(input contracts.DownloadSourceFilesInput) bool {
+		return input.Source == "ariregister" &&
+			input.Mode == "refresh" &&
+			input.OutputDir == defaultAriregisterOutputDirForTest
+	})).Return(download, nil).Once()
+
+	var goAct *activities.GoActivities
+	s.env.OnActivity(goAct.ImportAriregisterBulk, mock.Anything, mock.Anything).Return(5, nil).Once()
+	s.env.OnActivity(goAct.MarkExecutionComplete, mock.Anything, mock.MatchedBy(func(params contracts.MarkCompleteParams) bool {
+		return params.Source == "ariregister" &&
+			params.Country == "EE" &&
+			params.FinalCursor == "refresh:ari-2026-05-21"
+	})).Return(nil).Once()
+
+	s.env.ExecuteWorkflow(workflows.PullAriregister, contracts.PullAriregisterInput{
+		RunID: "run-ari-default",
+	})
+
+	s.True(s.env.IsWorkflowCompleted())
+	s.NoError(s.env.GetWorkflowError())
+}
+
+const defaultAriregisterOutputDirForTest = "/var/lib/data-pipelines/results/ariregister"
