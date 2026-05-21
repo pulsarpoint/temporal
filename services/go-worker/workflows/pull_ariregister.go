@@ -39,7 +39,6 @@ func PullAriregister(ctx workflow.Context, input contracts.PullAriregisterInput)
 		Files:          download.Files,
 		RunID:          runIDStr,
 		CorpscoutRunID: input.CorpscoutRunID,
-		Force:          input.Force,
 	}).Get(ctx, &written); err != nil {
 		return contracts.PullCompaniesResult{}, err
 	}

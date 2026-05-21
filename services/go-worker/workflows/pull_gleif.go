@@ -41,7 +41,6 @@ func PullGLEIF(ctx workflow.Context, input contracts.PullGLEIFInput) (contracts.
 		Files:          download.Files,
 		RunID:          runIDStr,
 		CorpscoutRunID: input.CorpscoutRunID,
-		Force:          input.Force,
 	}).Get(ctx, &written); err != nil {
 		return contracts.PullCompaniesResult{}, err
 	}
@@ -78,7 +77,6 @@ func sourceDownloadActivityOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		TaskQueue:           "corpscout-pipelines-python",
 		StartToCloseTimeout: 20 * time.Minute,
-		HeartbeatTimeout:    2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			MaximumAttempts:    3,
 			InitialInterval:    15 * time.Second,
@@ -109,8 +107,5 @@ func markCompleteActivityOptions() workflow.ActivityOptions {
 }
 
 func sourceFilePageCount(files []contracts.DownloadedSourceFile) int {
-	if len(files) == 0 {
-		return 1
-	}
 	return len(files)
 }

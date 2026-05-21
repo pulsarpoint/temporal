@@ -60,7 +60,6 @@ func (s *PullAriregisterSuite) Test_Refresh_DownloadsImportsAndMarksComplete() {
 	s.env.OnActivity(goAct.ImportAriregisterBulk, mock.Anything, mock.MatchedBy(func(params contracts.ImportAriregisterBulkParams) bool {
 		return params.RunID == "run-ari" &&
 			params.CorpscoutRunID == "exec-ari" &&
-			params.Force &&
 			len(params.Files) == 2
 	})).Return(13, nil).Once()
 
@@ -79,7 +78,6 @@ func (s *PullAriregisterSuite) Test_Refresh_DownloadsImportsAndMarksComplete() {
 		RunID:          "run-ari",
 		Mode:           "refresh",
 		OutputDir:      "/tmp/ariregister-out",
-		Force:          true,
 	})
 
 	s.True(s.env.IsWorkflowCompleted())

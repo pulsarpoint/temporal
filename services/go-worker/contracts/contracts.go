@@ -43,7 +43,6 @@ type PullGLEIFInput struct {
 	Mode           string              `json:"mode,omitempty"`
 	DeltaWindow    string              `json:"delta_window,omitempty"`
 	OutputDir      string              `json:"output_dir,omitempty"`
-	Force          bool                `json:"force,omitempty"`
 	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
 }
 
@@ -53,7 +52,6 @@ type PullAriregisterInput struct {
 	RunID          string              `json:"run_id,omitempty"`
 	Mode           string              `json:"mode,omitempty"`
 	OutputDir      string              `json:"output_dir,omitempty"`
-	Force          bool                `json:"force,omitempty"`
 	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
 }
 
@@ -63,7 +61,6 @@ type PullCVRInput struct {
 	RunID          string              `json:"run_id,omitempty"`
 	Mode           string              `json:"mode,omitempty"`
 	OutputDir      string              `json:"output_dir,omitempty"`
-	Force          bool                `json:"force,omitempty"`
 	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
 }
 
@@ -109,7 +106,6 @@ type ImportSourceBulkParams struct {
 	Files          []DownloadedSourceFile `json:"files"`
 	RunID          string                 `json:"run_id"`
 	CorpscoutRunID string                 `json:"corpscout_run_id"`
-	Force          bool                   `json:"force,omitempty"`
 }
 
 type ImportGLEIFGoldenCopyParams = ImportSourceBulkParams

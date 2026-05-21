@@ -60,7 +60,6 @@ func (s *PullCVRSuite) Test_Bulk_DownloadsImportsAndMarksComplete() {
 	s.env.OnActivity(goAct.ImportCVRBulk, mock.Anything, mock.MatchedBy(func(params contracts.ImportCVRBulkParams) bool {
 		return params.RunID == "run-cvr" &&
 			params.CorpscoutRunID == "exec-cvr" &&
-			params.Force &&
 			len(params.Files) == 2
 	})).Return(25, nil).Once()
 
@@ -79,7 +78,6 @@ func (s *PullCVRSuite) Test_Bulk_DownloadsImportsAndMarksComplete() {
 		RunID:          "run-cvr",
 		Mode:           "bulk",
 		OutputDir:      "/tmp/cvr-out",
-		Force:          true,
 	})
 
 	s.True(s.env.IsWorkflowCompleted())

@@ -59,7 +59,6 @@ func (s *PullGLEIFSuite) Test_Bulk_DownloadsImportsAndMarksComplete() {
 	s.env.OnActivity(goAct.ImportGLEIFGoldenCopy, mock.Anything, mock.MatchedBy(func(params contracts.ImportGLEIFGoldenCopyParams) bool {
 		return params.RunID == "run-gleif" &&
 			params.CorpscoutRunID == "exec-gleif" &&
-			params.Force &&
 			len(params.Files) == 1 &&
 			params.Files[0].FilePath == "/tmp/gleif.json"
 	})).Return(42, nil).Once()
@@ -79,7 +78,6 @@ func (s *PullGLEIFSuite) Test_Bulk_DownloadsImportsAndMarksComplete() {
 		RunID:          "run-gleif",
 		Mode:           "bulk",
 		OutputDir:      "/tmp/gleif-out",
-		Force:          true,
 	})
 
 	s.True(s.env.IsWorkflowCompleted())

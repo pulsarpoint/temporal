@@ -39,7 +39,6 @@ func PullCVR(ctx workflow.Context, input contracts.PullCVRInput) (contracts.Pull
 		Files:          download.Files,
 		RunID:          runIDStr,
 		CorpscoutRunID: input.CorpscoutRunID,
-		Force:          input.Force,
 	}).Get(ctx, &written); err != nil {
 		return contracts.PullCompaniesResult{}, err
 	}
