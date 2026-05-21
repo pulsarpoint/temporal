@@ -104,6 +104,13 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		if pagesThisRun >= continueAfterPages {
 			logger.Info("continuing as new to bound history",
 				"pages_this_run", pagesThisRun, "total_pages", total.PagesFetched)
+			// Persist cursor so next trigger resumes here if this continuation fails.
+			if err := workflow.ExecuteActivity(goCtx, goAct.SaveSyncCheckpoint, contracts.SaveSyncCheckpointParams{
+				Source: "companies_house",
+				Cursor: cursor,
+			}).Get(ctx, nil); err != nil {
+				logger.Warn("failed to save sync checkpoint before ContinueAsNew", "error", err)
+			}
 			return total, workflow.NewContinueAsNewError(ctx, PullCompaniesHouse, contracts.PullCompaniesHouseInput{
 				Country:        input.Country,
 				IDs:            input.IDs,
@@ -122,6 +129,7 @@ func PullCompaniesHouse(ctx workflow.Context, input contracts.PullCompaniesHouse
 		Source:         "companies_house",
 		Country:        input.Country,
 		Result:         total,
+		FinalCursor:    cursor,
 	}).Get(ctx, nil); err != nil {
 		return total, err
 	}

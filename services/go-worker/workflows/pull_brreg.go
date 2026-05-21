@@ -11,12 +11,15 @@ import (
 	"github.com/pulsarpoint/data-pipelines/contracts"
 )
 
-// PullBrreg paginates the Brønnøysund Register Centre (Brreg) list endpoint
-// and writes raw records. Uses ContinueAsNew every continueAfterPages pages to
-// keep history size bounded. Country is always NO.
+const defaultBrregOutputDir = "/var/lib/data-pipelines/results/brreg"
+
+// PullBrreg downloads the full Brønnøysund Register Centre (Brreg) bulk export,
+// bulk-upserts all records into the DB, then marks execution complete.
+// Unlike the Companies House workflow there is no pagination loop — the entire
+// dataset is fetched in a single zip file (~800k records).
 //
-// Python activity: fetch_brreg_list  (task queue: corpscout-pipelines-python)
-// Go activities:   WriteRawInputs, MarkExecutionComplete
+// Python activity: download_brreg_bulk  (task queue: corpscout-pipelines-python)
+// Go activities:   ImportBrregBulk, MarkExecutionComplete
 func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.PullCompaniesResult, error) {
 	runIDStr := input.RunID
 	if runIDStr == "" {
@@ -27,97 +30,78 @@ func PullBrreg(ctx workflow.Context, input contracts.PullBrregInput) (contracts.
 		}
 	}
 
-	listCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		TaskQueue:           "corpscout-pipelines-python",
-		StartToCloseTimeout: 5 * time.Minute,
+	outputDir := input.OutputDir
+	if outputDir == "" {
+		outputDir = defaultBrregOutputDir
+	}
+
+	// Python download activity: just fetches the zip and saves it to the shared FS.
+	// Allow up to 20 minutes for the download (~150 MB over the network).
+	pythonCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:            "corpscout-pipelines-python",
+		StartToCloseTimeout:  20 * time.Minute,
+		HeartbeatTimeout:     2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts:    10,
-			InitialInterval:    5 * time.Second,
+			MaximumAttempts:    3,
+			InitialInterval:    15 * time.Second,
 			MaximumInterval:    2 * time.Minute,
 			BackoffCoefficient: 2.0,
 		},
 	})
 
+	// Go import activity: parse zip + bulk upsert ~800k records.
+	// Allow up to 30 minutes; the activity heartbeats every batch so
+	// Temporal can detect if the worker crashes.
 	goCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		TaskQueue:           "corpscout-pipelines",
-		StartToCloseTimeout: 2 * time.Minute,
+		TaskQueue:            "corpscout-pipelines",
+		StartToCloseTimeout:  30 * time.Minute,
+		HeartbeatTimeout:     2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
-			MaximumAttempts: 5,
-			InitialInterval: 2 * time.Second,
+			MaximumAttempts: 3,
+			InitialInterval: 10 * time.Second,
 		},
 	})
 
 	logger := workflow.GetLogger(ctx)
 	var goAct *activities.GoActivities
 
-	total := input.Accumulated
-	cursor := input.Cursor
-	page := 1
-	pagesThisRun := 0
-
-	for {
-		var fetchResult contracts.FetchResult
-		if err := workflow.ExecuteActivity(listCtx, "fetch_brreg_list", contracts.FetchPageInput{
-			Source:  "brreg",
-			Country: "NO",
-			IDs:     input.IDs,
-			Page:    page,
-			Cursor:  cursor,
-		}).Get(ctx, &fetchResult); err != nil {
-			return total, err
-		}
-
-		if len(fetchResult.Records) == 0 {
-			logger.Info("no records returned, stopping", "page", page, "cursor", cursor)
-			break
-		}
-
-		logger.Info("page fetched", "page", page, "records", len(fetchResult.Records), "has_more", fetchResult.HasMore)
-
-		var written int
-		if err := workflow.ExecuteActivity(goCtx, goAct.WriteRawInputs, contracts.WriteRawInputsParams{
-			Source:  "brreg",
-			RunID:   runIDStr,
-			Force:   input.Force,
-			Records: fetchResult.Records,
-		}).Get(ctx, &written); err != nil {
-			return total, err
-		}
-		total.RecordsWritten += written
-		total.PagesFetched++
-		pagesThisRun++
-
-		if !fetchResult.HasMore {
-			logger.Info("no more pages", "total_pages", total.PagesFetched)
-			break
-		}
-
-		cursor = fetchResult.NextCursor
-		page++
-
-		if pagesThisRun >= continueAfterPages {
-			logger.Info("continuing as new to bound history",
-				"pages_this_run", pagesThisRun, "total_pages", total.PagesFetched)
-			return total, workflow.NewContinueAsNewError(ctx, PullBrreg, contracts.PullBrregInput{
-				IDs:            input.IDs,
-				CorpscoutRunID: input.CorpscoutRunID,
-				Force:          input.Force,
-				Cursor:         cursor,
-				RunID:          runIDStr,
-				Accumulated:    total,
-			})
-		}
+	// Step 1: download bulk zip to shared filesystem.
+	var dlResult contracts.DownloadBrregBulkResult
+	if err := workflow.ExecuteActivity(pythonCtx, "download_brreg_bulk", outputDir).Get(ctx, &dlResult); err != nil {
+		return contracts.PullCompaniesResult{}, err
 	}
+	logger.Info("bulk zip downloaded", "path", dlResult.FilePath, "date", dlResult.Date)
 
-	if err := workflow.ExecuteActivity(goCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{
+	// Step 2: parse zip and bulk-upsert into brreg_company_raw_inputs.
+	var written int
+	if err := workflow.ExecuteActivity(goCtx, goAct.ImportBrregBulk, contracts.ImportBrregBulkParams{
+		FilePath:       dlResult.FilePath,
+		RunID:          runIDStr,
+		CorpscoutRunID: input.CorpscoutRunID,
+		Force:          input.Force,
+	}).Get(ctx, &written); err != nil {
+		return contracts.PullCompaniesResult{}, err
+	}
+	logger.Info("bulk import done", "records_written", written)
+
+	result := contracts.PullCompaniesResult{RecordsWritten: written, PagesFetched: 1}
+
+	// Step 3: mark complete, save bulk checkpoint, enqueue processing.
+	shortGoCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		TaskQueue:           "corpscout-pipelines",
+		StartToCloseTimeout: 2 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{MaximumAttempts: 5},
+	})
+	if err := workflow.ExecuteActivity(shortGoCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{
 		RunID:          runIDStr,
 		CorpscoutRunID: input.CorpscoutRunID,
 		Source:         "brreg",
 		Country:        "NO",
-		Result:         total,
+		Result:         result,
+		FinalCursor:    "bulk:" + dlResult.Date,
 	}).Get(ctx, nil); err != nil {
-		return total, err
+		return result, err
 	}
 
-	return total, nil
+	return result, nil
 }

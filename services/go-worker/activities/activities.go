@@ -1,15 +1,22 @@
 package activities
 
 import (
+	"archive/zip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"go.temporal.io/sdk/activity"
 
 	"github.com/pulsarpoint/data-pipelines/contracts"
 )
@@ -19,6 +26,7 @@ type DB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
 // sourceProcessArgs is a River job that triggers raw-input processing in corpscout.
@@ -127,10 +135,104 @@ func (a *GoActivities) writeBrregRecord(ctx context.Context, rec contracts.RawRe
 	return err == nil, err
 }
 
-// MarkExecutionComplete updates the temporal_executions row created by corpscout
+// ImportBrregBulk opens the zip file downloaded by the Python activity, parses the
+// JSON array of Brreg entities, and bulk-upserts them into brreg_company_raw_inputs
+// in batches of 2000 records. The zip file is deleted after a successful import.
+func (a *GoActivities) ImportBrregBulk(ctx context.Context, params contracts.ImportBrregBulkParams) (int, error) {
+	// Open zip.
+	zr, err := zip.OpenReader(params.FilePath)
+	if err != nil {
+		return 0, fmt.Errorf("open zip %s: %w", params.FilePath, err)
+	}
+	defer zr.Close()
+
+	if len(zr.File) == 0 {
+		return 0, fmt.Errorf("empty zip: %s", params.FilePath)
+	}
+	f, err := zr.File[0].Open()
+	if err != nil {
+		return 0, fmt.Errorf("open zip entry: %w", err)
+	}
+	defer f.Close()
+
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		return 0, fmt.Errorf("read zip entry: %w", err)
+	}
+
+	var entities []json.RawMessage
+	if err := json.Unmarshal(raw, &entities); err != nil {
+		return 0, fmt.Errorf("parse bulk JSON: %w", err)
+	}
+	slog.Info("ImportBrregBulk: parsed entities", "count", len(entities))
+
+	const batchSize = 2000
+	written := 0
+
+	for i := 0; i < len(entities); i += batchSize {
+		end := i + batchSize
+		if end > len(entities) {
+			end = len(entities)
+		}
+		chunk := entities[i:end]
+
+		batch := &pgx.Batch{}
+		for _, raw := range chunk {
+			var item map[string]interface{}
+			if err := json.Unmarshal(raw, &item); err != nil {
+				continue
+			}
+			orgNum, _ := item["organisasjonsnummer"].(string)
+			if orgNum == "" {
+				continue
+			}
+			name, _ := item["navn"].(string)
+			konkurs, _ := item["konkurs"].(bool)
+			underAvvikling, _ := item["underAvvikling"].(bool)
+			status := "active"
+			if konkurs || underAvvikling {
+				status = "dissolved"
+			}
+			h := sha256.Sum256(raw)
+			hash := hex.EncodeToString(h[:])
+
+			batch.Queue(`
+				INSERT INTO brreg_company_raw_inputs
+					(source_native_id, organization_number, organization_name,
+					 registration_status, raw_payload, payload_hash, run_id)
+				VALUES ($1, $1, $2, $3, $4, $5, $6)
+				ON CONFLICT (organization_number, payload_hash) DO UPDATE
+					SET last_seen_at = now(), run_id = EXCLUDED.run_id
+			`, orgNum, name, status, []byte(raw), hash, params.RunID)
+		}
+
+		results := a.pool.SendBatch(ctx, batch)
+		for range chunk {
+			if _, err := results.Exec(); err != nil {
+				results.Close()
+				return written, fmt.Errorf("batch upsert at offset %d: %w", i, err)
+			}
+		}
+		results.Close()
+
+		written += len(chunk)
+		activity.RecordHeartbeat(ctx, written)
+		slog.Info("ImportBrregBulk: progress", "written", written, "total", len(entities))
+	}
+
+	// Clean up the zip file — it's no longer needed.
+	if err := os.Remove(params.FilePath); err != nil {
+		slog.Warn("ImportBrregBulk: could not delete zip", "path", params.FilePath, "error", err)
+	}
+
+	return written, nil
+}
+
+// MarkExecutionComplete updates the temporal_executions row created by corpscout,
+// saves a sync checkpoint so the next run continues from the final cursor,
 // and enqueues a source_process River job so raw inputs are processed.
 // If CorpscoutRunID is empty (workflow triggered outside corpscout) the DB update
-// is skipped, but processing is still enqueued.
+// is skipped, but checkpoint save and processing are still performed.
 func (a *GoActivities) MarkExecutionComplete(ctx context.Context, params contracts.MarkCompleteParams) error {
 	if params.CorpscoutRunID != "" {
 		if _, err := a.pool.Exec(ctx, `
@@ -144,6 +246,19 @@ func (a *GoActivities) MarkExecutionComplete(ctx context.Context, params contrac
 			return err
 		}
 	}
+	// Save checkpoint so next trigger resumes from where this run ended.
+	if params.FinalCursor != "" {
+		if _, err := a.pool.Exec(ctx, `
+			INSERT INTO source_sync_checkpoints (source_name, cursor, last_completed_at)
+			VALUES ($1, $2, now())
+			ON CONFLICT (source_name) DO UPDATE
+			    SET cursor            = EXCLUDED.cursor,
+			        last_completed_at = EXCLUDED.last_completed_at,
+			        updated_at        = now()
+		`, params.Source, params.FinalCursor); err != nil {
+			slog.Warn("MarkExecutionComplete: save sync checkpoint", "source", params.Source, "error", err)
+		}
+	}
 	if a.river != nil {
 		if _, err := a.river.Insert(ctx, sourceProcessArgs{SourceName: params.Source}, &river.InsertOpts{
 			Queue: "source_process",
@@ -152,6 +267,20 @@ func (a *GoActivities) MarkExecutionComplete(ctx context.Context, params contrac
 		}
 	}
 	return nil
+}
+
+// SaveSyncCheckpoint persists the current pagination cursor so the next workflow
+// trigger can resume from exactly this point instead of re-scanning from the start.
+// Called by ContinueAsNew runs so progress is preserved even if the final run fails.
+func (a *GoActivities) SaveSyncCheckpoint(ctx context.Context, params contracts.SaveSyncCheckpointParams) error {
+	_, err := a.pool.Exec(ctx, `
+		INSERT INTO source_sync_checkpoints (source_name, cursor, last_completed_at)
+		VALUES ($1, $2, NULL)
+		ON CONFLICT (source_name) DO UPDATE
+		    SET cursor     = EXCLUDED.cursor,
+		        updated_at = now()
+	`, params.Source, params.Cursor)
+	return err
 }
 
 // ── Domain enrichment activities ──────────────────────────────────────────────

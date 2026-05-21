@@ -19,16 +19,28 @@ type PullCompaniesHouseInput struct {
 }
 
 // PullBrregInput is the input for the PullBrreg workflow.
-// Country is always NO — hardcoded in the workflow.
-// Force re-inserts records even if already present in the raw_inputs table.
-// Cursor, RunID, and Accumulated are set by ContinueAsNew to resume across runs.
+// Country is always NO. Bulk downloads the full Brreg export in one shot.
 type PullBrregInput struct {
-	IDs            []string           `json:"ids,omitempty"`
-	CorpscoutRunID string             `json:"corpscout_run_id,omitempty"`
-	Force          bool               `json:"force,omitempty"`
-	Cursor         string             `json:"cursor,omitempty"`
-	RunID          string             `json:"run_id,omitempty"`
-	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
+	CorpscoutRunID string `json:"corpscout_run_id,omitempty"`
+	Force          bool   `json:"force,omitempty"`
+	RunID          string `json:"run_id,omitempty"`
+	// OutputDir is the shared filesystem path where the bulk zip is written.
+	// Defaults to /var/lib/data-pipelines/results/brreg inside the workers.
+	OutputDir string `json:"output_dir,omitempty"`
+}
+
+// DownloadBrregBulkResult is returned by the download_brreg_bulk Python activity.
+type DownloadBrregBulkResult struct {
+	FilePath string `json:"file_path"`
+	Date     string `json:"date"`
+}
+
+// ImportBrregBulkParams is the input for the ImportBrregBulk Go activity.
+type ImportBrregBulkParams struct {
+	FilePath       string `json:"file_path"`
+	RunID          string `json:"run_id"`
+	CorpscoutRunID string `json:"corpscout_run_id,omitempty"`
+	Force          bool   `json:"force,omitempty"`
 }
 
 // PullCompaniesResult is returned by the pull workflows.
@@ -83,6 +95,13 @@ type MarkCompleteParams struct {
 	Source         string              `json:"source"`
 	Country        string              `json:"country"`
 	Result         PullCompaniesResult `json:"result"`
+	FinalCursor    string              `json:"final_cursor,omitempty"`
+}
+
+// SaveSyncCheckpointParams is the input for the SaveSyncCheckpoint Go activity.
+type SaveSyncCheckpointParams struct {
+	Source string `json:"source"`
+	Cursor string `json:"cursor"`
 }
 
 // ── Domain enrichment workflow ────────────────────────────────────────────────

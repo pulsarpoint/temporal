@@ -56,7 +56,9 @@ func main() {
 	w.RegisterWorkflow(workflows.EnrichCompanyDomains)
 
 	w.RegisterActivity(goActs.WriteRawInputs)
+	w.RegisterActivity(goActs.ImportBrregBulk)
 	w.RegisterActivity(goActs.MarkExecutionComplete)
+	w.RegisterActivity(goActs.SaveSyncCheckpoint)
 	w.RegisterActivity(goActs.FilterForDomainDiscovery)
 	w.RegisterActivity(goActs.WriteDiscoveredDomains)
 	w.RegisterActivity(goActs.MarkDomainsSearched)
