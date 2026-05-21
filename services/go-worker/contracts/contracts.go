@@ -19,14 +19,21 @@ type PullCompaniesHouseInput struct {
 }
 
 // PullBrregInput is the input for the PullBrreg workflow.
-// Country is always NO. Bulk downloads the full Brreg export in one shot.
+// Mode selects the pipeline path:
+//   - "bulk" (default): download the full Brreg export zip in one shot
+//   - "incremental": paginate the list API starting from IncrementalFrom date
+//
+// Cursor, RunID, and Accumulated are carried forward by ContinueAsNew in
+// incremental mode to resume across Temporal history-size boundaries.
 type PullBrregInput struct {
-	CorpscoutRunID string `json:"corpscout_run_id,omitempty"`
-	Force          bool   `json:"force,omitempty"`
-	RunID          string `json:"run_id,omitempty"`
-	// OutputDir is the shared filesystem path where the bulk zip is written.
-	// Defaults to /var/lib/data-pipelines/results/brreg inside the workers.
-	OutputDir string `json:"output_dir,omitempty"`
+	CorpscoutRunID  string             `json:"corpscout_run_id,omitempty"`
+	Force           bool               `json:"force,omitempty"`
+	RunID           string             `json:"run_id,omitempty"`
+	OutputDir       string             `json:"output_dir,omitempty"`
+	Mode            string             `json:"mode,omitempty"`             // "bulk" | "incremental"
+	IncrementalFrom string             `json:"incremental_from,omitempty"` // starting date cursor, e.g. "2026-05-21,0"
+	Cursor          string             `json:"cursor,omitempty"`           // ContinueAsNew carry-forward
+	Accumulated     PullCompaniesResult `json:"accumulated,omitempty"`      // ContinueAsNew carry-forward
 }
 
 // DownloadBrregBulkResult is returned by the download_brreg_bulk Python activity.
