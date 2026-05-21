@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import httpx
 from temporalio import activity
 
+from activities.source_downloads import safe_output_file_path
 from contracts import DownloadedSourceFile, DownloadSourceFilesInput, DownloadSourceFilesResult
 
 _logger = logging.getLogger(__name__)
@@ -30,7 +31,10 @@ def _configured_datasets() -> list[dict[str, str]]:
     if not raw_config:
         return _DEFAULT_DATASETS
 
-    parsed = json.loads(raw_config)
+    try:
+        parsed = json.loads(raw_config)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("ARIREGISTER_DATASETS_JSON must be valid JSON") from exc
     if not isinstance(parsed, list):
         raise RuntimeError("ARIREGISTER_DATASETS_JSON must be a JSON array")
 
@@ -47,16 +51,11 @@ def _configured_datasets() -> list[dict[str, str]]:
     return datasets
 
 
-def _output_path(output_dir: str, source: str, dataset: str, snapshot_id: str, file_format: str) -> str:
-    return os.path.join(output_dir, f"{source}-{dataset}-{snapshot_id}.{file_format}")
-
-
 @activity.defn(name="download_ariregister_dataset")
 async def download_ariregister_dataset(input: DownloadSourceFilesInput) -> DownloadSourceFilesResult:
     source = input.source or "ariregister"
     snapshot_id = _snapshot_id(input.snapshot_id)
     datasets = _configured_datasets()
-    os.makedirs(input.output_dir, exist_ok=True)
 
     files: list[DownloadedSourceFile] = []
     async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
@@ -64,7 +63,7 @@ async def download_ariregister_dataset(input: DownloadSourceFilesInput) -> Downl
             dataset = config["dataset"]
             url = config["url"]
             file_format = config["format"]
-            file_path = _output_path(input.output_dir, source, dataset, snapshot_id, file_format)
+            file_path = safe_output_file_path(input.output_dir, source, dataset, snapshot_id, file_format)
 
             _logger.info("downloading Ariregister %s file to %s", dataset, file_path)
             response = await client.get(url, headers={"Accept": "*/*", "User-Agent": "corpscout-data-pipelines/1.0"})

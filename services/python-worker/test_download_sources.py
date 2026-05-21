@@ -72,6 +72,32 @@ async def test_gleif_delta_mode_uses_delta_url(tmp_path, monkeypatch):
     assert result.files[0].sha256 == _sha256(content)
 
 
+@pytest.mark.asyncio
+async def test_gleif_rejects_unsafe_filename_components(tmp_path, monkeypatch):
+    monkeypatch.setenv("GLEIF_GOLDEN_COPY_BASE_URL", "https://gleif.example.test/publishes")
+    outside_path = tmp_path.parent / "escape-lei2-safe.json"
+
+    with pytest.raises(RuntimeError, match="unsafe filename component"):
+        await download_gleif_golden_copy(
+            DownloadSourceFilesInput(
+                source="../escape",
+                mode="full",
+                output_dir=str(tmp_path),
+                snapshot_id="safe",
+            )
+        )
+
+    assert not outside_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_gleif_rejects_unsupported_mode(tmp_path):
+    with pytest.raises(RuntimeError, match="Unsupported GLEIF download mode"):
+        await download_gleif_golden_copy(
+            DownloadSourceFilesInput(source="gleif", mode="hourly", output_dir=str(tmp_path), snapshot_id="safe")
+        )
+
+
 @respx.mock
 @pytest.mark.asyncio
 async def test_ariregister_downloads_configured_datasets_with_stable_snapshot_id(tmp_path, monkeypatch):
@@ -106,6 +132,50 @@ async def test_ariregister_downloads_configured_datasets_with_stable_snapshot_id
 
 
 @pytest.mark.asyncio
+async def test_ariregister_rejects_unsafe_dataset_filename_component(tmp_path, monkeypatch):
+    monkeypatch.setenv(
+        "ARIREGISTER_DATASETS_JSON",
+        json.dumps(
+            [
+                {
+                    "dataset": "../escape",
+                    "url": "https://ariregister.example.test/escape.csv.zip",
+                    "format": "csv.zip",
+                }
+            ]
+        ),
+    )
+    outside_path = tmp_path.parent / "ariregister-escape-safe.csv.zip"
+
+    with pytest.raises(RuntimeError, match="unsafe filename component"):
+        await download_ariregister_dataset(
+            DownloadSourceFilesInput(
+                source="ariregister",
+                mode="full",
+                output_dir=str(tmp_path),
+                snapshot_id="safe",
+            )
+        )
+
+    assert not outside_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_ariregister_malformed_datasets_json_raises_configuration_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("ARIREGISTER_DATASETS_JSON", "{not json")
+
+    with pytest.raises(RuntimeError, match="ARIREGISTER_DATASETS_JSON"):
+        await download_ariregister_dataset(
+            DownloadSourceFilesInput(
+                source="ariregister",
+                mode="full",
+                output_dir=str(tmp_path),
+                snapshot_id="safe",
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_cvr_errors_when_no_credentials_are_configured(tmp_path, monkeypatch):
     monkeypatch.setenv("CVR_FILEDOWNLOAD_BASE_URL", "https://datafordeler.example.test/cvr")
     monkeypatch.setenv("CVR_FILEDOWNLOAD_DATASETS", "companies")
@@ -116,6 +186,27 @@ async def test_cvr_errors_when_no_credentials_are_configured(tmp_path, monkeypat
         await download_cvr_file_set(
             DownloadSourceFilesInput(source="cvr", mode="full", output_dir=str(tmp_path), snapshot_id="cvr-snapshot")
         )
+
+
+@pytest.mark.asyncio
+async def test_cvr_rejects_unsafe_snapshot_filename_component(tmp_path, monkeypatch):
+    monkeypatch.setenv("CVR_FILEDOWNLOAD_BASE_URL", "https://datafordeler.example.test/cvr")
+    monkeypatch.setenv("CVR_FILEDOWNLOAD_DATASETS", "companies")
+    monkeypatch.setenv("CVR_FILEDOWNLOAD_API_KEY", "secret")
+    monkeypatch.delenv("CVR_FILEDOWNLOAD_BEARER_TOKEN", raising=False)
+    outside_path = tmp_path.parent / "escape.json"
+
+    with pytest.raises(RuntimeError, match="unsafe filename component"):
+        await download_cvr_file_set(
+            DownloadSourceFilesInput(
+                source="cvr",
+                mode="full",
+                output_dir=str(tmp_path),
+                snapshot_id="../escape",
+            )
+        )
+
+    assert not outside_path.exists()
 
 
 @respx.mock

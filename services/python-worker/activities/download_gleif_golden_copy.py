@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import httpx
 from temporalio import activity
 
+from activities.source_downloads import safe_output_file_path
 from contracts import DownloadedSourceFile, DownloadSourceFilesInput, DownloadSourceFilesResult
 
 _logger = logging.getLogger(__name__)
@@ -20,10 +21,6 @@ def _snapshot_id(value: str) -> str:
     return value or datetime.now(UTC).strftime("%Y-%m-%dT%H")
 
 
-def _output_path(output_dir: str, source: str, dataset: str, snapshot_id: str, file_format: str) -> str:
-    return os.path.join(output_dir, f"{source}-{dataset}-{snapshot_id}.{file_format}")
-
-
 @activity.defn(name="download_gleif_golden_copy")
 async def download_gleif_golden_copy(input: DownloadSourceFilesInput) -> DownloadSourceFilesResult:
     source = input.source or "gleif"
@@ -31,15 +28,17 @@ async def download_gleif_golden_copy(input: DownloadSourceFilesInput) -> Downloa
     snapshot_id = _snapshot_id(input.snapshot_id)
     base_url = os.environ.get("GLEIF_GOLDEN_COPY_BASE_URL", _DEFAULT_BASE_URL).rstrip("/")
     file_format = "json"
+    mode = input.mode or "full"
 
-    if input.mode == "delta":
+    if mode == "delta":
         delta_window = input.delta_window or _DEFAULT_DELTA_WINDOW
         url = f"{base_url}/{dataset}/delta/{delta_window}.{file_format}"
-    else:
+    elif mode == "full":
         url = f"{base_url}/{dataset}/latest.{file_format}"
+    else:
+        raise RuntimeError(f"Unsupported GLEIF download mode: {mode}")
 
-    os.makedirs(input.output_dir, exist_ok=True)
-    file_path = _output_path(input.output_dir, source, dataset, snapshot_id, file_format)
+    file_path = safe_output_file_path(input.output_dir, source, dataset, snapshot_id, file_format)
 
     _logger.info("downloading GLEIF %s file to %s", dataset, file_path)
     async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:

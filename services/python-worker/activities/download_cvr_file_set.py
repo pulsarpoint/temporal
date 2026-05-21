@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import httpx
 from temporalio import activity
 
+from activities.source_downloads import safe_output_file_path
 from contracts import DownloadedSourceFile, DownloadSourceFilesInput, DownloadSourceFilesResult
 
 _logger = logging.getLogger(__name__)
@@ -34,10 +35,6 @@ def _credential_headers() -> dict[str, str]:
     raise RuntimeError("CVR file download credentials are not configured")
 
 
-def _output_path(output_dir: str, source: str, dataset: str, snapshot_id: str, file_format: str) -> str:
-    return os.path.join(output_dir, f"{source}-{dataset}-{snapshot_id}.{file_format}")
-
-
 @activity.defn(name="download_cvr_file_set")
 async def download_cvr_file_set(input: DownloadSourceFilesInput) -> DownloadSourceFilesResult:
     source = input.source or "cvr"
@@ -57,14 +54,13 @@ async def download_cvr_file_set(input: DownloadSourceFilesInput) -> DownloadSour
         "User-Agent": "corpscout-data-pipelines/1.0",
         **_credential_headers(),
     }
-    os.makedirs(input.output_dir, exist_ok=True)
 
     files: list[DownloadedSourceFile] = []
     async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
         for dataset in datasets:
             url = f"{base_url}/{dataset}"
             file_format = "json"
-            file_path = _output_path(input.output_dir, source, dataset, snapshot_id, file_format)
+            file_path = safe_output_file_path(input.output_dir, source, dataset, snapshot_id, file_format)
 
             _logger.info("downloading CVR %s file to %s", dataset, file_path)
             response = await client.get(url, headers=headers)
