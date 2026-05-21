@@ -14,8 +14,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"go.temporal.io/sdk/activity"
 
 	"github.com/pulsarpoint/data-pipelines/contracts"
@@ -29,27 +27,14 @@ type DB interface {
 	SendBatch(ctx context.Context, b *pgx.Batch) pgx.BatchResults
 }
 
-// sourceProcessArgs is a River job that triggers raw-input processing in corpscout.
-type sourceProcessArgs struct {
-	SourceName string `json:"source_name"`
-}
-
-func (sourceProcessArgs) Kind() string { return "source_process" }
-
 // GoActivities holds dependencies for all Go-side Temporal activities.
 type GoActivities struct {
-	pool   DB
-	river  *river.Client[pgx.Tx]
+	pool DB
 }
 
 // NewGoActivities constructs GoActivities. pool must not be nil.
 func NewGoActivities(pool *pgxpool.Pool) *GoActivities {
-	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
-	if err != nil {
-		slog.Warn("go-activities: could not create River client, source_process jobs will not be enqueued", "error", err)
-		return &GoActivities{pool: pool}
-	}
-	return &GoActivities{pool: pool, river: rc}
+	return &GoActivities{pool: pool}
 }
 
 // NewGoActivitiesWithDB is used in tests to inject a mock DB.
@@ -233,11 +218,10 @@ func (a *GoActivities) ImportBrregBulk(ctx context.Context, params contracts.Imp
 	return written, nil
 }
 
-// MarkExecutionComplete updates the temporal_executions row created by corpscout,
-// saves a sync checkpoint so the next run continues from the final cursor,
-// and enqueues a source_process River job so raw inputs are processed.
+// MarkExecutionComplete updates the temporal_executions row created by corpscout
+// and saves a sync checkpoint so the next run continues from the final cursor.
 // If CorpscoutRunID is empty (workflow triggered outside corpscout) the DB update
-// is skipped, but checkpoint save and processing are still performed.
+// is skipped but the checkpoint is still saved.
 func (a *GoActivities) MarkExecutionComplete(ctx context.Context, params contracts.MarkCompleteParams) error {
 	if params.CorpscoutRunID != "" {
 		if _, err := a.pool.Exec(ctx, `
@@ -262,13 +246,6 @@ func (a *GoActivities) MarkExecutionComplete(ctx context.Context, params contrac
 			        updated_at        = now()
 		`, params.Source, params.FinalCursor); err != nil {
 			slog.Warn("MarkExecutionComplete: save sync checkpoint", "source", params.Source, "error", err)
-		}
-	}
-	if a.river != nil {
-		if _, err := a.river.Insert(ctx, sourceProcessArgs{SourceName: params.Source}, &river.InsertOpts{
-			Queue: "source_process",
-		}); err != nil {
-			slog.Warn("MarkExecutionComplete: enqueue source_process job", "source", params.Source, "error", err)
 		}
 	}
 	return nil
