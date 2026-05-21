@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ type batchEntry struct {
 
 type recordingDB struct {
 	entries []batchEntry
+	execErr error
 }
 
 func (db *recordingDB) Begin(context.Context) (pgx.Tx, error) {
@@ -45,14 +47,18 @@ func (db *recordingDB) QueryRow(context.Context, string, ...any) pgx.Row {
 
 func (db *recordingDB) SendBatch(_ context.Context, batch *pgx.Batch) pgx.BatchResults {
 	db.entries = append(db.entries, extractBatchEntries(batch)...)
-	return &recordingBatchResults{remaining: batch.Len()}
+	return &recordingBatchResults{remaining: batch.Len(), err: db.execErr}
 }
 
 type recordingBatchResults struct {
 	remaining int
+	err       error
 }
 
 func (r *recordingBatchResults) Exec() (pgconn.CommandTag, error) {
+	if r.err != nil {
+		return pgconn.CommandTag{}, r.err
+	}
 	if r.remaining > 0 {
 		r.remaining--
 	}
@@ -167,6 +173,10 @@ func TestImportGLEIFGoldenCopy_UsesDirectArrayFallback(t *testing.T) {
 	require.Equal(t, 1, written)
 	require.Len(t, db.entries, 1)
 	require.Equal(t, "506700GE1G29325QX363", db.entries[0].args[1])
+}
+
+func newFailingRecordingDB() *recordingDB {
+	return &recordingDB{execErr: errors.New("insert failed")}
 }
 
 func requireNoTranslationStatusInsert(t *testing.T, query string) {

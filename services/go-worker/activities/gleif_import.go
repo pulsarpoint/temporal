@@ -2,7 +2,6 @@ package activities
 
 import (
 	"archive/zip"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -35,16 +34,46 @@ type gleifCompanyRawInput struct {
 func (a *GoActivities) ImportGLEIFGoldenCopy(ctx context.Context, params contracts.ImportGLEIFGoldenCopyParams) (int, error) {
 	written := 0
 	for _, file := range params.Files {
-		records, err := readGLEIFCompanyRawInputs(file)
-		if err != nil {
-			return written, fmt.Errorf("import %s %s %s: %w", file.Source, file.Dataset, file.FilePath, err)
+		fileWritten := 0
+		records := make([]gleifCompanyRawInput, 0, sourceImportBatchSize)
+		flush := func() error {
+			if len(records) == 0 {
+				return nil
+			}
+			batchWritten, err := a.insertGLEIFCompanyRawInputs(ctx, records, params.RunID)
+			if err != nil {
+				return err
+			}
+			fileWritten += batchWritten
+			written += batchWritten
+			records = records[:0]
+			recordHeartbeat(ctx, map[string]any{
+				"source":  file.Source,
+				"dataset": file.Dataset,
+				"file":    file.FilePath,
+				"written": written,
+			})
+			return nil
 		}
 
-		fileWritten, err := a.insertGLEIFCompanyRawInputs(ctx, records, params.RunID)
+		var flushErr error
+		err := streamGLEIFCompanyRawInputs(file, func(record gleifCompanyRawInput) error {
+			records = append(records, record)
+			if len(records) < sourceImportBatchSize {
+				return nil
+			}
+			flushErr = flush()
+			return flushErr
+		})
 		if err != nil {
+			if flushErr != nil {
+				return written, fmt.Errorf("upsert %s %s %s: %w", file.Source, file.Dataset, file.FilePath, err)
+			}
+			return written, fmt.Errorf("import %s %s %s: %w", file.Source, file.Dataset, file.FilePath, err)
+		}
+		if err := flush(); err != nil {
 			return written, fmt.Errorf("upsert %s %s %s: %w", file.Source, file.Dataset, file.FilePath, err)
 		}
-		written += fileWritten
 		recordHeartbeat(ctx, map[string]any{
 			"source":  file.Source,
 			"dataset": file.Dataset,
@@ -62,54 +91,50 @@ func (a *GoActivities) ImportGLEIFGoldenCopy(ctx context.Context, params contrac
 	return written, nil
 }
 
-func readGLEIFCompanyRawInputs(file contracts.DownloadedSourceFile) ([]gleifCompanyRawInput, error) {
-	raw, err := readDownloadedSourceFile(file)
-	if err != nil {
-		return nil, err
-	}
-
-	records, err := jsonRecordsFromPayload(raw, "data", "leiRecords")
-	if err != nil {
-		return nil, fmt.Errorf("parse JSON: %w", err)
-	}
-
-	inputs := make([]gleifCompanyRawInput, 0, len(records))
-	for _, rawRecord := range records {
-		var item map[string]any
-		if err := json.Unmarshal(rawRecord, &item); err != nil {
-			return nil, fmt.Errorf("parse GLEIF record: %w", err)
+func streamGLEIFCompanyRawInputs(file contracts.DownloadedSourceFile, handle func(gleifCompanyRawInput) error) error {
+	return forEachJSONRecord(file, []string{"data", "leiRecords"}, func(rawRecord json.RawMessage) error {
+		input, ok, err := gleifCompanyRawInputFromRaw(rawRecord)
+		if err != nil || !ok {
+			return err
 		}
-		lei := firstNonEmptyString(
-			mapString(item, "lei"),
-			mapString(item, "id"),
-			mapString(nestedMap(item, "attributes"), "lei"),
-		)
-		if lei == "" {
-			continue
-		}
-		entity := nestedMap(nestedMap(item, "attributes"), "entity")
-		legalName := firstNonEmptyString(
-			mapString(nestedMap(entity, "legalName"), "name"),
-			mapString(item, "legalName"),
-		)
-		status := firstNonEmptyString(
-			mapString(entity, "status"),
-			mapString(item, "entityStatus"),
-		)
-		headquartersCountry := firstNonEmptyString(
-			mapString(nestedMap(entity, "headquartersAddress"), "country"),
-			mapString(item, "headquartersCountry"),
-		)
-		inputs = append(inputs, gleifCompanyRawInput{
-			lei:                     lei,
-			legalName:               legalName,
-			registrationStatus:      status,
-			headquartersCountryCode: headquartersCountry,
-			rawPayload:              []byte(rawRecord),
-			payloadHash:             hashBytes(rawRecord),
-		})
+		return handle(input)
+	})
+}
+
+func gleifCompanyRawInputFromRaw(rawRecord json.RawMessage) (gleifCompanyRawInput, bool, error) {
+	var item map[string]any
+	if err := json.Unmarshal(rawRecord, &item); err != nil {
+		return gleifCompanyRawInput{}, false, fmt.Errorf("parse GLEIF record: %w", err)
 	}
-	return inputs, nil
+	lei := firstNonEmptyString(
+		mapString(item, "lei"),
+		mapString(item, "id"),
+		mapString(nestedMap(item, "attributes"), "lei"),
+	)
+	if lei == "" {
+		return gleifCompanyRawInput{}, false, nil
+	}
+	entity := nestedMap(nestedMap(item, "attributes"), "entity")
+	legalName := firstNonEmptyString(
+		mapString(nestedMap(entity, "legalName"), "name"),
+		mapString(item, "legalName"),
+	)
+	status := firstNonEmptyString(
+		mapString(entity, "status"),
+		mapString(item, "entityStatus"),
+	)
+	headquartersCountry := firstNonEmptyString(
+		mapString(nestedMap(entity, "headquartersAddress"), "country"),
+		mapString(item, "headquartersCountry"),
+	)
+	return gleifCompanyRawInput{
+		lei:                     lei,
+		legalName:               legalName,
+		registrationStatus:      status,
+		headquartersCountryCode: headquartersCountry,
+		rawPayload:              []byte(rawRecord),
+		payloadHash:             hashBytes(rawRecord),
+	}, true, nil
 }
 
 func (a *GoActivities) insertGLEIFCompanyRawInputs(ctx context.Context, records []gleifCompanyRawInput, runID string) (int, error) {
@@ -138,8 +163,8 @@ func (a *GoActivities) insertGLEIFCompanyRawInputs(ctx context.Context, records 
 	return written, nil
 }
 
-func readDownloadedSourceFile(file contracts.DownloadedSourceFile) ([]byte, error) {
-	raw, err := os.ReadFile(file.FilePath)
+func openDownloadedSourceFile(file contracts.DownloadedSourceFile) (io.ReadCloser, error) {
+	source, err := os.Open(file.FilePath)
 	if err != nil {
 		return nil, fmt.Errorf("open source file: %w", err)
 	}
@@ -147,20 +172,27 @@ func readDownloadedSourceFile(file contracts.DownloadedSourceFile) ([]byte, erro
 	format := strings.ToLower(file.Format)
 	ext := strings.ToLower(filepath.Ext(file.FilePath))
 	if format == "gzip" || format == "gz" || strings.HasSuffix(format, ".gz") || ext == ".gz" {
-		reader, err := gzip.NewReader(bytes.NewReader(raw))
+		reader, err := gzip.NewReader(source)
 		if err != nil {
+			_ = source.Close()
 			return nil, fmt.Errorf("open gzip: %w", err)
 		}
-		defer reader.Close()
-		content, err := io.ReadAll(reader)
-		if err != nil {
-			return nil, fmt.Errorf("read gzip: %w", err)
-		}
-		return content, nil
+		return compoundReadCloser{
+			Reader: reader,
+			close: func() error {
+				return closeAll(reader, source)
+			},
+		}, nil
 	}
 	if format == "zip" || strings.HasSuffix(format, ".zip") || ext == ".zip" {
-		reader, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+		stat, err := source.Stat()
 		if err != nil {
+			_ = source.Close()
+			return nil, fmt.Errorf("stat source file: %w", err)
+		}
+		reader, err := zip.NewReader(source, stat.Size())
+		if err != nil {
+			_ = source.Close()
 			return nil, fmt.Errorf("open zip: %w", err)
 		}
 		for _, zippedFile := range reader.File {
@@ -169,46 +201,147 @@ func readDownloadedSourceFile(file contracts.DownloadedSourceFile) ([]byte, erro
 			}
 			rc, err := zippedFile.Open()
 			if err != nil {
+				_ = source.Close()
 				return nil, fmt.Errorf("open zipped file %s: %w", zippedFile.Name, err)
 			}
-			content, readErr := io.ReadAll(rc)
-			closeErr := rc.Close()
-			if readErr != nil {
-				return nil, fmt.Errorf("read zipped file %s: %w", zippedFile.Name, readErr)
-			}
-			if closeErr != nil {
-				return nil, fmt.Errorf("close zipped file %s: %w", zippedFile.Name, closeErr)
-			}
-			return content, nil
+			return compoundReadCloser{
+				Reader: rc,
+				close: func() error {
+					return closeAll(rc, source)
+				},
+			}, nil
 		}
+		_ = source.Close()
 		return nil, fmt.Errorf("zip contains no files")
 	}
-	return raw, nil
+	return source, nil
 }
 
-func jsonRecordsFromPayload(raw []byte, wrapperFields ...string) ([]json.RawMessage, error) {
-	var wrapped map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &wrapped); err == nil {
-		for _, field := range wrapperFields {
-			if wrapped[field] == nil {
-				continue
-			}
-			var records []json.RawMessage
-			if err := json.Unmarshal(wrapped[field], &records); err == nil {
-				return records, nil
-			}
-		}
-	}
+type compoundReadCloser struct {
+	io.Reader
+	close func() error
+}
 
-	var records []json.RawMessage
-	if err := json.Unmarshal(raw, &records); err != nil {
-		var single map[string]any
-		if objectErr := json.Unmarshal(raw, &single); objectErr == nil {
-			return []json.RawMessage{append(json.RawMessage(nil), raw...)}, nil
+func (c compoundReadCloser) Close() error {
+	return c.close()
+}
+
+func closeAll(closers ...io.Closer) error {
+	var closeErr error
+	for _, closer := range closers {
+		if err := closer.Close(); err != nil && closeErr == nil {
+			closeErr = err
 		}
-		return nil, err
 	}
-	return records, nil
+	return closeErr
+}
+
+func forEachJSONRecord(file contracts.DownloadedSourceFile, wrapperFields []string, handle func(json.RawMessage) error) error {
+	reader, err := openDownloadedSourceFile(file)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	return streamJSONRecords(reader, wrapperFields, handle)
+}
+
+func streamJSONRecords(reader io.Reader, wrapperFields []string, handle func(json.RawMessage) error) error {
+	decoder := json.NewDecoder(reader)
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("parse JSON: %w", err)
+	}
+	delim, ok := token.(json.Delim)
+	if !ok {
+		return fmt.Errorf("parse JSON: expected array or object")
+	}
+	switch delim {
+	case '[':
+		return streamJSONArrayRecords(decoder, handle)
+	case '{':
+		return streamJSONObjectRecords(decoder, wrapperFields, handle)
+	default:
+		return fmt.Errorf("parse JSON: expected array or object")
+	}
+}
+
+func streamJSONArrayRecords(decoder *json.Decoder, handle func(json.RawMessage) error) error {
+	for decoder.More() {
+		var rawRecord json.RawMessage
+		if err := decoder.Decode(&rawRecord); err != nil {
+			return fmt.Errorf("parse JSON record: %w", err)
+		}
+		if err := handle(rawRecord); err != nil {
+			return err
+		}
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("parse JSON array: %w", err)
+	}
+	if token != json.Delim(']') {
+		return fmt.Errorf("parse JSON array: expected closing bracket")
+	}
+	return nil
+}
+
+func streamJSONObjectRecords(decoder *json.Decoder, wrapperFields []string, handle func(json.RawMessage) error) error {
+	object := make(map[string]json.RawMessage)
+	foundRecords := false
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return fmt.Errorf("parse JSON object key: %w", err)
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return fmt.Errorf("parse JSON object key: expected string")
+		}
+		if stringInSlice(key, wrapperFields) {
+			valueToken, err := decoder.Token()
+			if err != nil {
+				return fmt.Errorf("parse JSON field %q: %w", key, err)
+			}
+			if valueToken != json.Delim('[') {
+				return fmt.Errorf("parse JSON field %q: expected array", key)
+			}
+			if err := streamJSONArrayRecords(decoder, handle); err != nil {
+				return err
+			}
+			foundRecords = true
+			continue
+		}
+		var rawValue json.RawMessage
+		if err := decoder.Decode(&rawValue); err != nil {
+			return fmt.Errorf("parse JSON field %q: %w", key, err)
+		}
+		object[key] = append(json.RawMessage(nil), rawValue...)
+	}
+	token, err := decoder.Token()
+	if err != nil {
+		return fmt.Errorf("parse JSON object: %w", err)
+	}
+	if token != json.Delim('}') {
+		return fmt.Errorf("parse JSON object: expected closing brace")
+	}
+	if foundRecords {
+		return nil
+	}
+	rawRecord, err := json.Marshal(object)
+	if err != nil {
+		return fmt.Errorf("marshal JSON object record: %w", err)
+	}
+	return handle(rawRecord)
+}
+
+func stringInSlice(value string, candidates []string) bool {
+	for _, candidate := range candidates {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func execBatch(ctx context.Context, db DB, batch *pgx.Batch) error {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -26,6 +27,7 @@ type ariregisterCompanyPayload struct {
 
 func (a *GoActivities) ImportAriregisterBulk(ctx context.Context, params contracts.ImportAriregisterBulkParams) (int, error) {
 	companies := make(map[string]*ariregisterCompanyPayload)
+	sourceDatasets := sourceDatasetSummary(params.Files)
 	for _, file := range params.Files {
 		if err := mergeAriregisterFile(file, companies); err != nil {
 			return 0, fmt.Errorf("import %s %s %s: %w", file.Source, file.Dataset, file.FilePath, err)
@@ -45,30 +47,22 @@ func (a *GoActivities) ImportAriregisterBulk(ctx context.Context, params contrac
 		)
 	}
 
-	written, err := a.insertAriregisterCompanyRawInputs(ctx, companies, params.RunID)
+	written, err := a.insertAriregisterCompanyRawInputs(ctx, companies, params.RunID, sourceDatasets)
 	if err != nil {
-		return written, fmt.Errorf("upsert ariregister raw inputs: %w", err)
+		return written, fmt.Errorf("upsert ariregister raw inputs from %s: %w", sourceDatasets, err)
 	}
 	return written, nil
 }
 
 func mergeAriregisterFile(file contracts.DownloadedSourceFile, companies map[string]*ariregisterCompanyPayload) error {
-	raw, err := readDownloadedSourceFile(file)
-	if err != nil {
-		return err
-	}
-	records, err := jsonRecordsFromPayload(raw, "data", "records")
-	if err != nil {
-		return fmt.Errorf("parse JSON: %w", err)
-	}
-	for _, rawRecord := range records {
+	return forEachJSONRecord(file, []string{"data", "records"}, func(rawRecord json.RawMessage) error {
 		var record map[string]any
 		if err := json.Unmarshal(rawRecord, &record); err != nil {
 			return fmt.Errorf("parse Ariregister record: %w", err)
 		}
 		registryCode := mapString(record, "registry_code")
 		if registryCode == "" {
-			continue
+			return nil
 		}
 		company := companies[registryCode]
 		if company == nil {
@@ -77,7 +71,7 @@ func mergeAriregisterFile(file contracts.DownloadedSourceFile, companies map[str
 		}
 		if hasAnyKey(record, "year", "revenue", "profit", "employee_count") {
 			company.Financials = append(company.Financials, rawRecord)
-			continue
+			return nil
 		}
 		company.LegalName = firstNonEmptyString(mapString(record, "legal_name"), company.LegalName)
 		company.RegistrationStatus = firstNonEmptyString(mapString(record, "registration_status"), company.RegistrationStatus)
@@ -86,11 +80,11 @@ func mergeAriregisterFile(file contracts.DownloadedSourceFile, companies map[str
 		company.Website = firstNonEmptyString(mapString(record, "website"), company.Website)
 		company.Email = firstNonEmptyString(mapString(record, "email"), company.Email)
 		company.Phone = firstNonEmptyString(mapString(record, "phone"), company.Phone)
-	}
-	return nil
+		return nil
+	})
 }
 
-func (a *GoActivities) insertAriregisterCompanyRawInputs(ctx context.Context, companies map[string]*ariregisterCompanyPayload, runID string) (int, error) {
+func (a *GoActivities) insertAriregisterCompanyRawInputs(ctx context.Context, companies map[string]*ariregisterCompanyPayload, runID, sourceDatasets string) (int, error) {
 	records := make([]*ariregisterCompanyPayload, 0, len(companies))
 	registryCodes := make([]string, 0, len(companies))
 	for registryCode := range companies {
@@ -128,7 +122,7 @@ func (a *GoActivities) insertAriregisterCompanyRawInputs(ctx context.Context, co
 				nullableString(company.Phone), "EE", rawPayload, hashBytes(rawPayload), runID)
 		}
 		if err := execBatch(ctx, a.pool, batch); err != nil {
-			return written, fmt.Errorf("batch offset %d: %w", start, err)
+			return written, fmt.Errorf("%s batch offset %d: %w", sourceDatasets, start, err)
 		}
 		written += end - start
 		recordHeartbeat(ctx, written)
@@ -143,4 +137,21 @@ func hasAnyKey(values map[string]any, keys ...string) bool {
 		}
 	}
 	return false
+}
+
+func sourceDatasetSummary(files []contracts.DownloadedSourceFile) string {
+	sourceDatasets := make([]string, 0, len(files))
+	seen := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		source := firstNonEmptyString(file.Source, "unknown-source")
+		dataset := firstNonEmptyString(file.Dataset, "unknown-dataset")
+		sourceDataset := source + ":" + dataset
+		if _, ok := seen[sourceDataset]; ok {
+			continue
+		}
+		seen[sourceDataset] = struct{}{}
+		sourceDatasets = append(sourceDatasets, sourceDataset)
+	}
+	sort.Strings(sourceDatasets)
+	return strings.Join(sourceDatasets, ", ")
 }

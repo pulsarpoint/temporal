@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -15,21 +17,22 @@ import (
 )
 
 type cvrCompanyPayload struct {
-	CVRNumber          string          `json:"cvr_number"`
-	CompanyName        string          `json:"company_name,omitempty"`
-	RegistrationStatus string          `json:"registration_status,omitempty"`
-	CompanyType        string          `json:"company_type,omitempty"`
-	Website            string          `json:"website,omitempty"`
-	Email              string          `json:"email,omitempty"`
-	Phone              string          `json:"phone,omitempty"`
-	Roles              json.RawMessage `json:"roles,omitempty"`
-	Owners             json.RawMessage `json:"owners,omitempty"`
-	BeneficialOwners   json.RawMessage `json:"beneficial_owners,omitempty"`
-	Financials         json.RawMessage `json:"financials,omitempty"`
+	CVRNumber          string            `json:"cvr_number"`
+	CompanyName        string            `json:"company_name,omitempty"`
+	RegistrationStatus string            `json:"registration_status,omitempty"`
+	CompanyType        string            `json:"company_type,omitempty"`
+	Website            string            `json:"website,omitempty"`
+	Email              string            `json:"email,omitempty"`
+	Phone              string            `json:"phone,omitempty"`
+	Roles              []json.RawMessage `json:"roles,omitempty"`
+	Owners             []json.RawMessage `json:"owners,omitempty"`
+	BeneficialOwners   []json.RawMessage `json:"beneficial_owners,omitempty"`
+	Financials         []json.RawMessage `json:"financials,omitempty"`
 }
 
 func (a *GoActivities) ImportCVRBulk(ctx context.Context, params contracts.ImportCVRBulkParams) (int, error) {
 	companies := make(map[string]cvrCompanyPayload)
+	sourceDatasets := sourceDatasetSummary(params.Files)
 	for _, file := range params.Files {
 		records, err := readCVRCompanyRawInputs(file)
 		if err != nil {
@@ -62,42 +65,29 @@ func (a *GoActivities) ImportCVRBulk(ctx context.Context, params contracts.Impor
 	for _, cvrNumber := range cvrNumbers {
 		records = append(records, companies[cvrNumber])
 	}
-	written, err := a.insertCVRCompanyRawInputs(ctx, records, params.RunID)
+	written, err := a.insertCVRCompanyRawInputs(ctx, records, params.RunID, sourceDatasets)
 	if err != nil {
-		return written, fmt.Errorf("upsert cvr raw inputs: %w", err)
+		return written, fmt.Errorf("upsert cvr raw inputs from %s: %w", sourceDatasets, err)
 	}
 	return written, nil
 }
 
 func readCVRCompanyRawInputs(file contracts.DownloadedSourceFile) ([]cvrCompanyPayload, error) {
-	raw, err := readDownloadedSourceFile(file)
+	reader, err := openDownloadedSourceFile(file)
 	if err != nil {
 		return nil, err
 	}
-	var rawRecords []json.RawMessage
-	if err := json.Unmarshal(raw, &rawRecords); err != nil {
-		scanner := bufio.NewScanner(bytes.NewReader(raw))
-		for scanner.Scan() {
-			line := bytes.TrimSpace(scanner.Bytes())
-			if len(line) == 0 {
-				continue
-			}
-			rawRecords = append(rawRecords, append(json.RawMessage(nil), line...))
-		}
-		if err := scanner.Err(); err != nil {
-			return nil, fmt.Errorf("read JSONL: %w", err)
-		}
-	}
+	defer reader.Close()
 
-	companies := make([]cvrCompanyPayload, 0, len(rawRecords))
-	for _, rawRecord := range rawRecords {
+	companies := make([]cvrCompanyPayload, 0)
+	handleRecord := func(rawRecord json.RawMessage) error {
 		var record map[string]json.RawMessage
 		if err := json.Unmarshal(rawRecord, &record); err != nil {
-			return nil, fmt.Errorf("parse CVR record: %w", err)
+			return fmt.Errorf("parse CVR record: %w", err)
 		}
 		cvrNumber := rawJSONScalarString(record["cvr_number"])
 		if cvrNumber == "" {
-			continue
+			return nil
 		}
 		companies = append(companies, cvrCompanyPayload{
 			CVRNumber:          cvrNumber,
@@ -107,16 +97,25 @@ func readCVRCompanyRawInputs(file contracts.DownloadedSourceFile) ([]cvrCompanyP
 			Website:            rawJSONScalarString(record["website"]),
 			Email:              rawJSONScalarString(record["email"]),
 			Phone:              rawJSONScalarString(record["phone"]),
-			Roles:              cloneRawMessage(record["roles"]),
-			Owners:             cloneRawMessage(record["owners"]),
-			BeneficialOwners:   cloneRawMessage(record["beneficial_owners"]),
-			Financials:         cloneRawMessage(record["financials"]),
+			Roles:              rawJSONFragments(record["roles"]),
+			Owners:             rawJSONFragments(record["owners"]),
+			BeneficialOwners:   rawJSONFragments(record["beneficial_owners"]),
+			Financials:         rawJSONFragments(record["financials"]),
 		})
+		return nil
+	}
+
+	if isJSONLSource(file) {
+		if err := forEachJSONLine(reader, handleRecord); err != nil {
+			return nil, err
+		}
+	} else if err := streamJSONRecords(reader, nil, handleRecord); err != nil {
+		return nil, err
 	}
 	return companies, nil
 }
 
-func (a *GoActivities) insertCVRCompanyRawInputs(ctx context.Context, records []cvrCompanyPayload, runID string) (int, error) {
+func (a *GoActivities) insertCVRCompanyRawInputs(ctx context.Context, records []cvrCompanyPayload, runID, sourceDatasets string) (int, error) {
 	written := 0
 	for start := 0; start < len(records); start += sourceImportBatchSize {
 		end := min(start+sourceImportBatchSize, len(records))
@@ -141,7 +140,7 @@ func (a *GoActivities) insertCVRCompanyRawInputs(ctx context.Context, records []
 				"DK", rawPayload, hashBytes(rawPayload), runID)
 		}
 		if err := execBatch(ctx, a.pool, batch); err != nil {
-			return written, fmt.Errorf("batch offset %d: %w", start, err)
+			return written, fmt.Errorf("%s batch offset %d: %w", sourceDatasets, start, err)
 		}
 		written += end - start
 		recordHeartbeat(ctx, written)
@@ -164,7 +163,54 @@ func rawJSONScalarString(raw json.RawMessage) string {
 	return ""
 }
 
+func forEachJSONLine(reader io.Reader, handle func(json.RawMessage) error) error {
+	buffered := bufio.NewReader(reader)
+	for {
+		line, err := buffered.ReadBytes('\n')
+		if len(bytes.TrimSpace(line)) != 0 {
+			rawRecord := append(json.RawMessage(nil), bytes.TrimSpace(line)...)
+			if handleErr := handle(rawRecord); handleErr != nil {
+				return handleErr
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read JSONL: %w", err)
+		}
+	}
+}
+
+func isJSONLSource(file contracts.DownloadedSourceFile) bool {
+	format := strings.ToLower(file.Format)
+	path := strings.ToLower(file.FilePath)
+	return format == "jsonl" || strings.HasSuffix(format, ".jsonl") || strings.HasSuffix(path, ".jsonl")
+}
+
+func rawJSONFragments(raw json.RawMessage) []json.RawMessage {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	if raw[0] != '[' {
+		return []json.RawMessage{cloneRawMessage(raw)}
+	}
+	var fragments []json.RawMessage
+	if err := json.Unmarshal(raw, &fragments); err != nil {
+		return []json.RawMessage{cloneRawMessage(raw)}
+	}
+	nonEmpty := make([]json.RawMessage, 0, len(fragments))
+	for _, fragment := range fragments {
+		if cloned := cloneRawMessage(fragment); len(cloned) != 0 {
+			nonEmpty = append(nonEmpty, cloned)
+		}
+	}
+	return nonEmpty
+}
+
 func cloneRawMessage(raw json.RawMessage) json.RawMessage {
+	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
 		return nil
 	}
@@ -181,18 +227,18 @@ func mergeCVRCompanyPayload(existing cvrCompanyPayload, next cvrCompanyPayload) 
 	existing.Website = firstNonEmptyString(next.Website, existing.Website)
 	existing.Email = firstNonEmptyString(next.Email, existing.Email)
 	existing.Phone = firstNonEmptyString(next.Phone, existing.Phone)
-	existing.Roles = firstNonEmptyRawMessage(next.Roles, existing.Roles)
-	existing.Owners = firstNonEmptyRawMessage(next.Owners, existing.Owners)
-	existing.BeneficialOwners = firstNonEmptyRawMessage(next.BeneficialOwners, existing.BeneficialOwners)
-	existing.Financials = firstNonEmptyRawMessage(next.Financials, existing.Financials)
+	existing.Roles = appendRawFragments(existing.Roles, next.Roles)
+	existing.Owners = appendRawFragments(existing.Owners, next.Owners)
+	existing.BeneficialOwners = appendRawFragments(existing.BeneficialOwners, next.BeneficialOwners)
+	existing.Financials = appendRawFragments(existing.Financials, next.Financials)
 	return existing
 }
 
-func firstNonEmptyRawMessage(values ...json.RawMessage) json.RawMessage {
-	for _, value := range values {
-		if len(value) != 0 {
-			return value
+func appendRawFragments(existing, next []json.RawMessage) []json.RawMessage {
+	for _, fragment := range next {
+		if cloned := cloneRawMessage(fragment); len(cloned) != 0 {
+			existing = append(existing, cloned)
 		}
 	}
-	return nil
+	return existing
 }

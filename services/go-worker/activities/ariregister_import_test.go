@@ -67,3 +67,31 @@ func TestImportAriregisterBulk_MergesBasicAndFinancialRecords(t *testing.T) {
 	require.Equal(t, float64(175000), report["profit"])
 	require.Equal(t, float64(18), report["employee_count"])
 }
+
+func TestImportAriregisterBulk_IncludesSourceDatasetsOnInsertError(t *testing.T) {
+	db := newFailingRecordingDB()
+	acts := activities.NewGoActivitiesWithDB(db)
+
+	_, err := acts.ImportAriregisterBulk(context.Background(), contracts.ImportAriregisterBulkParams{
+		RunID: "run-ari-error",
+		Files: []contracts.DownloadedSourceFile{
+			{
+				Source:   "ariregister",
+				Dataset:  "financials",
+				FilePath: "../testdata/ariregister_financials_sample.json",
+				Format:   "json",
+			},
+			{
+				Source:   "ariregister",
+				Dataset:  "basic",
+				FilePath: "../testdata/ariregister_basic_sample.json",
+				Format:   "json",
+			},
+		},
+	})
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "ariregister:basic")
+	require.ErrorContains(t, err, "ariregister:financials")
+	require.ErrorContains(t, err, "batch offset 0")
+}

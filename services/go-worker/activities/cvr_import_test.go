@@ -67,3 +67,78 @@ func TestImportCVRBulk_InsertsCompanyPayloadFromJSONL(t *testing.T) {
 	require.NotEmpty(t, payload["beneficial_owners"])
 	require.NotEmpty(t, payload["financials"])
 }
+
+func TestImportCVRBulk_AccumulatesFragmentsForSameCVR(t *testing.T) {
+	path := writeTempJSONL(t,
+		map[string]any{
+			"cvr_number":   "87654321",
+			"company_name": "Merged Denmark ApS",
+			"roles":        []map[string]any{{"name": "Alice Example", "role": "director"}},
+			"owners":       []map[string]any{{"name": "Owner A", "ownership_percent": 60}},
+			"financials":   []map[string]any{{"year": 2023, "revenue": 1000}},
+		},
+		map[string]any{
+			"cvr_number":        "87654321",
+			"roles":             []map[string]any{{"name": "Bob Example", "role": "chair"}},
+			"owners":            []map[string]any{{"name": "Owner B", "ownership_percent": 40}},
+			"beneficial_owners": []map[string]any{{"name": "Beneficial B", "ownership_percent": 40}},
+			"financials":        []map[string]any{{"year": 2024, "revenue": 2000}},
+		},
+	)
+	db := &recordingDB{}
+	acts := activities.NewGoActivitiesWithDB(db)
+
+	written, err := acts.ImportCVRBulk(context.Background(), contracts.ImportCVRBulkParams{
+		RunID: "run-cvr-merge",
+		Files: []contracts.DownloadedSourceFile{{
+			Source:   "cvr",
+			Dataset:  "companies",
+			FilePath: path,
+			Format:   "jsonl",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
+	require.Len(t, db.entries, 1)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(db.entries[0].args[9].([]byte), &payload))
+	require.Len(t, payload["roles"], 2)
+	require.Len(t, payload["owners"], 2)
+	require.Len(t, payload["beneficial_owners"], 1)
+	require.Len(t, payload["financials"], 2)
+	require.Equal(t, "Alice Example", payload["roles"].([]any)[0].(map[string]any)["name"])
+	require.Equal(t, "Bob Example", payload["roles"].([]any)[1].(map[string]any)["name"])
+}
+
+func TestImportCVRBulk_IncludesSourceDatasetsOnInsertError(t *testing.T) {
+	db := newFailingRecordingDB()
+	acts := activities.NewGoActivitiesWithDB(db)
+
+	_, err := acts.ImportCVRBulk(context.Background(), contracts.ImportCVRBulkParams{
+		RunID: "run-cvr-error",
+		Files: []contracts.DownloadedSourceFile{{
+			Source:   "cvr",
+			Dataset:  "companies",
+			FilePath: "../testdata/cvr_company_sample.jsonl",
+			Format:   "jsonl",
+		}},
+	})
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "cvr:companies")
+	require.ErrorContains(t, err, "batch offset 0")
+}
+
+func writeTempJSONL(t *testing.T, values ...any) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "source-*.jsonl")
+	require.NoError(t, err)
+	encoder := json.NewEncoder(file)
+	for _, value := range values {
+		require.NoError(t, encoder.Encode(value))
+	}
+	require.NoError(t, file.Close())
+	return file.Name()
+}
