@@ -168,10 +168,24 @@ func openDownloadedSourceFile(file contracts.DownloadedSourceFile) (io.ReadClose
 	if err != nil {
 		return nil, fmt.Errorf("open source file: %w", err)
 	}
+	if file.SHA256 != "" {
+		actualHash, err := hashOpenFile(source)
+		if err != nil {
+			_ = source.Close()
+			return nil, err
+		}
+		if !strings.EqualFold(actualHash, strings.TrimSpace(file.SHA256)) {
+			_ = source.Close()
+			return nil, fmt.Errorf("sha256 mismatch: expected %s got %s", file.SHA256, actualHash)
+		}
+	}
 
-	format := strings.ToLower(file.Format)
-	ext := strings.ToLower(filepath.Ext(file.FilePath))
-	if format == "gzip" || format == "gz" || strings.HasSuffix(format, ".gz") || ext == ".gz" {
+	compression, err := downloadedSourceCompression(source, file)
+	if err != nil {
+		_ = source.Close()
+		return nil, err
+	}
+	if compression == "gzip" {
 		reader, err := gzip.NewReader(source)
 		if err != nil {
 			_ = source.Close()
@@ -184,7 +198,7 @@ func openDownloadedSourceFile(file contracts.DownloadedSourceFile) (io.ReadClose
 			},
 		}, nil
 	}
-	if format == "zip" || strings.HasSuffix(format, ".zip") || ext == ".zip" {
+	if compression == "zip" {
 		stat, err := source.Stat()
 		if err != nil {
 			_ = source.Close()
@@ -215,6 +229,52 @@ func openDownloadedSourceFile(file contracts.DownloadedSourceFile) (io.ReadClose
 		return nil, fmt.Errorf("zip contains no files")
 	}
 	return source, nil
+}
+
+func hashOpenFile(source *os.File) (string, error) {
+	hash := sha256.New()
+	if _, err := io.Copy(hash, source); err != nil {
+		return "", fmt.Errorf("hash source file: %w", err)
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind source file after hash: %w", err)
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func downloadedSourceCompression(source *os.File, file contracts.DownloadedSourceFile) (string, error) {
+	magic, err := peekFileMagic(source)
+	if err != nil {
+		return "", err
+	}
+	if len(magic) >= 2 && magic[0] == 0x1f && magic[1] == 0x8b {
+		return "gzip", nil
+	}
+	if len(magic) >= 4 && magic[0] == 'P' && magic[1] == 'K' {
+		return "zip", nil
+	}
+
+	format := strings.ToLower(file.Format)
+	ext := strings.ToLower(filepath.Ext(file.FilePath))
+	if format == "gzip" || format == "gz" || strings.HasSuffix(format, ".gz") || ext == ".gz" {
+		return "gzip", nil
+	}
+	if format == "zip" || strings.HasSuffix(format, ".zip") || ext == ".zip" {
+		return "zip", nil
+	}
+	return "", nil
+}
+
+func peekFileMagic(source *os.File) ([]byte, error) {
+	magic := make([]byte, 4)
+	n, err := io.ReadFull(source, magic)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("read source file magic: %w", err)
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind source file after magic read: %w", err)
+	}
+	return magic[:n], nil
 }
 
 type compoundReadCloser struct {

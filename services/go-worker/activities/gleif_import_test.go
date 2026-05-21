@@ -1,11 +1,13 @@
 package activities_test
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -175,6 +177,66 @@ func TestImportGLEIFGoldenCopy_UsesDirectArrayFallback(t *testing.T) {
 	require.Equal(t, "506700GE1G29325QX363", db.entries[0].args[1])
 }
 
+func TestImportGLEIFGoldenCopy_SniffsZipBytesWhenFormatIsJSON(t *testing.T) {
+	path := writeTempZipJSON(t, "latest.json", map[string]any{
+		"data": []map[string]any{{
+			"id": "984500E9CB074M63DE44",
+			"attributes": map[string]any{
+				"entity": map[string]any{
+					"legalName": map[string]any{"name": "ZIPPED GLEIF LTD"},
+					"status":    "ACTIVE",
+					"headquartersAddress": map[string]any{
+						"country": "US",
+					},
+				},
+			},
+		}},
+	})
+	db := &recordingDB{}
+	acts := activities.NewGoActivitiesWithDB(db)
+
+	written, err := acts.ImportGLEIFGoldenCopy(context.Background(), contracts.ImportGLEIFGoldenCopyParams{
+		RunID: "run-gleif-zip-json",
+		Files: []contracts.DownloadedSourceFile{{
+			Source:   "gleif",
+			Dataset:  "lei2",
+			FilePath: path,
+			Format:   "json",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
+	require.Len(t, db.entries, 1)
+	require.Equal(t, "984500E9CB074M63DE44", db.entries[0].args[1])
+	require.Equal(t, "ZIPPED GLEIF LTD", db.entries[0].args[2])
+}
+
+func TestImportGLEIFGoldenCopy_VerifiesSourceSHA256BeforeParsing(t *testing.T) {
+	path := writeTempJSON(t, []map[string]any{{
+		"lei":       "549300E9W6GHTJY1Y829",
+		"legalName": "HASH CHECK PLC",
+	}})
+	db := &recordingDB{}
+	acts := activities.NewGoActivitiesWithDB(db)
+
+	written, err := acts.ImportGLEIFGoldenCopy(context.Background(), contracts.ImportGLEIFGoldenCopyParams{
+		RunID: "run-gleif-hash",
+		Files: []contracts.DownloadedSourceFile{{
+			Source:   "gleif",
+			Dataset:  "lei2",
+			FilePath: path,
+			SHA256:   strings.Repeat("0", 64),
+			Format:   "json",
+		}},
+	})
+
+	require.Error(t, err)
+	require.ErrorContains(t, err, "sha256 mismatch")
+	require.Equal(t, 0, written)
+	require.Empty(t, db.entries)
+}
+
 func newFailingRecordingDB() *recordingDB {
 	return &recordingDB{execErr: errors.New("insert failed")}
 }
@@ -182,4 +244,17 @@ func newFailingRecordingDB() *recordingDB {
 func requireNoTranslationStatusInsert(t *testing.T, query string) {
 	t.Helper()
 	require.False(t, strings.Contains(strings.ToLower(query), "translation_status"), "translation_status should use the DB default")
+}
+
+func writeTempZipJSON(t *testing.T, name string, value any) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "source-*.json")
+	require.NoError(t, err)
+	zipWriter := zip.NewWriter(file)
+	entry, err := zipWriter.Create(name)
+	require.NoError(t, err)
+	require.NoError(t, json.NewEncoder(entry).Encode(value))
+	require.NoError(t, zipWriter.Close())
+	require.NoError(t, file.Close())
+	return file.Name()
 }

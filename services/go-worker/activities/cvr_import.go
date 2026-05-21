@@ -34,12 +34,8 @@ func (a *GoActivities) ImportCVRBulk(ctx context.Context, params contracts.Impor
 	companies := make(map[string]cvrCompanyPayload)
 	sourceDatasets := sourceDatasetSummary(params.Files)
 	for _, file := range params.Files {
-		records, err := readCVRCompanyRawInputs(file)
-		if err != nil {
+		if err := mergeCVRCompanyRawInputs(file, companies); err != nil {
 			return 0, fmt.Errorf("import %s %s %s: %w", file.Source, file.Dataset, file.FilePath, err)
-		}
-		for _, record := range records {
-			companies[record.CVRNumber] = mergeCVRCompanyPayload(companies[record.CVRNumber], record)
 		}
 		recordHeartbeat(ctx, map[string]any{
 			"source":  file.Source,
@@ -72,47 +68,54 @@ func (a *GoActivities) ImportCVRBulk(ctx context.Context, params contracts.Impor
 	return written, nil
 }
 
-func readCVRCompanyRawInputs(file contracts.DownloadedSourceFile) ([]cvrCompanyPayload, error) {
+func mergeCVRCompanyRawInputs(file contracts.DownloadedSourceFile, companies map[string]cvrCompanyPayload) error {
 	reader, err := openDownloadedSourceFile(file)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer reader.Close()
 
-	companies := make([]cvrCompanyPayload, 0)
 	handleRecord := func(rawRecord json.RawMessage) error {
-		var record map[string]json.RawMessage
-		if err := json.Unmarshal(rawRecord, &record); err != nil {
-			return fmt.Errorf("parse CVR record: %w", err)
+		payload, ok, err := cvrCompanyPayloadFromRaw(rawRecord)
+		if err != nil || !ok {
+			return err
 		}
-		cvrNumber := rawJSONScalarString(record["cvr_number"])
-		if cvrNumber == "" {
-			return nil
-		}
-		companies = append(companies, cvrCompanyPayload{
-			CVRNumber:          cvrNumber,
-			CompanyName:        rawJSONScalarString(record["company_name"]),
-			RegistrationStatus: rawJSONScalarString(record["registration_status"]),
-			CompanyType:        rawJSONScalarString(record["company_type"]),
-			Website:            rawJSONScalarString(record["website"]),
-			Email:              rawJSONScalarString(record["email"]),
-			Phone:              rawJSONScalarString(record["phone"]),
-			Roles:              rawJSONFragments(record["roles"]),
-			Owners:             rawJSONFragments(record["owners"]),
-			BeneficialOwners:   rawJSONFragments(record["beneficial_owners"]),
-			Financials:         rawJSONFragments(record["financials"]),
-		})
+		companies[payload.CVRNumber] = mergeCVRCompanyPayload(companies[payload.CVRNumber], payload)
 		return nil
 	}
 
 	if isJSONLSource(file) {
 		if err := forEachJSONLine(reader, handleRecord); err != nil {
-			return nil, err
+			return err
 		}
 	} else if err := streamJSONRecords(reader, nil, handleRecord); err != nil {
-		return nil, err
+		return err
 	}
-	return companies, nil
+	return nil
+}
+
+func cvrCompanyPayloadFromRaw(rawRecord json.RawMessage) (cvrCompanyPayload, bool, error) {
+	var record map[string]json.RawMessage
+	if err := json.Unmarshal(rawRecord, &record); err != nil {
+		return cvrCompanyPayload{}, false, fmt.Errorf("parse CVR record: %w", err)
+	}
+	cvrNumber := rawJSONScalarString(record["cvr_number"])
+	if cvrNumber == "" {
+		return cvrCompanyPayload{}, false, nil
+	}
+	return cvrCompanyPayload{
+		CVRNumber:          cvrNumber,
+		CompanyName:        rawJSONScalarString(record["company_name"]),
+		RegistrationStatus: rawJSONScalarString(record["registration_status"]),
+		CompanyType:        rawJSONScalarString(record["company_type"]),
+		Website:            rawJSONScalarString(record["website"]),
+		Email:              rawJSONScalarString(record["email"]),
+		Phone:              rawJSONScalarString(record["phone"]),
+		Roles:              rawJSONFragments(record["roles"]),
+		Owners:             rawJSONFragments(record["owners"]),
+		BeneficialOwners:   rawJSONFragments(record["beneficial_owners"]),
+		Financials:         rawJSONFragments(record["financials"]),
+	}, true, nil
 }
 
 func (a *GoActivities) insertCVRCompanyRawInputs(ctx context.Context, records []cvrCompanyPayload, runID, sourceDatasets string) (int, error) {
