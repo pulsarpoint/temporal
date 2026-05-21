@@ -1,7 +1,7 @@
 package activities
 
 import (
-	"archive/zip"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -135,33 +135,38 @@ func (a *GoActivities) writeBrregRecord(ctx context.Context, rec contracts.RawRe
 	return err == nil, err
 }
 
-// ImportBrregBulk opens the zip file downloaded by the Python activity, parses the
-// JSON array of Brreg entities, and bulk-upserts them into brreg_company_raw_inputs
-// in batches of 2000 records. The zip file is deleted after a successful import.
+// ImportBrregBulk opens the gzip file downloaded by the Python activity, parses the
+// JSON of Brreg entities, and bulk-upserts them into brreg_company_raw_inputs
+// in batches of 2000 records. The file is deleted after a successful import.
 func (a *GoActivities) ImportBrregBulk(ctx context.Context, params contracts.ImportBrregBulkParams) (int, error) {
-	// Open zip.
-	zr, err := zip.OpenReader(params.FilePath)
+	f, err := os.Open(params.FilePath)
 	if err != nil {
-		return 0, fmt.Errorf("open zip %s: %w", params.FilePath, err)
-	}
-	defer zr.Close()
-
-	if len(zr.File) == 0 {
-		return 0, fmt.Errorf("empty zip: %s", params.FilePath)
-	}
-	f, err := zr.File[0].Open()
-	if err != nil {
-		return 0, fmt.Errorf("open zip entry: %w", err)
+		return 0, fmt.Errorf("open %s: %w", params.FilePath, err)
 	}
 	defer f.Close()
 
-	raw, err := io.ReadAll(f)
+	gr, err := gzip.NewReader(f)
 	if err != nil {
-		return 0, fmt.Errorf("read zip entry: %w", err)
+		return 0, fmt.Errorf("gzip reader: %w", err)
+	}
+	defer gr.Close()
+
+	raw, err := io.ReadAll(gr)
+	if err != nil {
+		return 0, fmt.Errorf("read gzip content: %w", err)
 	}
 
+	// Brreg bulk format: {"_embedded":{"enheter":[...]}} — same shape as the list API.
+	// Fall back to a direct JSON array if the wrapper is absent.
 	var entities []json.RawMessage
-	if err := json.Unmarshal(raw, &entities); err != nil {
+	var wrapper struct {
+		Embedded struct {
+			Enheter []json.RawMessage `json:"enheter"`
+		} `json:"_embedded"`
+	}
+	if err := json.Unmarshal(raw, &wrapper); err == nil && len(wrapper.Embedded.Enheter) > 0 {
+		entities = wrapper.Embedded.Enheter
+	} else if err := json.Unmarshal(raw, &entities); err != nil {
 		return 0, fmt.Errorf("parse bulk JSON: %w", err)
 	}
 	slog.Info("ImportBrregBulk: parsed entities", "count", len(entities))
@@ -220,9 +225,9 @@ func (a *GoActivities) ImportBrregBulk(ctx context.Context, params contracts.Imp
 		slog.Info("ImportBrregBulk: progress", "written", written, "total", len(entities))
 	}
 
-	// Clean up the zip file — it's no longer needed.
+	// Clean up — the gzip file is no longer needed.
 	if err := os.Remove(params.FilePath); err != nil {
-		slog.Warn("ImportBrregBulk: could not delete zip", "path", params.FilePath, "error", err)
+		slog.Warn("ImportBrregBulk: could not delete file", "path", params.FilePath, "error", err)
 	}
 
 	return written, nil

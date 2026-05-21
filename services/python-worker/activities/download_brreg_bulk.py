@@ -16,7 +16,7 @@ async def download_brreg_bulk(output_dir: str) -> dict:
     """Download the Brreg bulk zip to output_dir and return {"file_path": ..., "date": ...}."""
     bulk_date = date.today().isoformat()
     os.makedirs(output_dir, exist_ok=True)
-    file_path = os.path.join(output_dir, f"bulk_{bulk_date}.zip")
+    file_path = os.path.join(output_dir, f"bulk_{bulk_date}.json.gz")
 
     _logger.info("downloading Brreg bulk zip to %s", file_path)
     activity.heartbeat("starting download...")
@@ -27,7 +27,7 @@ async def download_brreg_bulk(output_dir: str) -> dict:
             async with client.stream(
                 "GET",
                 _BULK_URL,
-                headers={"Accept": "application/zip", "User-Agent": "corpscout-data-pipelines/1.0"},
+                headers={"Accept": "*/*", "User-Agent": "corpscout-data-pipelines/1.0"},
                 follow_redirects=True,
             ) as resp:
                 resp.raise_for_status()
