@@ -9,12 +9,12 @@ import "encoding/json"
 // Force re-inserts records even if already present in the raw_inputs table.
 // Cursor, RunID, and Accumulated are set by ContinueAsNew to resume across runs.
 type PullCompaniesHouseInput struct {
-	Country        string             `json:"country"`
-	IDs            []string           `json:"ids,omitempty"`
-	CorpscoutRunID string             `json:"corpscout_run_id,omitempty"`
-	Force          bool               `json:"force,omitempty"`
-	Cursor         string             `json:"cursor,omitempty"`
-	RunID          string             `json:"run_id,omitempty"`
+	Country        string              `json:"country"`
+	IDs            []string            `json:"ids,omitempty"`
+	CorpscoutRunID string              `json:"corpscout_run_id,omitempty"`
+	Force          bool                `json:"force,omitempty"`
+	Cursor         string              `json:"cursor,omitempty"`
+	RunID          string              `json:"run_id,omitempty"`
 	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
 }
 
@@ -26,13 +26,13 @@ type PullCompaniesHouseInput struct {
 // Cursor, RunID, and Accumulated are carried forward by ContinueAsNew in
 // incremental mode to resume across Temporal history-size boundaries.
 type PullBrregInput struct {
-	CorpscoutRunID  string             `json:"corpscout_run_id,omitempty"`
-	Force           bool               `json:"force,omitempty"`
-	RunID           string             `json:"run_id,omitempty"`
-	OutputDir       string             `json:"output_dir,omitempty"`
-	Mode            string             `json:"mode,omitempty"`             // "bulk" | "incremental"
-	IncrementalFrom string             `json:"incremental_from,omitempty"` // starting date cursor, e.g. "2026-05-21,0"
-	Cursor          string             `json:"cursor,omitempty"`           // ContinueAsNew carry-forward
+	CorpscoutRunID  string              `json:"corpscout_run_id,omitempty"`
+	Force           bool                `json:"force,omitempty"`
+	RunID           string              `json:"run_id,omitempty"`
+	OutputDir       string              `json:"output_dir,omitempty"`
+	Mode            string              `json:"mode,omitempty"`             // "bulk" | "incremental"
+	IncrementalFrom string              `json:"incremental_from,omitempty"` // starting date cursor, e.g. "2026-05-21,0"
+	Cursor          string              `json:"cursor,omitempty"`           // ContinueAsNew carry-forward
 	Accumulated     PullCompaniesResult `json:"accumulated,omitempty"`      // ContinueAsNew carry-forward
 }
 
@@ -179,4 +179,30 @@ type WriteDiscoveredDomainsParams struct {
 type MarkDomainsSearchedParams struct {
 	Source    string   `json:"source"`
 	NativeIDs []string `json:"native_ids"`
+}
+
+// TranslateBrregInput is the input for the operator-triggered Brreg translation workflow.
+type TranslateBrregInput struct {
+	IDs           []string `json:"ids,omitempty"`
+	PromptVersion string   `json:"prompt_version"`
+	Model         string   `json:"model"`
+	Accumulated   int      `json:"accumulated,omitempty"`
+	FXRateDate    string   `json:"fx_rate_date,omitempty"`
+}
+
+// TranslateBrregBatchParams is the input for the batch translation activity.
+type TranslateBrregBatchParams struct {
+	IDs           []string `json:"ids,omitempty"`
+	PromptVersion string   `json:"prompt_version"`
+	Model         string   `json:"model"`
+	FXRateDate    string   `json:"fx_rate_date,omitempty"`
+	WorkflowRunID string   `json:"workflow_run_id"`
+	BatchSize     int      `json:"batch_size"`
+}
+
+// TranslateBrregBatchResult reports batch progress to the workflow loop.
+type TranslateBrregBatchResult struct {
+	Claimed    int `json:"claimed"`
+	Translated int `json:"translated"`
+	Failed     int `json:"failed"`
 }

@@ -54,6 +54,7 @@ func main() {
 	w.RegisterWorkflow(workflows.PullCompaniesHouse)
 	w.RegisterWorkflow(workflows.PullBrreg)
 	w.RegisterWorkflow(workflows.EnrichCompanyDomains)
+	w.RegisterWorkflow(workflows.TranslateBrregRawInputs)
 
 	w.RegisterActivity(goActs.WriteRawInputs)
 	w.RegisterActivity(goActs.ImportBrregBulk)
@@ -62,6 +63,7 @@ func main() {
 	w.RegisterActivity(goActs.FilterForDomainDiscovery)
 	w.RegisterActivity(goActs.WriteDiscoveredDomains)
 	w.RegisterActivity(goActs.MarkDomainsSearched)
+	w.RegisterActivity(goActs.TranslateBrregBatch)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

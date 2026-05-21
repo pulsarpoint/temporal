@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -17,10 +18,13 @@ import (
 	"go.temporal.io/sdk/activity"
 
 	"github.com/pulsarpoint/data-pipelines/contracts"
+	"github.com/pulsarpoint/data-pipelines/fxrates"
+	"github.com/pulsarpoint/data-pipelines/llm"
 )
 
 // DB is the subset of pgxpool.Pool used by GoActivities (also satisfied by pgxmock).
 type DB interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -29,17 +33,65 @@ type DB interface {
 
 // GoActivities holds dependencies for all Go-side Temporal activities.
 type GoActivities struct {
-	pool DB
+	pool       DB
+	translator BrregTranslator
+	loadRates  BrregRateLoader
 }
+
+type BrregTranslator interface {
+	TranslateMap(ctx context.Context, category string, inputs map[string]string) (map[string]string, error)
+}
+
+type BrregRateLoader func(ctx context.Context, fxRateDate string) (FXRateSet, error)
 
 // NewGoActivities constructs GoActivities. pool must not be nil.
 func NewGoActivities(pool *pgxpool.Pool) *GoActivities {
-	return &GoActivities{pool: pool}
+	model := envDefault("LLM_MODEL", "qwen3:6b")
+	return &GoActivities{
+		pool:       pool,
+		translator: llm.NewClient(envDefault("LLM_BASE_URL", "http://100.77.62.33:8080"), model),
+		loadRates:  loadBrregRates,
+	}
 }
 
 // NewGoActivitiesWithDB is used in tests to inject a mock DB.
 func NewGoActivitiesWithDB(db DB) *GoActivities {
-	return &GoActivities{pool: db}
+	return &GoActivities{pool: db, loadRates: loadBrregRates}
+}
+
+func NewGoActivitiesWithTranslationDeps(db DB, translator BrregTranslator, loadRates BrregRateLoader) *GoActivities {
+	return &GoActivities{pool: db, translator: translator, loadRates: loadRates}
+}
+
+func envDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func loadBrregRates(ctx context.Context, fxRateDate string) (FXRateSet, error) {
+	var (
+		rates *fxrates.Rates
+		err   error
+	)
+	if fxRateDate != "" {
+		date, parseErr := time.Parse("2006-01-02", fxRateDate)
+		if parseErr != nil {
+			return FXRateSet{}, fmt.Errorf("parse fx rate date: %w", parseErr)
+		}
+		rates, err = fxrates.LoadForDate(ctx, date)
+	} else {
+		rates, err = fxrates.Load(ctx)
+	}
+	if err != nil {
+		return FXRateSet{}, err
+	}
+	return FXRateSet{
+		Source:   "ECB",
+		RateDate: rates.RateDate().Format("2006-01-02"),
+		EURPer:   rates.EURPer(),
+	}, nil
 }
 
 // ── List-sync activities ──────────────────────────────────────────────────────
