@@ -53,6 +53,9 @@ func main() {
 
 	w.RegisterWorkflow(workflows.PullCompaniesHouse)
 	w.RegisterWorkflow(workflows.PullBrreg)
+	w.RegisterWorkflow(workflows.PullGLEIF)
+	w.RegisterWorkflow(workflows.PullAriregister)
+	w.RegisterWorkflow(workflows.PullCVR)
 	w.RegisterWorkflow(workflows.EnrichCompanyDomains)
 	w.RegisterWorkflow(workflows.TranslateBrregRawInputs)
 

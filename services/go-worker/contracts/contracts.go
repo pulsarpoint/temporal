@@ -36,6 +36,37 @@ type PullBrregInput struct {
 	Accumulated     PullCompaniesResult `json:"accumulated,omitempty"`      // ContinueAsNew carry-forward
 }
 
+// PullGLEIFInput is the input for the PullGLEIF workflow.
+type PullGLEIFInput struct {
+	CorpscoutRunID string              `json:"corpscout_run_id,omitempty"`
+	RunID          string              `json:"run_id,omitempty"`
+	Mode           string              `json:"mode,omitempty"`
+	DeltaWindow    string              `json:"delta_window,omitempty"`
+	OutputDir      string              `json:"output_dir,omitempty"`
+	Force          bool                `json:"force,omitempty"`
+	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
+}
+
+// PullAriregisterInput is the input for the PullAriregister workflow.
+type PullAriregisterInput struct {
+	CorpscoutRunID string              `json:"corpscout_run_id,omitempty"`
+	RunID          string              `json:"run_id,omitempty"`
+	Mode           string              `json:"mode,omitempty"`
+	OutputDir      string              `json:"output_dir,omitempty"`
+	Force          bool                `json:"force,omitempty"`
+	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
+}
+
+// PullCVRInput is the input for the PullCVR workflow.
+type PullCVRInput struct {
+	CorpscoutRunID string              `json:"corpscout_run_id,omitempty"`
+	RunID          string              `json:"run_id,omitempty"`
+	Mode           string              `json:"mode,omitempty"`
+	OutputDir      string              `json:"output_dir,omitempty"`
+	Force          bool                `json:"force,omitempty"`
+	Accumulated    PullCompaniesResult `json:"accumulated,omitempty"`
+}
+
 // DownloadBrregBulkResult is returned by the download_brreg_bulk Python activity.
 type DownloadBrregBulkResult struct {
 	FilePath string `json:"file_path"`
@@ -63,6 +94,15 @@ type DownloadSourceFilesResult struct {
 	Source     string                 `json:"source"`
 	SnapshotID string                 `json:"snapshot_id"`
 	Files      []DownloadedSourceFile `json:"files"`
+}
+
+type DownloadSourceFilesInput struct {
+	Source      string   `json:"source"`
+	Mode        string   `json:"mode"`
+	OutputDir   string   `json:"output_dir"`
+	Datasets    []string `json:"datasets,omitempty"`
+	SnapshotID  string   `json:"snapshot_id,omitempty"`
+	DeltaWindow string   `json:"delta_window,omitempty"`
 }
 
 type ImportSourceBulkParams struct {
