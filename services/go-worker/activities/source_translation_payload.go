@@ -77,7 +77,7 @@ func BuildCVRRawPayloadEn(_ context.Context, raw json.RawMessage, translations S
 	if out["beneficial_owners"], err = translateObjectArray(src, "beneficial_owners", translations, map[string]string{"ownership_type": "ownership_type", "purpose": "purpose"}); err != nil {
 		return nil, err
 	}
-	if value, ok, err := translateScalar(src, "signing_rule", translations); err != nil {
+	if value, ok, err := translateScalar(src, "signing_rule", "signing_rule", translations); err != nil {
 		return nil, err
 	} else if ok {
 		out["signing_rule"] = value
@@ -88,12 +88,12 @@ func BuildCVRRawPayloadEn(_ context.Context, raw json.RawMessage, translations S
 	if out["financials"], err = translateObjectArray(src, "financials", translations, map[string]string{"note": "financial_note"}); err != nil {
 		return nil, err
 	}
-	if value, ok, err := translateScalar(src, "company_type", translations); err != nil {
+	if value, ok, err := translateScalar(src, "company_type", "legal_form", translations); err != nil {
 		return nil, err
 	} else if ok {
 		out["legal_form"] = value
 	}
-	if value, ok, err := translateScalar(src, "registration_status", translations); err != nil {
+	if value, ok, err := translateScalar(src, "registration_status", "status", translations); err != nil {
 		return nil, err
 	} else if ok {
 		out["status"] = value
@@ -138,12 +138,12 @@ func BuildAriregisterRawPayloadEn(_ context.Context, raw json.RawMessage, transl
 	if out["financials"], err = translateObjectArray(src, "financials", translations, map[string]string{"indicator": "financial_indicator"}); err != nil {
 		return nil, err
 	}
-	if value, ok, err := translateScalar(src, "legal_form", translations); err != nil {
+	if value, ok, err := translateScalar(src, "legal_form", "legal_form", translations); err != nil {
 		return nil, err
 	} else if ok {
 		out["legal_form"] = value
 	}
-	if value, ok, err := translateScalar(src, "registration_status", translations); err != nil {
+	if value, ok, err := translateScalar(src, "registration_status", "status", translations); err != nil {
 		return nil, err
 	} else if ok {
 		out["status"] = value
@@ -189,12 +189,12 @@ func translateObjectArray(src map[string]any, key string, translations SourceTra
 			continue
 		}
 		copied := copyMap(obj)
-		for field := range fields {
+		for field, category := range fields {
 			text := stringValue(obj, field)
 			if text == "" {
 				continue
 			}
-			translated, err := requireTranslation(translations, text)
+			translated, err := requireTranslation(translations, category, text)
 			if err != nil {
 				return nil, err
 			}
@@ -205,12 +205,12 @@ func translateObjectArray(src map[string]any, key string, translations SourceTra
 	return out, nil
 }
 
-func translateScalar(src map[string]any, key string, translations SourceTranslationSet) (string, bool, error) {
+func translateScalar(src map[string]any, key, category string, translations SourceTranslationSet) (string, bool, error) {
 	text := stringValue(src, key)
 	if text == "" {
 		return "", false, nil
 	}
-	translated, err := requireTranslation(translations, text)
+	translated, err := requireTranslation(translations, category, text)
 	if err != nil {
 		return "", false, err
 	}

@@ -48,7 +48,6 @@ func (a *GoActivities) WriteBrregTranslationBatch(ctx context.Context, params co
 		FX:                 params.FX,
 		CachedTranslations: params.CachedTranslations,
 		NewTranslations:    params.NewTranslations,
-		Failures:           params.Failures,
 	})
 	return contracts.TranslateBrregBatchResult(result), err
 }

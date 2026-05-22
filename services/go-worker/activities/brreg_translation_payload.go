@@ -95,12 +95,12 @@ func BuildBrregRawPayloadEn(_ context.Context, raw json.RawMessage, translations
 	copyBool(out, src, "harRegistrertAntallAnsatte", "has_registered_employees")
 	copyAny(out, src, "sisteInnsendteAarsregnskap", "last_annual_report_year")
 
-	if value, ok, err := translatedCodeDescription(src, "organisasjonsform", translations); err != nil {
+	if value, ok, err := translatedCodeDescription(src, "organisasjonsform", "org_form", translations); err != nil {
 		return nil, err
 	} else if ok {
 		out["organization_form"] = value
 	}
-	if value, ok, err := translatedCodeDescription(src, "institusjonellSektorkode", translations); err != nil {
+	if value, ok, err := translatedCodeDescription(src, "institusjonellSektorkode", "sector_code", translations); err != nil {
 		return nil, err
 	} else if ok {
 		out["sector_code"] = value
@@ -113,7 +113,7 @@ func BuildBrregRawPayloadEn(_ context.Context, raw json.RawMessage, translations
 		{"naeringskode2", "industry_code_2"},
 		{"naeringskode3", "industry_code_3"},
 	} {
-		if value, ok, err := translatedCodeDescription(src, pair.from, translations); err != nil {
+		if value, ok, err := translatedCodeDescription(src, pair.from, "industry_code", translations); err != nil {
 			return nil, err
 		} else if ok {
 			out[pair.to] = value
@@ -122,17 +122,17 @@ func BuildBrregRawPayloadEn(_ context.Context, raw json.RawMessage, translations
 		}
 	}
 
-	if activities, err := translatedArray(src, "aktivitet", translations); err != nil {
+	if activities, err := translatedArray(src, "aktivitet", "activity", translations); err != nil {
 		return nil, err
 	} else {
 		out["activities"] = activities
 	}
-	if purpose, err := translatedArray(src, "vedtektsfestetFormaal", translations); err != nil {
+	if purpose, err := translatedArray(src, "vedtektsfestetFormaal", "statutory_purpose", translations); err != nil {
 		return nil, err
 	} else {
 		out["statutory_purpose"] = purpose
 	}
-	if vat, err := translatedArray(src, "frivilligMvaRegistrertBeskrivelser", translations); err != nil {
+	if vat, err := translatedArray(src, "frivilligMvaRegistrertBeskrivelser", "vat_description", translations); err != nil {
 		return nil, err
 	} else {
 		out["vat_descriptions"] = vat
@@ -178,7 +178,7 @@ func copyAny(out, src map[string]any, from, to string) {
 	}
 }
 
-func translatedCodeDescription(src map[string]any, key string, translations BrregTranslationSet) (map[string]any, bool, error) {
+func translatedCodeDescription(src map[string]any, key, category string, translations BrregTranslationSet) (map[string]any, bool, error) {
 	obj, ok := src[key].(map[string]any)
 	if !ok || obj == nil {
 		return nil, false, nil
@@ -188,7 +188,7 @@ func translatedCodeDescription(src map[string]any, key string, translations Brre
 		out["code"] = code
 	}
 	if description, ok := obj["beskrivelse"].(string); ok && description != "" {
-		translated, err := requireTranslation(translations, description)
+		translated, err := requireTranslation(translations, category, description)
 		if err != nil {
 			return nil, false, err
 		}
@@ -197,7 +197,7 @@ func translatedCodeDescription(src map[string]any, key string, translations Brre
 	return out, true, nil
 }
 
-func translatedArray(src map[string]any, key string, translations BrregTranslationSet) ([]string, error) {
+func translatedArray(src map[string]any, key, category string, translations BrregTranslationSet) ([]string, error) {
 	values, ok := src[key].([]any)
 	if !ok {
 		return []string{}, nil
@@ -208,7 +208,7 @@ func translatedArray(src map[string]any, key string, translations BrregTranslati
 		if !ok || text == "" {
 			continue
 		}
-		translated, err := requireTranslation(translations, text)
+		translated, err := requireTranslation(translations, category, text)
 		if err != nil {
 			return nil, err
 		}
@@ -257,7 +257,7 @@ func buildCapital(src map[string]any, translations BrregTranslationSet, fx FXRat
 		out["shares"] = shares
 	}
 	if capitalType, ok := obj["type"].(string); ok && capitalType != "" {
-		translated, err := requireTranslation(translations, capitalType)
+		translated, err := requireTranslation(translations, "capital_type", capitalType)
 		if err != nil {
 			return nil, false, err
 		}
@@ -321,8 +321,11 @@ func addressObject(src map[string]any, key string) map[string]any {
 	return out
 }
 
-func requireTranslation(translations BrregTranslationSet, text string) (string, error) {
-	translated := translations[text]
+func requireTranslation(translations BrregTranslationSet, category, text string) (string, error) {
+	translated := translations[termKey(category, text)]
+	if translated == "" {
+		translated = translations[text]
+	}
 	if translated == "" {
 		return "", fmt.Errorf("missing translation for %q", text)
 	}

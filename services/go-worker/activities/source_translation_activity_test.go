@@ -32,3 +32,42 @@ func TestSourceTranslationWrite_MissingIndividualTermMarksRowFailedWithSafeError
 	require.NoError(t, err)
 	require.Equal(t, contracts.TranslateSourceBatchResult{Claimed: 1, Failed: 1}, result)
 }
+
+func TestPrepareSourceTranslationBatch_NormalRunPreservesPendingOnlyClaim(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	mock.ExpectQuery(`translation_status = 'pending'`).
+		WithArgs("run-1", 10, 50, nil).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
+
+	result, err := acts.PrepareSourceTranslationBatch(context.Background(), contracts.PrepareSourceTranslationBatchParams{
+		Source:        "cvr",
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		WorkflowRunID: "run-1",
+		BatchSize:     50,
+	})
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+}
+
+func TestPrepareSourceTranslationBatch_ExplicitIDsCanRetryFailedRows(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	mock.ExpectQuery(`translation_status IN \('pending', 'failed'\)`).
+		WithArgs("run-1", 10, 50, []string{"row-1"}).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
+
+	result, err := acts.PrepareSourceTranslationBatch(context.Background(), contracts.PrepareSourceTranslationBatchParams{
+		Source:        "cvr",
+		IDs:           []string{"row-1"},
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		WorkflowRunID: "run-1",
+		BatchSize:     50,
+	})
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+}

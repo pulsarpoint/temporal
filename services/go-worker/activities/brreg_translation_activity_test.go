@@ -52,8 +52,8 @@ func TestPrepareBrregTranslationBatch_LooksUpTranslationCacheInBulk(t *testing.T
 	})
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{
-		"Aksjeselskap": "Limited company",
-		"Eie aksjer":   "Own shares",
+		"org_form\x00Aksjeselskap": "Limited company",
+		"activity\x00Eie aksjer":   "Own shares",
 	}, result.CachedTranslations)
 	require.Equal(t, []contracts.TranslationItem{
 		{ID: "t0", Text: "Konsulentvirksomhet"},

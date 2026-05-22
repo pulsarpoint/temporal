@@ -74,6 +74,26 @@ func TestBuildCVRRawPayloadEn_MissingIndividualTermFailsSafely(t *testing.T) {
 	require.NotContains(t, err.Error(), "SELECT")
 }
 
+func TestBuildCVRRawPayloadEn_UsesCategorySpecificTranslations(t *testing.T) {
+	raw := json.RawMessage(`{
+		"cvr_number": "12345678",
+		"company_name": "Example Denmark ApS",
+		"registration_status": "NORMAL",
+		"company_type": "NORMAL"
+	}`)
+
+	translated, err := activities.BuildCVRRawPayloadEn(context.Background(), raw, activities.SourceTranslationSet{
+		"legal_form\x00NORMAL": "Legal form normal",
+		"status\x00NORMAL":     "Status normal",
+	}, activities.FXRateSet{})
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(translated, &payload))
+	require.Equal(t, "Legal form normal", payload["legal_form"])
+	require.Equal(t, "Status normal", payload["status"])
+}
+
 func TestBuildAriregisterRawPayloadEn_NormalizesPayloadAndKeepsIdentifiersUntranslated(t *testing.T) {
 	raw := json.RawMessage(`{
 		"registry_code": "10000001",

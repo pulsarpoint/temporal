@@ -97,7 +97,7 @@ func (a *GoActivities) PrepareSourceTranslationBatch(ctx context.Context, params
 	categoryCounters := map[string]int{}
 	for _, term := range sortedTerms {
 		if translated, ok := cached[translationCacheLookupKey(term)]; ok {
-			result.CachedTranslations[term.Text] = translated
+			result.CachedTranslations[termKey(term.Category, term.Text)] = translated
 			continue
 		}
 		next := categoryCounters[term.Category]
@@ -124,9 +124,9 @@ func (a *GoActivities) WriteSourceTranslationBatch(ctx context.Context, params c
 
 	result := contracts.TranslateSourceBatchResult{Claimed: len(params.Rows)}
 	translations := SourceTranslationSet{}
-	for original, translated := range params.CachedTranslations {
+	for key, translated := range params.CachedTranslations {
 		if translated != "" {
-			translations[original] = translated
+			translations[key] = translated
 		}
 	}
 	newTranslations := map[string]SourceTranslationTerm{}
@@ -134,8 +134,9 @@ func (a *GoActivities) WriteSourceTranslationBatch(ctx context.Context, params c
 		if term.Text == "" || term.Translation == "" {
 			continue
 		}
-		translations[term.Text] = term.Translation
-		newTranslations[termKey(term.Category, term.Text)] = SourceTranslationTerm{Category: term.Category, Text: term.Text}
+		key := termKey(term.Category, term.Text)
+		translations[key] = term.Translation
+		newTranslations[key] = SourceTranslationTerm{Category: term.Category, Text: term.Text}
 	}
 
 	fx := FXRateSet{
@@ -276,7 +277,7 @@ func (a *GoActivities) claimSourceTranslationRows(ctx context.Context, cfg Sourc
 	}
 	claimSQL := cfg.ClaimSQL
 	if claimSQL == "" {
-		includeFailed := len(params.IDs) > 0 || cfg.SourceName != "brreg"
+		includeFailed := len(params.IDs) > 0
 		claimSQL = sourceClaimSQL(cfg.TableName, includeFailed)
 	}
 	rows, err := a.pool.Query(ctx, claimSQL, params.WorkflowRunID, sourceTranslationLeaseMinutes, params.BatchSize, ids)
@@ -408,7 +409,7 @@ func upsertSourceTranslationCacheBulk(
 	translatedTexts := []string{}
 	for _, key := range keys {
 		term := newTranslations[key]
-		translated := translations[term.Text]
+		translated := translations[termKey(term.Category, term.Text)]
 		if translated == "" {
 			continue
 		}

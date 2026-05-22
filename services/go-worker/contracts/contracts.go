@@ -369,7 +369,6 @@ type WriteBrregTranslationBatchParams struct {
 	FX                 FXRatePayload                `json:"fx"`
 	CachedTranslations map[string]string            `json:"cached_translations"`
 	NewTranslations    []BrregTranslatedTerm        `json:"new_translations"`
-	Failures           []TranslationFailure         `json:"failures"`
 }
 
 // WriteSourceTranslationBatchParams is the source-generic write activity input.
@@ -381,7 +380,6 @@ type WriteSourceTranslationBatchParams struct {
 	FX                 FXRatePayload                 `json:"fx"`
 	CachedTranslations map[string]string             `json:"cached_translations"`
 	NewTranslations    []SourceTranslatedTerm        `json:"new_translations"`
-	Failures           []TranslationFailure          `json:"failures"`
 }
 
 // TranslateBrregBatchResult reports batch progress to the workflow loop.
