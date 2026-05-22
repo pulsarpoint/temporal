@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-type BrregTranslationSet map[string]string
+type BrregTranslationSet = SourceTranslationSet
 
 type FXRateSet struct {
 	Source   string
@@ -16,10 +16,7 @@ type FXRateSet struct {
 	EURPer   map[string]float64
 }
 
-type BrregTranslationTerm struct {
-	Category string
-	Text     string
-}
+type BrregTranslationTerm = SourceTranslationTerm
 
 func ExtractBrregTranslationTerms(raw json.RawMessage) ([]BrregTranslationTerm, error) {
 	var src map[string]any

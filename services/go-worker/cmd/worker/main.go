@@ -57,6 +57,7 @@ func main() {
 	w.RegisterWorkflow(workflows.PullAriregister)
 	w.RegisterWorkflow(workflows.PullCVR)
 	w.RegisterWorkflow(workflows.EnrichCompanyDomains)
+	w.RegisterWorkflow(workflows.TranslateSourceRawInputs)
 	w.RegisterWorkflow(workflows.TranslateBrregRawInputs)
 
 	w.RegisterActivity(goActs.WriteRawInputs)
@@ -71,6 +72,8 @@ func main() {
 	w.RegisterActivity(goActs.MarkDomainsSearched)
 	w.RegisterActivity(goActs.PrepareBrregTranslationBatch)
 	w.RegisterActivity(goActs.WriteBrregTranslationBatch)
+	w.RegisterActivity(goActs.PrepareSourceTranslationBatch)
+	w.RegisterActivity(goActs.WriteSourceTranslationBatch)
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)

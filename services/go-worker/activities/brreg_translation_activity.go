@@ -27,135 +27,30 @@ func (a *GoActivities) TranslateBrregBatch(ctx context.Context, params contracts
 }
 
 func (a *GoActivities) PrepareBrregTranslationBatch(ctx context.Context, params contracts.PrepareBrregTranslationBatchParams) (contracts.PrepareBrregTranslationBatchResult, error) {
-	if params.BatchSize <= 0 {
-		params.BatchSize = 50
-	}
-	if params.PromptVersion == "" {
-		params.PromptVersion = "v1"
-	}
-	if params.Model == "" {
-		params.Model = "qwen3:6b"
-	}
-	if params.WorkflowRunID == "" {
-		params.WorkflowRunID = "manual"
-	}
-	if a.loadRates == nil {
-		return contracts.PrepareBrregTranslationBatchResult{}, fmt.Errorf("brreg FX loader is not configured")
-	}
-
-	rows, err := a.claimBrregTranslationRows(ctx, params)
-	if err != nil {
-		return contracts.PrepareBrregTranslationBatchResult{}, err
-	}
-	result := contracts.PrepareBrregTranslationBatchResult{
-		Claimed:            len(rows),
-		Rows:               make([]contracts.BrregTranslationRowPayload, 0, len(rows)),
-		CachedTranslations: map[string]string{},
-		MissesByCategory:   map[string][]contracts.TranslationItem{},
-	}
-	if len(rows) == 0 {
-		return result, nil
-	}
-
-	needsFX := false
-	uniqueTerms := map[string]BrregTranslationTerm{}
-	for _, row := range rows {
-		if BrregPayloadNeedsFX(row.RawPayload) {
-			needsFX = true
-		}
-		terms, err := ExtractBrregTranslationTerms(row.RawPayload)
-		if err != nil {
-			return contracts.PrepareBrregTranslationBatchResult{}, err
-		}
-		result.Rows = append(result.Rows, contracts.BrregTranslationRowPayload{
-			ID:         row.ID,
-			RawPayload: row.RawPayload,
-		})
-		for _, term := range terms {
-			key := termKey(term.Category, term.Text)
-			uniqueTerms[key] = term
-		}
-	}
-
-	fx := FXRateSet{}
-	if needsFX {
-		fx, err = a.loadRates(ctx, params.FXRateDate)
-		if err != nil {
-			return contracts.PrepareBrregTranslationBatchResult{}, fmt.Errorf("load brreg FX rates: %w", err)
-		}
-		result.FX = contracts.FXRatePayload{
-			Source:   fx.Source,
-			RateDate: fx.RateDate,
-			EURPer:   fx.EURPer,
-		}
-	}
-
-	sortedKeys := make([]string, 0, len(uniqueTerms))
-	for key := range uniqueTerms {
-		sortedKeys = append(sortedKeys, key)
-	}
-	sort.Strings(sortedKeys)
-	categoryCounters := map[string]int{}
-	for _, key := range sortedKeys {
-		term := uniqueTerms[key]
-		translated, ok, err := a.lookupTranslationCache(ctx, term, params)
-		if err != nil {
-			return contracts.PrepareBrregTranslationBatchResult{}, err
-		}
-		if ok {
-			result.CachedTranslations[term.Text] = translated
-			continue
-		}
-		next := categoryCounters[term.Category]
-		categoryCounters[term.Category] = next + 1
-		result.MissesByCategory[term.Category] = append(result.MissesByCategory[term.Category], contracts.TranslationItem{
-			ID:   fmt.Sprintf("t%d", next),
-			Text: term.Text,
-		})
-	}
-
-	return result, nil
+	result, err := a.PrepareSourceTranslationBatch(ctx, contracts.PrepareSourceTranslationBatchParams{
+		Source:        "brreg",
+		IDs:           params.IDs,
+		PromptVersion: params.PromptVersion,
+		Model:         params.Model,
+		FXRateDate:    params.FXRateDate,
+		WorkflowRunID: params.WorkflowRunID,
+		BatchSize:     params.BatchSize,
+	})
+	return contracts.PrepareBrregTranslationBatchResult(result), err
 }
 
 func (a *GoActivities) WriteBrregTranslationBatch(ctx context.Context, params contracts.WriteBrregTranslationBatchParams) (contracts.TranslateBrregBatchResult, error) {
-	result := contracts.TranslateBrregBatchResult{Claimed: len(params.Rows)}
-	translations := BrregTranslationSet{}
-	for original, translated := range params.CachedTranslations {
-		if translated != "" {
-			translations[original] = translated
-		}
-	}
-	newTranslations := map[string]BrregTranslationTerm{}
-	for _, term := range params.NewTranslations {
-		if term.Text == "" || term.Translation == "" {
-			continue
-		}
-		translations[term.Text] = term.Translation
-		newTranslations[termKey(term.Category, term.Text)] = BrregTranslationTerm{Category: term.Category, Text: term.Text}
-	}
-	fx := FXRateSet{
-		Source:   params.FX.Source,
-		RateDate: params.FX.RateDate,
-		EURPer:   params.FX.EURPer,
-	}
-
-	successPayloads := map[string]json.RawMessage{}
-	failures := map[string]string{}
-	for _, row := range params.Rows {
-		payload, err := BuildBrregRawPayloadEn(ctx, row.RawPayload, translations, fx)
-		if err != nil {
-			failures[row.ID] = err.Error()
-			continue
-		}
-		successPayloads[row.ID] = payload
-	}
-
-	if err := a.writeBrregTranslationResults(ctx, params, fx, translations, newTranslations, successPayloads, failures); err != nil {
-		return result, err
-	}
-	result.Translated = len(successPayloads)
-	result.Failed = len(failures)
-	return result, nil
+	result, err := a.WriteSourceTranslationBatch(ctx, contracts.WriteSourceTranslationBatchParams{
+		Source:             "brreg",
+		PromptVersion:      params.PromptVersion,
+		Model:              params.Model,
+		Rows:               params.Rows,
+		FX:                 params.FX,
+		CachedTranslations: params.CachedTranslations,
+		NewTranslations:    params.NewTranslations,
+		Failures:           params.Failures,
+	})
+	return contracts.TranslateBrregBatchResult(result), err
 }
 
 func (a *GoActivities) claimBrregTranslationRows(ctx context.Context, params contracts.TranslateBrregBatchParams) ([]brregTranslationRow, error) {
@@ -224,25 +119,49 @@ func (a *GoActivities) claimBrregTranslationRows(ctx context.Context, params con
 	return claimed, nil
 }
 
-func (a *GoActivities) lookupTranslationCache(ctx context.Context, term BrregTranslationTerm, params contracts.TranslateBrregBatchParams) (string, bool, error) {
-	var translated string
-	err := a.pool.QueryRow(ctx, `
-		SELECT translated_text
-		FROM translation_cache
-		WHERE category = $1
-		  AND original_hash = $2
-		  AND source_lang = 'no'
-		  AND target_lang = 'en'
-		  AND prompt_version = $3
-		  AND model = $4
-	`, term.Category, translationHash(term.Text), params.PromptVersion, params.Model).Scan(&translated)
-	if err == nil {
-		return translated, true, nil
+func (a *GoActivities) lookupTranslationCacheBulk(ctx context.Context, terms []BrregTranslationTerm, params contracts.TranslateBrregBatchParams) (map[string]string, error) {
+	cached := map[string]string{}
+	if len(terms) == 0 {
+		return cached, nil
 	}
-	if err == pgx.ErrNoRows {
-		return "", false, nil
+
+	categories := make([]string, 0, len(terms))
+	hashes := make([]string, 0, len(terms))
+	for _, term := range terms {
+		categories = append(categories, term.Category)
+		hashes = append(hashes, translationHash(term.Text))
 	}
-	return "", false, fmt.Errorf("lookup translation cache: %w", err)
+
+	rows, err := a.pool.Query(ctx, `
+		SELECT tc.category, tc.original_hash, tc.translated_text
+		FROM (
+			SELECT DISTINCT category, original_hash
+			FROM unnest($1::text[], $2::text[]) AS r(category, original_hash)
+		) AS requested
+		JOIN translation_cache tc
+		  ON tc.category = requested.category
+		 AND tc.original_hash = requested.original_hash
+		 AND tc.source_lang = 'no'
+		 AND tc.target_lang = 'en'
+		 AND tc.prompt_version = $3
+		 AND tc.model = $4
+	`, categories, hashes, params.PromptVersion, params.Model)
+	if err != nil {
+		return nil, fmt.Errorf("lookup translation cache bulk: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var category, originalHash, translated string
+		if err := rows.Scan(&category, &originalHash, &translated); err != nil {
+			return nil, fmt.Errorf("scan translation cache bulk row: %w", err)
+		}
+		cached[translationCacheLookupHashKey(category, originalHash)] = translated
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate translation cache bulk rows: %w", err)
+	}
+	return cached, nil
 }
 
 func (a *GoActivities) writeBrregTranslationResults(
@@ -264,21 +183,8 @@ func (a *GoActivities) writeBrregTranslationResults(
 		}
 	}()
 
-	for _, term := range newTranslations {
-		translated := translations[term.Text]
-		if translated == "" {
-			continue
-		}
-		if _, err := tx.Exec(ctx, `
-			INSERT INTO translation_cache (
-				category, original_hash, source_lang, target_lang, prompt_version, model, original_text, translated_text
-			)
-			VALUES ($1, $2, 'no', 'en', $3, $4, $5, $6)
-			ON CONFLICT (category, original_hash, source_lang, target_lang, prompt_version, model)
-			DO UPDATE SET translated_text = EXCLUDED.translated_text
-		`, term.Category, translationHash(term.Text), params.PromptVersion, params.Model, term.Text, translated); err != nil {
-			return fmt.Errorf("upsert translation cache: %w", err)
-		}
+	if err := upsertTranslationCacheBulk(ctx, tx, params, translations, newTranslations); err != nil {
+		return err
 	}
 
 	for id, payload := range successPayloads {
@@ -328,8 +234,71 @@ func (a *GoActivities) writeBrregTranslationResults(
 	return nil
 }
 
+func upsertTranslationCacheBulk(
+	ctx context.Context,
+	tx pgx.Tx,
+	params contracts.WriteBrregTranslationBatchParams,
+	translations BrregTranslationSet,
+	newTranslations map[string]BrregTranslationTerm,
+) error {
+	if len(newTranslations) == 0 {
+		return nil
+	}
+
+	keys := make([]string, 0, len(newTranslations))
+	for key := range newTranslations {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	categories := []string{}
+	hashes := []string{}
+	originals := []string{}
+	translatedTexts := []string{}
+	for _, key := range keys {
+		term := newTranslations[key]
+		translated := translations[term.Text]
+		if translated == "" {
+			continue
+		}
+		categories = append(categories, term.Category)
+		hashes = append(hashes, translationHash(term.Text))
+		originals = append(originals, term.Text)
+		translatedTexts = append(translatedTexts, translated)
+	}
+	if len(categories) == 0 {
+		return nil
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO translation_cache (
+			category, original_hash, source_lang, target_lang, prompt_version, model, original_text, translated_text
+		)
+		SELECT category, original_hash, 'no', 'en', $5, $6, original_text, translated_text
+		FROM unnest(
+			$1::text[],
+			$2::text[],
+			$3::text[],
+			$4::text[]
+		) AS t(category, original_hash, original_text, translated_text)
+		ON CONFLICT (category, original_hash, source_lang, target_lang, prompt_version, model)
+		DO UPDATE SET translated_text = EXCLUDED.translated_text
+	`, categories, hashes, originals, translatedTexts, params.PromptVersion, params.Model); err != nil {
+		return fmt.Errorf("bulk upsert translation cache: %w", err)
+	}
+	return nil
+}
+
 func termKey(category, text string) string {
 	return category + "\x00" + text
+}
+
+func translationCacheLookupKey(term BrregTranslationTerm) string {
+	return translationCacheLookupHashKey(term.Category, translationHash(term.Text))
+}
+
+func translationCacheLookupHashKey(category, originalHash string) string {
+	return category + "\x00" + originalHash
 }
 
 func translationHash(text string) string {

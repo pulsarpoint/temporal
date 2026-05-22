@@ -65,6 +65,8 @@ class TranslationItem:
 class TranslateTermsInput:
     category: str
     items: list[TranslationItem]
+    source_lang: str = ""
+    target_lang: str = "en"
     model: str = ""
     prompt_version: str = "v1"
 

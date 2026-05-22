@@ -45,6 +45,8 @@ class DSPyTranslationService:
             retry_payload = TranslateTermsInput(
                 category=payload.category,
                 items=missing_items,
+                source_lang=payload.source_lang,
+                target_lang=payload.target_lang,
                 model=payload.model,
                 prompt_version=payload.prompt_version,
             )
@@ -82,14 +84,16 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
     import dspy
 
     class TranslateBusinessTermsSignature(dspy.Signature):
-        """Translate Norwegian business registry text to English.
+        """Translate business registry text to English.
 
         Return a JSON object using this exact shape:
         {"translations":[{"id":"same id from input","translation":"English translation"}]}
         Preserve ids exactly. Never use source text as JSON keys. Return JSON only.
         """
 
-        category: str = dspy.InputField(desc="Translation category such as org_form, capital_type, or activity.")
+        category: str = dspy.InputField(desc="Translation category such as legal_form, status, role, or activity.")
+        source_lang: str = dspy.InputField(desc="BCP-47 source language code, for example no, da, or et.")
+        target_lang: str = dspy.InputField(desc="BCP-47 target language code, usually en.")
         items_json: str = dspy.InputField(desc="JSON object with items: [{id,text}].")
         translations_json: str = dspy.OutputField(desc="JSON object with translations: [{id,translation}].")
 
@@ -109,7 +113,12 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
     )
 
     with dspy.context(lm=lm):
-        prediction = predictor(category=payload.category, items_json=items_json)
+        prediction = predictor(
+            category=payload.category,
+            source_lang=payload.source_lang or "no",
+            target_lang=payload.target_lang or "en",
+            items_json=items_json,
+        )
 
     content = getattr(prediction, "translations_json", "")
     return parse_translation_payload(str(content), {item.id for item in payload.items})
