@@ -407,14 +407,21 @@ func upsertSourceTranslationCacheBulk(
 	hashes := []string{}
 	originals := []string{}
 	translatedTexts := []string{}
+	seen := map[string]struct{}{}
 	for _, key := range keys {
 		term := newTranslations[key]
 		translated := translations[termKey(term.Category, term.Text)]
 		if translated == "" {
 			continue
 		}
+		hash := translationHash(term.Text)
+		dedupeKey := term.Category + "\x00" + hash
+		if _, exists := seen[dedupeKey]; exists {
+			continue
+		}
+		seen[dedupeKey] = struct{}{}
 		categories = append(categories, term.Category)
-		hashes = append(hashes, translationHash(term.Text))
+		hashes = append(hashes, hash)
 		originals = append(originals, term.Text)
 		translatedTexts = append(translatedTexts, translated)
 	}
