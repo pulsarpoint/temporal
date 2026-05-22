@@ -76,26 +76,26 @@ class DSPyTranslationService:
         return await asyncio.to_thread(run_dspy_translation, payload, model, base_url)
 
 
-class TranslateBusinessTerms:
-    """DSPy signature is built dynamically to keep importing this module cheap in tests."""
-
-
 def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
     import dspy
 
-    class TranslateBusinessTermsSignature(dspy.Signature):
-        """Translate business registry text to English.
-
-        Return a JSON object using this exact shape:
-        {"translations":[{"id":"same id from input","translation":"English translation"}]}
-        Preserve ids exactly. Never use source text as JSON keys. Return JSON only.
-        """
-
-        category: str = dspy.InputField(desc="Translation category such as legal_form, status, role, or activity.")
-        source_lang: str = dspy.InputField(desc="BCP-47 source language code, for example no, da, or et.")
-        target_lang: str = dspy.InputField(desc="BCP-47 target language code, usually en.")
-        items_json: str = dspy.InputField(desc="JSON object with items: [{id,text}].")
-        translations_json: str = dspy.OutputField(desc="JSON object with translations: [{id,translation}].")
+    system_prompt = (
+        "Translate business registry text to English. "
+        "Return ONLY a JSON object with this exact shape: "
+        '{"translations":[{"id":"same id from input","translation":"English text"}]}. '
+        "Preserve IDs exactly. Return JSON only, no markdown, no extra text."
+    )
+    items_json = json.dumps(
+        {"items": [asdict(item) for item in payload.items]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    user_message = (
+        f"category: {payload.category}\n"
+        f"source_lang: {payload.source_lang or 'no'}\n"
+        f"target_lang: {payload.target_lang or 'en'}\n"
+        f"items: {items_json}"
+    )
 
     lm = dspy.LM(
         f"openai/{model}",
@@ -105,38 +105,33 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
         temperature=0,
         max_tokens=2048,
     )
-    predictor = dspy.Predict(TranslateBusinessTermsSignature)
-    items_json = json.dumps(
-        {"items": [asdict(item) for item in payload.items]},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-
-    with dspy.context(lm=lm):
-        prediction = predictor(
-            category=payload.category,
-            source_lang=payload.source_lang or "no",
-            target_lang=payload.target_lang or "en",
-            items_json=items_json,
-        )
-
-    content = getattr(prediction, "translations_json", "")
+    responses = lm(messages=[
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message},
+    ])
+    content = responses[0] if responses else ""
     return parse_translation_payload(str(content), {item.id for item in payload.items})
 
 
 def parse_translation_payload(content: str, allowed_ids: set[str]) -> dict[str, str]:
     cleaned = clean_json_content(content)
     parsed = load_json_with_repairs(cleaned)
-    if isinstance(parsed, dict) and "translations" in parsed:
-        values = parsed["translations"]
-        if not isinstance(values, list):
-            return {}
-        return translations_from_list(values, allowed_ids)
-    if isinstance(parsed, dict) and "items" in parsed:
-        values = parsed["items"]
-        if not isinstance(values, list):
-            return {}
-        return translations_from_list(values, allowed_ids)
+    for key in ("translations", "items"):
+        if isinstance(parsed, dict) and key in parsed:
+            values = parsed[key]
+            if isinstance(values, list):
+                return translations_from_list(values, allowed_ids)
+    if isinstance(parsed, dict) and "translations_json" in parsed:
+        inner = parsed["translations_json"]
+        if isinstance(inner, str):
+            try:
+                inner = json.loads(inner)
+            except json.JSONDecodeError:
+                pass
+        if isinstance(inner, list):
+            return translations_from_list(inner, allowed_ids)
+    if isinstance(parsed, list):
+        return translations_from_list(parsed, allowed_ids)
     if isinstance(parsed, dict):
         return {key: str(value) for key, value in parsed.items() if key in allowed_ids and str(value).strip()}
     return {}
@@ -180,6 +175,7 @@ def translations_from_list(values: list[Any], allowed_ids: set[str]) -> dict[str
 
 def clean_json_content(content: str) -> str:
     cleaned = content.strip()
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
     if cleaned.startswith("```"):
         cleaned = re.sub(r"^```(?:json|JSON)?", "", cleaned).strip()
         cleaned = re.sub(r"```$", "", cleaned).strip()
