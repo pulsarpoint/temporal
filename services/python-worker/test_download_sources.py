@@ -9,6 +9,7 @@ import pytest
 import respx
 
 from activities.download_ariregister_dataset import download_ariregister_dataset
+from activities.download_companies_house_sic_codes import download_companies_house_sic_codes
 from activities.download_cvr_file_set import download_cvr_file_set
 from activities.download_gleif_golden_copy import download_gleif_golden_copy
 from contracts import DownloadSourceFilesInput, DownloadSourceFilesResult
@@ -16,6 +17,31 @@ from contracts import DownloadSourceFilesInput, DownloadSourceFilesResult
 
 def _sha256(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_download_companies_house_sic_codes_writes_csv(tmp_path, monkeypatch):
+    content = b"SIC Code,Description\r\n62012,Business and domestic software development\r\n"
+    url = "https://companies-house.example.test/sic.csv"
+    monkeypatch.setenv("COMPANIES_HOUSE_SIC_CODES_URL", url)
+    respx.get(url).mock(return_value=httpx.Response(200, content=content))
+
+    result = await download_companies_house_sic_codes(
+        DownloadSourceFilesInput(
+            source="companies_house_sic",
+            mode="full",
+            output_dir=str(tmp_path),
+            snapshot_id="2026-05-22",
+        )
+    )
+
+    assert result.source == "companies_house_sic"
+    assert result.snapshot_id == "2026-05-22"
+    assert result.files[0].dataset == "sic_codes"
+    assert result.files[0].format == "csv"
+    assert result.files[0].sha256 == _sha256(content)
+    assert (tmp_path / "companies_house_sic-sic_codes-2026-05-22.csv").read_bytes() == content
 
 
 @respx.mock

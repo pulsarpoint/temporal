@@ -85,6 +85,7 @@ type DownloadedSourceFile struct {
 	SnapshotID string `json:"snapshot_id"`
 	SHA256     string `json:"sha256"`
 	Format     string `json:"format"`
+	SourceURL  string `json:"source_url,omitempty"`
 }
 
 type DownloadSourceFilesResult struct {

@@ -108,6 +108,7 @@ class DownloadedSourceFile:
     snapshot_id: str
     sha256: str
     format: str
+    source_url: str = ""
 
 
 @dataclass

@@ -10,6 +10,7 @@ from temporalio.worker import Worker
 
 from activities.download_ariregister_dataset import download_ariregister_dataset
 from activities.download_brreg_bulk import download_brreg_bulk
+from activities.download_companies_house_sic_codes import download_companies_house_sic_codes
 from activities.download_cvr_file_set import download_cvr_file_set
 from activities.download_gleif_golden_copy import download_gleif_golden_copy
 from activities.fetch_brreg_list import fetch_brreg_list
@@ -31,6 +32,7 @@ async def main() -> None:
         task_queue="corpscout-pipelines-python",
         activities=[
             download_brreg_bulk,
+            download_companies_house_sic_codes,
             download_gleif_golden_copy,
             download_ariregister_dataset,
             download_cvr_file_set,

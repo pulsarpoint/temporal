@@ -3,6 +3,8 @@ package activities_test
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/pashagolub/pgxmock/v3"
@@ -138,6 +140,32 @@ func TestWriteRawInputs_UnsupportedSource(t *testing.T) {
 		Records: []contracts.RawRecord{{NativeID: "1", RawJSON: json.RawMessage(`{}`), Hash: "h"}},
 	})
 	require.ErrorContains(t, err, "unsupported source")
+}
+
+func TestImportCompaniesHouseSICCodes_UpsertsCSVRows(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	path := filepath.Join(t.TempDir(), "sic.csv")
+	require.NoError(t, os.WriteFile(path, []byte("SIC Code,Description\r\n62012,Business and domestic software development\r\n01110,\"Growing of cereals (except rice), leguminous crops and oil seeds\"\r\n"), 0o600))
+
+	mock.ExpectExec(`INSERT INTO companies_house_sic_codes`).
+		WithArgs("62012", "Business and domestic software development", (*string)(nil), (*string)(nil), "https://example.test/sic.csv", "sha123", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`INSERT INTO companies_house_sic_codes`).
+		WithArgs("01110", "Growing of cereals (except rice), leguminous crops and oil seeds", (*string)(nil), (*string)(nil), "https://example.test/sic.csv", "sha123", pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	count, err := acts.ImportCompaniesHouseSICCodes(context.Background(), contracts.DownloadedSourceFile{
+		FilePath:  path,
+		SHA256:    "sha123",
+		Source:    "companies_house_sic",
+		Dataset:   "sic_codes",
+		Format:    "csv",
+		SourceURL: "https://example.test/sic.csv",
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, count)
 }
 
 func TestMarkExecutionComplete_UpdatesDB(t *testing.T) {
