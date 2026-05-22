@@ -81,21 +81,24 @@ class DSPyTranslationService:
 
 def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
     import dspy
+    from pydantic import BaseModel
+
+    class Translation(BaseModel):
+        id: str
+        translation: str
 
     class TranslateBusinessTerms(dspy.Signature):
         """/no_think
 
         Translate business registry text to English.
-        Return a JSON object using this exact shape:
-        {"translations":[{"id":"same id from input","translation":"English translation"}]}
-        Preserve ids exactly. Never use source text as JSON keys. Return JSON only.
+        Preserve ids exactly. Return only the translations, no extra text.
         """
 
         category: str = dspy.InputField(desc="Translation category such as legal_form, status, role, or activity.")
         source_lang: str = dspy.InputField(desc="BCP-47 source language code, for example no, da, or et.")
         target_lang: str = dspy.InputField(desc="BCP-47 target language code, usually en.")
         items_json: str = dspy.InputField(desc="JSON array with items: [{id,text}].")
-        translations_json: str = dspy.OutputField(desc="JSON array with translations: [{id,translation}].")
+        translations: list[Translation] = dspy.OutputField(desc="One translation per input item, preserving the id.")
 
     lm = dspy.LM(
         f"openai/{model}",
@@ -112,7 +115,6 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
     )
     predictor = dspy.Predict(TranslateBusinessTerms)
     allowed_ids = {item.id for item in payload.items}
-    content = ""
 
     try:
         with dspy.context(lm=lm):
@@ -122,14 +124,20 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
                 target_lang=payload.target_lang or "en",
                 items_json=items_json,
             )
-        content = getattr(prediction, "translations_json", "")
+        return {
+            t.id: t.translation
+            for t in prediction.translations
+            if t.id in allowed_ids and t.translation.strip()
+        }
     except Exception:
         log.warning("dspy predict failed, falling back to raw lm output", exc_info=True)
-        try:
-            outputs = lm.history[-1].get("outputs", []) if lm.history else []
-            content = outputs[0] if outputs else ""
-        except Exception:
-            log.warning("could not extract raw lm output from history", exc_info=True)
+
+    content = ""
+    try:
+        outputs = lm.history[-1].get("outputs", []) if lm.history else []
+        content = outputs[0] if outputs else ""
+    except Exception:
+        log.warning("could not extract raw lm output from history", exc_info=True)
 
     try:
         return parse_translation_payload(str(content), allowed_ids)
