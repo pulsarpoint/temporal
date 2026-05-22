@@ -18,7 +18,7 @@ func PullAriregister(ctx workflow.Context, input contracts.PullAriregisterInput)
 	mode := input.Mode
 	if mode == "" {
 		mode = "refresh"
-	} else if mode != "refresh" {
+	} else if mode != "refresh" && mode != "bulk" {
 		return contracts.PullCompaniesResult{}, unsupportedSourceModeError("ariregister", mode)
 	}
 

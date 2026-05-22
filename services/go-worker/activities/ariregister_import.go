@@ -2,8 +2,10 @@ package activities
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"sort"
 	"strings"
@@ -55,33 +57,130 @@ func (a *GoActivities) ImportAriregisterBulk(ctx context.Context, params contrac
 }
 
 func mergeAriregisterFile(file contracts.DownloadedSourceFile, companies map[string]*ariregisterCompanyPayload) error {
+	if isCSVSource(file) {
+		return mergeAriregisterCSVFile(file, companies)
+	}
 	return forEachJSONRecord(file, []string{"data", "records"}, func(rawRecord json.RawMessage) error {
 		var record map[string]any
 		if err := json.Unmarshal(rawRecord, &record); err != nil {
 			return fmt.Errorf("parse Ariregister record: %w", err)
 		}
-		registryCode := mapString(record, "registry_code")
-		if registryCode == "" {
-			return nil
-		}
-		company := companies[registryCode]
-		if company == nil {
-			company = &ariregisterCompanyPayload{RegistryCode: registryCode}
-			companies[registryCode] = company
-		}
-		if hasAnyKey(record, "year", "revenue", "profit", "employee_count") {
-			company.Financials = append(company.Financials, rawRecord)
-			return nil
-		}
-		company.LegalName = firstNonEmptyString(mapString(record, "legal_name"), company.LegalName)
-		company.RegistrationStatus = firstNonEmptyString(mapString(record, "registration_status"), company.RegistrationStatus)
-		company.LegalForm = firstNonEmptyString(mapString(record, "legal_form"), company.LegalForm)
-		company.VATNumber = firstNonEmptyString(mapString(record, "vat_number"), company.VATNumber)
-		company.Website = firstNonEmptyString(mapString(record, "website"), company.Website)
-		company.Email = firstNonEmptyString(mapString(record, "email"), company.Email)
-		company.Phone = firstNonEmptyString(mapString(record, "phone"), company.Phone)
-		return nil
+		return mergeAriregisterRecord(record, rawRecord, companies)
 	})
+}
+
+func mergeAriregisterCSVFile(file contracts.DownloadedSourceFile, companies map[string]*ariregisterCompanyPayload) error {
+	reader, err := openDownloadedSourceFile(file)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	csvReader := csv.NewReader(reader)
+	csvReader.Comma = ';'
+	csvReader.FieldsPerRecord = -1
+	csvReader.TrimLeadingSpace = true
+
+	headers, err := csvReader.Read()
+	if err == io.EOF {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("parse Ariregister CSV header: %w", err)
+	}
+	for i := range headers {
+		headers[i] = ariregisterCSVHeader(headers[i])
+	}
+
+	for {
+		values, err := csvReader.Read()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("parse Ariregister CSV record: %w", err)
+		}
+		record := make(map[string]any, len(headers))
+		for i, value := range values {
+			if i >= len(headers) || headers[i] == "" {
+				continue
+			}
+			if trimmed := strings.TrimSpace(value); trimmed != "" {
+				record[headers[i]] = trimmed
+			}
+		}
+		rawRecord, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("encode Ariregister CSV record: %w", err)
+		}
+		if err := mergeAriregisterRecord(record, rawRecord, companies); err != nil {
+			return err
+		}
+	}
+}
+
+func mergeAriregisterRecord(record map[string]any, rawRecord json.RawMessage, companies map[string]*ariregisterCompanyPayload) error {
+	registryCode := mapString(record, "registry_code")
+	if registryCode == "" {
+		return nil
+	}
+	company := companies[registryCode]
+	if company == nil {
+		company = &ariregisterCompanyPayload{RegistryCode: registryCode}
+		companies[registryCode] = company
+	}
+	if hasAnyKey(record, "year", "revenue", "profit", "employee_count") {
+		company.Financials = append(company.Financials, rawRecord)
+		return nil
+	}
+	company.LegalName = firstNonEmptyString(mapString(record, "legal_name"), company.LegalName)
+	company.RegistrationStatus = firstNonEmptyString(mapString(record, "registration_status"), mapString(record, "registration_status_code"), company.RegistrationStatus)
+	company.LegalForm = firstNonEmptyString(mapString(record, "legal_form"), company.LegalForm)
+	company.VATNumber = firstNonEmptyString(mapString(record, "vat_number"), company.VATNumber)
+	company.Website = firstNonEmptyString(mapString(record, "website"), company.Website)
+	company.Email = firstNonEmptyString(mapString(record, "email"), company.Email)
+	company.Phone = firstNonEmptyString(mapString(record, "phone"), company.Phone)
+	return nil
+}
+
+func isCSVSource(file contracts.DownloadedSourceFile) bool {
+	format := strings.ToLower(file.Format)
+	path := strings.ToLower(file.FilePath)
+	return format == "csv" || strings.HasSuffix(format, ".csv") || strings.Contains(format, "csv.") || strings.HasSuffix(path, ".csv") || strings.Contains(path, ".csv.")
+}
+
+func ariregisterCSVHeader(header string) string {
+	normalized := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(header, "\ufeff")))
+	switch normalized {
+	case "ariregistri_kood", "registry_code":
+		return "registry_code"
+	case "nimi", "legal_name":
+		return "legal_name"
+	case "ettevotja_oiguslik_vorm", "legal_form":
+		return "legal_form"
+	case "kmkr_nr", "vat_number":
+		return "vat_number"
+	case "ettevotja_staatus_tekstina", "registration_status":
+		return "registration_status"
+	case "ettevotja_staatus":
+		return "registration_status_code"
+	case "website", "veebileht":
+		return "website"
+	case "email", "e_post", "e-post", "epost":
+		return "email"
+	case "phone", "telefon":
+		return "phone"
+	case "year", "aasta":
+		return "year"
+	case "revenue", "muugitulu":
+		return "revenue"
+	case "profit", "kasum":
+		return "profit"
+	case "employee_count", "tootajate_arv":
+		return "employee_count"
+	default:
+		return strings.ReplaceAll(normalized, " ", "_")
+	}
 }
 
 func (a *GoActivities) insertAriregisterCompanyRawInputs(ctx context.Context, companies map[string]*ariregisterCompanyPayload, runID, sourceDatasets string) (int, error) {
