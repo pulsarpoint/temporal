@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -134,9 +135,10 @@ func (a *GoActivities) WriteSourceTranslationBatch(ctx context.Context, params c
 		if term.Text == "" || term.Translation == "" {
 			continue
 		}
-		key := termKey(term.Category, term.Text)
+		normalizedText := strings.ToLower(strings.TrimSpace(term.Text))
+		key := termKey(term.Category, normalizedText)
 		translations[key] = term.Translation
-		newTranslations[key] = SourceTranslationTerm{Category: term.Category, Text: term.Text}
+		newTranslations[key] = SourceTranslationTerm{Category: term.Category, Text: normalizedText}
 	}
 
 	fx := FXRateSet{
@@ -407,21 +409,14 @@ func upsertSourceTranslationCacheBulk(
 	hashes := []string{}
 	originals := []string{}
 	translatedTexts := []string{}
-	seen := map[string]struct{}{}
 	for _, key := range keys {
 		term := newTranslations[key]
 		translated := translations[termKey(term.Category, term.Text)]
 		if translated == "" {
 			continue
 		}
-		hash := translationHash(term.Text)
-		dedupeKey := term.Category + "\x00" + hash
-		if _, exists := seen[dedupeKey]; exists {
-			continue
-		}
-		seen[dedupeKey] = struct{}{}
 		categories = append(categories, term.Category)
-		hashes = append(hashes, hash)
+		hashes = append(hashes, translationHash(term.Text))
 		originals = append(originals, term.Text)
 		translatedTexts = append(translatedTexts, translated)
 	}
