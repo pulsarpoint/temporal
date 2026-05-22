@@ -190,7 +190,6 @@ func sourceTranslationConfig(source string) (SourceTranslationConfig, error) {
 	default:
 		return SourceTranslationConfig{}, fmt.Errorf("unsupported translation source %q", source)
 	}
-	base.ClaimSQL = sourceClaimSQL(base.TableName)
 	base.WriteSuccessSQL = sourceWriteSuccessSQL(base.TableName)
 	base.WriteFailureSQL = sourceWriteFailureSQL(base.TableName)
 	return base, nil
@@ -211,7 +210,11 @@ func normalizeSourceTranslationPrepareParams(params *contracts.PrepareSourceTran
 	}
 }
 
-func sourceClaimSQL(table string) string {
+func sourceClaimSQL(table string, includeFailed bool) string {
+	predicate := "translation_status = 'pending'"
+	if includeFailed {
+		predicate = "translation_status IN ('pending', 'failed')"
+	}
 	return fmt.Sprintf(`
 		UPDATE %s
 		SET translation_status = 'translating',
@@ -223,7 +226,7 @@ func sourceClaimSQL(table string) string {
 		WHERE id IN (
 		    SELECT id FROM %s
 		    WHERE (
-		        translation_status IN ('pending', 'failed')
+		        %s
 		        OR (translation_status = 'translating' AND (translation_lease_until < now() OR translation_lease_by = $1))
 		    )
 		    AND ($4::text[] IS NULL OR id::text = ANY($4))
@@ -232,7 +235,7 @@ func sourceClaimSQL(table string) string {
 		    FOR UPDATE SKIP LOCKED
 		)
 		RETURNING id::text, raw_payload
-	`, table, table)
+	`, table, table, predicate)
 }
 
 func sourceWriteSuccessSQL(table string) string {
@@ -271,7 +274,12 @@ func (a *GoActivities) claimSourceTranslationRows(ctx context.Context, cfg Sourc
 	if len(params.IDs) > 0 {
 		ids = params.IDs
 	}
-	rows, err := a.pool.Query(ctx, cfg.ClaimSQL, params.WorkflowRunID, sourceTranslationLeaseMinutes, params.BatchSize, ids)
+	claimSQL := cfg.ClaimSQL
+	if claimSQL == "" {
+		includeFailed := len(params.IDs) > 0 || cfg.SourceName != "brreg"
+		claimSQL = sourceClaimSQL(cfg.TableName, includeFailed)
+	}
+	rows, err := a.pool.Query(ctx, claimSQL, params.WorkflowRunID, sourceTranslationLeaseMinutes, params.BatchSize, ids)
 	if err != nil {
 		return nil, fmt.Errorf("claim %s translation rows: %w", cfg.SourceName, err)
 	}

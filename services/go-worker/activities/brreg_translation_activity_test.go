@@ -60,6 +60,47 @@ func TestPrepareBrregTranslationBatch_LooksUpTranslationCacheInBulk(t *testing.T
 	}, result.MissesByCategory["activity"])
 }
 
+func TestPrepareBrregTranslationBatch_NormalRunPreservesPendingOnlyClaim(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithTranslationDeps(mock, nil, func(context.Context, string) (activities.FXRateSet, error) {
+		return activities.FXRateSet{}, nil
+	})
+
+	mock.ExpectQuery(`translation_status = 'pending'`).
+		WithArgs("run-1", 10, 50, nil).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
+
+	result, err := acts.PrepareBrregTranslationBatch(context.Background(), contracts.PrepareBrregTranslationBatchParams{
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		WorkflowRunID: "run-1",
+		BatchSize:     50,
+	})
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+}
+
+func TestPrepareBrregTranslationBatch_ExplicitIDsCanRetryFailedRows(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithTranslationDeps(mock, nil, func(context.Context, string) (activities.FXRateSet, error) {
+		return activities.FXRateSet{}, nil
+	})
+
+	mock.ExpectQuery(`translation_status IN \('pending', 'failed'\)`).
+		WithArgs("run-1", 10, 50, []string{"row-1"}).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
+
+	result, err := acts.PrepareBrregTranslationBatch(context.Background(), contracts.PrepareBrregTranslationBatchParams{
+		IDs:           []string{"row-1"},
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		WorkflowRunID: "run-1",
+		BatchSize:     50,
+	})
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+}
+
 func TestWriteBrregTranslationBatch_UpsertsTranslationCacheInBulk(t *testing.T) {
 	mock := newMock(t)
 	acts := activities.NewGoActivitiesWithDB(mock)
