@@ -206,6 +206,7 @@ async def test_cvr_errors_when_no_credentials_are_configured(tmp_path, monkeypat
     monkeypatch.setenv("CVR_FILEDOWNLOAD_DATASETS", "companies")
     monkeypatch.delenv("CVR_FILEDOWNLOAD_API_KEY", raising=False)
     monkeypatch.delenv("CVR_FILEDOWNLOAD_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("DATAFORDELER_CVR_TOKEN", raising=False)
 
     with pytest.raises(RuntimeError, match="CVR file download credentials are not configured"):
         await download_cvr_file_set(
@@ -241,6 +242,7 @@ async def test_cvr_rejects_unsafe_snapshot_filename_component(tmp_path, monkeypa
     [
         ("CVR_FILEDOWNLOAD_API_KEY", "api-secret", "X-API-Key", "api-secret"),
         ("CVR_FILEDOWNLOAD_BEARER_TOKEN", "bearer-secret", "Authorization", "Bearer bearer-secret"),
+        ("DATAFORDELER_CVR_TOKEN", "datafordeler-secret", "Authorization", "Bearer datafordeler-secret"),
     ],
 )
 async def test_cvr_sends_credentials_only_in_headers_and_writes_files(
@@ -257,6 +259,7 @@ async def test_cvr_sends_credentials_only_in_headers_and_writes_files(
     monkeypatch.setenv("CVR_FILEDOWNLOAD_DATASETS", "companies")
     monkeypatch.delenv("CVR_FILEDOWNLOAD_API_KEY", raising=False)
     monkeypatch.delenv("CVR_FILEDOWNLOAD_BEARER_TOKEN", raising=False)
+    monkeypatch.delenv("DATAFORDELER_CVR_TOKEN", raising=False)
     monkeypatch.setenv(env_name, secret)
     route = respx.get(f"{base_url}/companies").mock(return_value=httpx.Response(200, content=b"cvr-data"))
 

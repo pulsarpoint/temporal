@@ -26,7 +26,9 @@ def _datasets(input: DownloadSourceFilesInput) -> list[str]:
 
 
 def _credential_headers() -> dict[str, str]:
-    bearer_token = os.environ.get("CVR_FILEDOWNLOAD_BEARER_TOKEN", "")
+    bearer_token = os.environ.get("CVR_FILEDOWNLOAD_BEARER_TOKEN", "") or os.environ.get(
+        "DATAFORDELER_CVR_TOKEN", ""
+    )
     api_key = os.environ.get("CVR_FILEDOWNLOAD_API_KEY", "")
     if bearer_token:
         return {"Authorization": f"Bearer {bearer_token}"}
