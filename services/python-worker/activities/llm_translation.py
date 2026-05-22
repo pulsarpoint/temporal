@@ -11,8 +11,6 @@ from typing import Any, Awaitable, Callable
 
 from temporalio import activity
 
-from pydantic import BaseModel
-
 from contracts import (
     TranslatedTerm,
     TranslateTermsInput,
@@ -21,11 +19,6 @@ from contracts import (
 )
 
 log = logging.getLogger(__name__)
-
-
-class Translation(BaseModel):
-    id: str
-    translation: str
 
 DEFAULT_LLM_BASE_URL = "http://100.77.62.33:8888"
 DEFAULT_LLM_MODEL = "qwen3:6b"
@@ -100,7 +93,7 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
         source_lang: str = dspy.InputField(desc="BCP-47 source language code, for example no, da, or et.")
         target_lang: str = dspy.InputField(desc="BCP-47 target language code, usually en.")
         items_json: str = dspy.InputField(desc="JSON array with items: [{id,text}].")
-        translations: list[Translation] = dspy.OutputField(desc="One translation per input item, preserving the id.")
+        translations: list[dict] = dspy.OutputField(desc="One object per input item with 'id' and 'translation' fields.")
 
     lm = dspy.LM(
         f"openai/{model}",
@@ -127,9 +120,9 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
                 items_json=items_json,
             )
         return {
-            t.id: t.translation
+            t["id"]: t["translation"]
             for t in prediction.translations
-            if t.id in allowed_ids and t.translation.strip()
+            if isinstance(t, dict) and t.get("id") in allowed_ids and str(t.get("translation", "")).strip()
         }
     except Exception:
         log.warning("dspy predict failed, falling back to raw lm output", exc_info=True)
