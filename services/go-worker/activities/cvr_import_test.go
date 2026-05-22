@@ -112,6 +112,94 @@ func TestImportCVRBulk_AccumulatesFragmentsForSameCVR(t *testing.T) {
 	require.Equal(t, "Bob Example", payload["roles"].([]any)[1].(map[string]any)["name"])
 }
 
+func TestImportCVRBulk_MergesDatafordelerEntityFiles(t *testing.T) {
+	companies := writeTempJSON(t, []map[string]any{
+		{
+			"Virksomhed": map[string]any{
+				"cvrNummer":         12345678,
+				"virksomhedsstatus": "NORMAL",
+				"virksomhedsform": map[string]any{
+					"kortBeskrivelse": "ApS",
+				},
+			},
+		},
+	})
+	names := writeTempJSON(t, []map[string]any{
+		{
+			"Navn": map[string]any{
+				"cvrNummer": 12345678,
+				"navn":      "Example Denmark ApS",
+			},
+		},
+	})
+	emails := writeTempJSON(t, []map[string]any{
+		{
+			"Emailadresse": map[string]any{
+				"cvrNummer":        12345678,
+				"kontaktoplysning": "hello@example.dk",
+			},
+		},
+	})
+	phones := writeTempJSON(t, []map[string]any{
+		{
+			"Telefonnummer": map[string]any{
+				"cvrNummer":        12345678,
+				"kontaktoplysning": "+4512345678",
+			},
+		},
+	})
+	websites := writeTempJSON(t, []map[string]any{
+		{
+			"Hjemmeside": map[string]any{
+				"cvrNummer":        12345678,
+				"kontaktoplysning": "https://example.dk",
+			},
+		},
+	})
+
+	db := &recordingDB{}
+	acts := activities.NewGoActivitiesWithDB(db)
+
+	written, err := acts.ImportCVRBulk(context.Background(), contracts.ImportCVRBulkParams{
+		RunID: "run-cvr-datafordeler",
+		Files: []contracts.DownloadedSourceFile{
+			{Source: "cvr", Dataset: "Virksomhed", FilePath: companies, Format: "json"},
+			{Source: "cvr", Dataset: "Navn", FilePath: names, Format: "json"},
+			{Source: "cvr", Dataset: "Emailadresse", FilePath: emails, Format: "json"},
+			{Source: "cvr", Dataset: "Telefonnummer", FilePath: phones, Format: "json"},
+			{Source: "cvr", Dataset: "Hjemmeside", FilePath: websites, Format: "json"},
+		},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
+	require.Len(t, db.entries, 1)
+
+	entry := db.entries[0]
+	require.Equal(t, "12345678", entry.args[0])
+	require.Equal(t, "12345678", entry.args[1])
+	require.Equal(t, "Example Denmark ApS", entry.args[2])
+	require.Equal(t, "NORMAL", entry.args[3])
+	require.Equal(t, "ApS", entry.args[4])
+	require.Equal(t, "https://example.dk", entry.args[5])
+	require.Equal(t, "hello@example.dk", entry.args[6])
+	require.Equal(t, "+4512345678", entry.args[7])
+	require.Equal(t, "DK", entry.args[8])
+	rawPayload := entry.args[9].([]byte)
+	require.Equal(t, sha256Hex(rawPayload), entry.args[10])
+	require.Equal(t, "run-cvr-datafordeler", entry.args[11])
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(rawPayload, &payload))
+	require.Equal(t, "12345678", payload["cvr_number"])
+	require.Equal(t, "Example Denmark ApS", payload["company_name"])
+	require.Equal(t, "NORMAL", payload["registration_status"])
+	require.Equal(t, "ApS", payload["company_type"])
+	require.Equal(t, "https://example.dk", payload["website"])
+	require.Equal(t, "hello@example.dk", payload["email"])
+	require.Equal(t, "+4512345678", payload["phone"])
+}
+
 func TestImportCVRBulk_IncludesSourceDatasetsOnInsertError(t *testing.T) {
 	db := newFailingRecordingDB()
 	acts := activities.NewGoActivitiesWithDB(db)

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -100,22 +101,216 @@ func cvrCompanyPayloadFromRaw(rawRecord json.RawMessage) (cvrCompanyPayload, boo
 		return cvrCompanyPayload{}, false, fmt.Errorf("parse CVR record: %w", err)
 	}
 	cvrNumber := rawJSONScalarString(record["cvr_number"])
-	if cvrNumber == "" {
+	if cvrNumber != "" {
+		return cvrCompanyPayload{
+			CVRNumber:          cvrNumber,
+			CompanyName:        rawJSONScalarString(record["company_name"]),
+			RegistrationStatus: rawJSONScalarString(record["registration_status"]),
+			CompanyType:        rawJSONScalarString(record["company_type"]),
+			Website:            rawJSONScalarString(record["website"]),
+			Email:              rawJSONScalarString(record["email"]),
+			Phone:              rawJSONScalarString(record["phone"]),
+			Roles:              rawJSONFragments(record["roles"]),
+			Owners:             rawJSONFragments(record["owners"]),
+			BeneficialOwners:   rawJSONFragments(record["beneficial_owners"]),
+			Financials:         rawJSONFragments(record["financials"]),
+		}, true, nil
+	}
+	return cvrCompanyPayloadFromDatafordelerRaw(rawRecord)
+}
+
+func cvrCompanyPayloadFromDatafordelerRaw(rawRecord json.RawMessage) (cvrCompanyPayload, bool, error) {
+	var record map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(rawRecord))
+	decoder.UseNumber()
+	if err := decoder.Decode(&record); err != nil {
+		return cvrCompanyPayload{}, false, fmt.Errorf("parse Datafordeler CVR record: %w", err)
+	}
+	var merged cvrCompanyPayload
+	for _, object := range cvrDatafordelerObjects(record) {
+		next := cvrCompanyPayloadFromDatafordelerObject(object.kind, object.values)
+		if next.CVRNumber == "" {
+			continue
+		}
+		merged = mergeCVRCompanyPayload(merged, next)
+	}
+	if merged.CVRNumber == "" {
 		return cvrCompanyPayload{}, false, nil
 	}
-	return cvrCompanyPayload{
-		CVRNumber:          cvrNumber,
-		CompanyName:        rawJSONScalarString(record["company_name"]),
-		RegistrationStatus: rawJSONScalarString(record["registration_status"]),
-		CompanyType:        rawJSONScalarString(record["company_type"]),
-		Website:            rawJSONScalarString(record["website"]),
-		Email:              rawJSONScalarString(record["email"]),
-		Phone:              rawJSONScalarString(record["phone"]),
-		Roles:              rawJSONFragments(record["roles"]),
-		Owners:             rawJSONFragments(record["owners"]),
-		BeneficialOwners:   rawJSONFragments(record["beneficial_owners"]),
-		Financials:         rawJSONFragments(record["financials"]),
-	}, true, nil
+	return merged, true, nil
+}
+
+type cvrDatafordelerObject struct {
+	kind   string
+	values map[string]any
+}
+
+func cvrDatafordelerObjects(record map[string]any) []cvrDatafordelerObject {
+	if record == nil {
+		return nil
+	}
+	objects := []cvrDatafordelerObject{{kind: "record", values: record}}
+	for _, wrapper := range []string{"_source", "source", "data"} {
+		if nested := anyMap(record, wrapper); nested != nil {
+			objects = append(objects, cvrDatafordelerObjects(nested)...)
+		}
+	}
+	for _, wrapper := range []string{
+		"Vrvirksomhed",
+		"Virksomhed",
+		"Navn",
+		"Emailadresse",
+		"E-mailadresse",
+		"ElektroniskPost",
+		"Telefonnummer",
+		"Hjemmeside",
+	} {
+		kind := normalizeCVRKey(wrapper)
+		if nested := anyMap(record, wrapper); nested != nil {
+			objects = append(objects, cvrDatafordelerObject{kind: kind, values: nested})
+		}
+		for _, nested := range anyMapArray(record, wrapper) {
+			objects = append(objects, cvrDatafordelerObject{kind: kind, values: nested})
+		}
+	}
+	return objects
+}
+
+func cvrCompanyPayloadFromDatafordelerObject(kind string, values map[string]any) cvrCompanyPayload {
+	cvrNumber := firstNonEmptyString(
+		anyString(values, "cvr_number"),
+		anyString(values, "cvrNummer"),
+		anyString(values, "CVRNummer"),
+		anyString(values, "cvrnummer"),
+	)
+	if cvrNumber == "" {
+		return cvrCompanyPayload{}
+	}
+
+	payload := cvrCompanyPayload{CVRNumber: cvrNumber}
+	payload.CompanyName = firstNonEmptyString(
+		anyString(values, "company_name"),
+		anyString(values, "navn"),
+		anyString(values, "name"),
+		anyStringPath(values, "virksomhedMetadata", "nyesteNavn", "navn"),
+	)
+	payload.RegistrationStatus = firstNonEmptyString(
+		anyString(values, "registration_status"),
+		anyString(values, "virksomhedsstatus"),
+		anyString(values, "virksomhedStatus"),
+		anyString(values, "status"),
+		anyStringPath(values, "virksomhedMetadata", "nyesteStatus"),
+	)
+	payload.CompanyType = firstNonEmptyString(
+		anyString(values, "company_type"),
+		anyString(values, "virksomhedsformKortBeskrivelse"),
+		anyStringPath(values, "virksomhedsform", "kortBeskrivelse"),
+		anyStringPath(values, "virksomhedsform", "langBeskrivelse"),
+		anyStringPath(values, "virksomhedMetadata", "nyesteVirksomhedsform", "kortBeskrivelse"),
+		anyStringPath(values, "virksomhedMetadata", "nyesteVirksomhedsform", "langBeskrivelse"),
+	)
+	payload.Website = firstNonEmptyString(anyString(values, "website"), contactValueForKind(kind, values, "hjemmeside"), contactValue(values, "hjemmeside"))
+	payload.Email = firstNonEmptyString(anyString(values, "email"), contactValueForKind(kind, values, "emailadresse"), contactValueForKind(kind, values, "elektroniskpost"), contactValue(values, "elektroniskPost"), contactValue(values, "emailadresse"))
+	payload.Phone = firstNonEmptyString(anyString(values, "phone"), contactValueForKind(kind, values, "telefonnummer"), contactValue(values, "telefonNummer"), contactValue(values, "telefonnummer"))
+	return payload
+}
+
+func contactValueForKind(kind string, values map[string]any, expectedKind string) string {
+	if kind != expectedKind {
+		return ""
+	}
+	return firstNonEmptyString(anyString(values, "kontaktoplysning"), anyString(values, "value"))
+}
+
+func contactValue(values map[string]any, key string) string {
+	value := anyValue(values, key)
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case map[string]any:
+		return firstNonEmptyString(anyString(typed, "kontaktoplysning"), anyString(typed, "value"))
+	case []any:
+		for _, item := range typed {
+			if nested, ok := item.(map[string]any); ok {
+				if value := firstNonEmptyString(anyString(nested, "kontaktoplysning"), anyString(nested, "value")); value != "" {
+					return value
+				}
+			}
+			if value := anyScalarString(item); value != "" {
+				return value
+			}
+		}
+	}
+	return ""
+}
+
+func anyStringPath(values map[string]any, path ...string) string {
+	var current any = values
+	for _, key := range path {
+		currentMap, ok := current.(map[string]any)
+		if !ok {
+			return ""
+		}
+		current = anyValue(currentMap, key)
+	}
+	return anyScalarString(current)
+}
+
+func anyString(values map[string]any, key string) string {
+	return anyScalarString(anyValue(values, key))
+}
+
+func anyMap(values map[string]any, key string) map[string]any {
+	nested, _ := anyValue(values, key).(map[string]any)
+	return nested
+}
+
+func anyMapArray(values map[string]any, key string) []map[string]any {
+	items, _ := anyValue(values, key).([]any)
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if nested, ok := item.(map[string]any); ok {
+			out = append(out, nested)
+		}
+	}
+	return out
+}
+
+func anyValue(values map[string]any, key string) any {
+	if values == nil {
+		return nil
+	}
+	if value, ok := values[key]; ok {
+		return value
+	}
+	normalizedKey := normalizeCVRKey(key)
+	for existingKey, value := range values {
+		if normalizeCVRKey(existingKey) == normalizedKey {
+			return value
+		}
+	}
+	return nil
+}
+
+func anyScalarString(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return typed.String()
+	case float64:
+		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case int:
+		return fmt.Sprintf("%d", typed)
+	default:
+		return ""
+	}
+}
+
+func normalizeCVRKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	replacer := strings.NewReplacer("_", "", "-", "", " ", "", "æ", "ae", "ø", "oe", "å", "aa")
+	return replacer.Replace(key)
 }
 
 func (a *GoActivities) insertCVRCompanyRawInputs(ctx context.Context, records []cvrCompanyPayload, runID, sourceDatasets string) (int, error) {
