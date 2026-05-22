@@ -119,3 +119,15 @@ func (s *PullGLEIFSuite) Test_Delta_StoresDeltaCursor() {
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 }
+
+func (s *PullGLEIFSuite) Test_InvalidModeFailsBeforeActivities() {
+	s.env.ExecuteWorkflow(workflows.PullGLEIF, contracts.PullGLEIFInput{
+		RunID: "run-gleif-invalid",
+		Mode:  "typo",
+	})
+
+	s.True(s.env.IsWorkflowCompleted())
+	err := s.env.GetWorkflowError()
+	s.Error(err)
+	s.Contains(err.Error(), "unsupported gleif mode")
+}

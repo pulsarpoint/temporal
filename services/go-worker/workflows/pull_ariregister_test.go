@@ -118,4 +118,16 @@ func (s *PullAriregisterSuite) Test_EmptyModeDefaultsToRefreshCursor() {
 	s.NoError(s.env.GetWorkflowError())
 }
 
+func (s *PullAriregisterSuite) Test_InvalidModeFailsBeforeActivities() {
+	s.env.ExecuteWorkflow(workflows.PullAriregister, contracts.PullAriregisterInput{
+		RunID: "run-ari-invalid",
+		Mode:  "typo",
+	})
+
+	s.True(s.env.IsWorkflowCompleted())
+	err := s.env.GetWorkflowError()
+	s.Error(err)
+	s.Contains(err.Error(), "unsupported ariregister mode")
+}
+
 const defaultAriregisterOutputDirForTest = "/var/lib/data-pipelines/results/ariregister"

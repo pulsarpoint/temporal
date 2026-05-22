@@ -18,6 +18,8 @@ func PullCVR(ctx workflow.Context, input contracts.PullCVRInput) (contracts.Pull
 	mode := input.Mode
 	if mode == "" {
 		mode = "bulk"
+	} else if mode != "bulk" && mode != "incremental" {
+		return contracts.PullCompaniesResult{}, unsupportedSourceModeError("cvr", mode)
 	}
 
 	pythonCtx := workflow.WithActivityOptions(ctx, sourceDownloadActivityOptions())

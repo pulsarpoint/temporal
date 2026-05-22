@@ -116,3 +116,15 @@ func (s *PullCVRSuite) Test_Incremental_StoresIncrementalCursor() {
 	s.True(s.env.IsWorkflowCompleted())
 	s.NoError(s.env.GetWorkflowError())
 }
+
+func (s *PullCVRSuite) Test_InvalidModeFailsBeforeActivities() {
+	s.env.ExecuteWorkflow(workflows.PullCVR, contracts.PullCVRInput{
+		RunID: "run-cvr-invalid",
+		Mode:  "typo",
+	})
+
+	s.True(s.env.IsWorkflowCompleted())
+	err := s.env.GetWorkflowError()
+	s.Error(err)
+	s.Contains(err.Error(), "unsupported cvr mode")
+}

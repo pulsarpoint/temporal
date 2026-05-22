@@ -1,6 +1,7 @@
 package workflows
 
 import (
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -19,7 +20,10 @@ func PullGLEIF(ctx workflow.Context, input contracts.PullGLEIFInput) (contracts.
 		outputDir = defaultGLEIFOutputDir
 	}
 
-	cursorMode, downloadMode := gleifModes(input.Mode)
+	cursorMode, downloadMode, err := gleifModes(input.Mode)
+	if err != nil {
+		return contracts.PullCompaniesResult{}, err
+	}
 
 	pythonCtx := workflow.WithActivityOptions(ctx, sourceDownloadActivityOptions())
 	importCtx := workflow.WithActivityOptions(ctx, sourceImportActivityOptions())
@@ -64,13 +68,23 @@ func PullGLEIF(ctx workflow.Context, input contracts.PullGLEIFInput) (contracts.
 	return result, nil
 }
 
-func gleifModes(inputMode string) (cursorMode string, downloadMode string) {
+func gleifModes(inputMode string) (cursorMode string, downloadMode string, err error) {
 	switch inputMode {
 	case "", "bulk", "full":
-		return "bulk", "full"
+		return "bulk", "full", nil
+	case "delta":
+		return "delta", "delta", nil
 	default:
-		return inputMode, inputMode
+		return "", "", unsupportedSourceModeError("gleif", inputMode)
 	}
+}
+
+func unsupportedSourceModeError(source, mode string) error {
+	return temporal.NewNonRetryableApplicationError(
+		fmt.Sprintf("unsupported %s mode %q", source, mode),
+		"InvalidSourceMode",
+		nil,
+	)
 }
 
 func sourceDownloadActivityOptions() workflow.ActivityOptions {
