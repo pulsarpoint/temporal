@@ -55,7 +55,9 @@ async def test_gleif_delta_mode_uses_delta_url(tmp_path, monkeypatch):
     content = b'{"delta":[]}'
     base_url = "https://gleif.example.test/publishes"
     monkeypatch.setenv("GLEIF_GOLDEN_COPY_BASE_URL", base_url)
-    route = respx.get(f"{base_url}/lei2/delta/PT24H.json").mock(return_value=httpx.Response(200, content=content))
+    route = respx.get(f"{base_url}/lei2/latest.json?delta=LastDay").mock(
+        return_value=httpx.Response(200, content=content)
+    )
 
     result = await download_gleif_golden_copy(
         DownloadSourceFilesInput(

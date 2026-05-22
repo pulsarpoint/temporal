@@ -15,10 +15,27 @@ _logger = logging.getLogger(__name__)
 _DEFAULT_BASE_URL = "https://goldencopy.gleif.org/api/v2/golden-copies/publishes"
 _DEFAULT_DATASET = "lei2"
 _DEFAULT_DELTA_WINDOW = "PT24H"
+_DELTA_WINDOWS = {
+    "PT24H": "LastDay",
+    "P1D": "LastDay",
+    "LastDay": "LastDay",
+    "P7D": "LastWeek",
+    "LastWeek": "LastWeek",
+    "P31D": "LastMonth",
+    "P1M": "LastMonth",
+    "LastMonth": "LastMonth",
+}
 
 
 def _snapshot_id(value: str) -> str:
     return value or datetime.now(UTC).strftime("%Y-%m-%dT%H")
+
+
+def _delta_window(value: str) -> str:
+    delta = _DELTA_WINDOWS.get(value)
+    if not delta:
+        raise RuntimeError(f"Unsupported GLEIF delta window: {value}")
+    return delta
 
 
 @activity.defn(name="download_gleif_golden_copy")
@@ -31,10 +48,12 @@ async def download_gleif_golden_copy(input: DownloadSourceFilesInput) -> Downloa
     mode = input.mode or "full"
 
     if mode == "delta":
-        delta_window = input.delta_window or _DEFAULT_DELTA_WINDOW
-        url = f"{base_url}/{dataset}/delta/{delta_window}.{file_format}"
+        delta_window = _delta_window(input.delta_window or _DEFAULT_DELTA_WINDOW)
+        url = f"{base_url}/{dataset}/latest.{file_format}"
+        params = {"delta": delta_window}
     elif mode == "full":
         url = f"{base_url}/{dataset}/latest.{file_format}"
+        params = None
     else:
         raise RuntimeError(f"Unsupported GLEIF download mode: {mode}")
 
@@ -42,7 +61,11 @@ async def download_gleif_golden_copy(input: DownloadSourceFilesInput) -> Downloa
 
     _logger.info("downloading GLEIF %s file to %s", dataset, file_path)
     async with httpx.AsyncClient(timeout=600.0, follow_redirects=True) as client:
-        response = await client.get(url, headers={"Accept": "application/json", "User-Agent": "corpscout-data-pipelines/1.0"})
+        response = await client.get(
+            url,
+            params=params,
+            headers={"Accept": "application/json", "User-Agent": "corpscout-data-pipelines/1.0"},
+        )
         response.raise_for_status()
         content = response.content
 

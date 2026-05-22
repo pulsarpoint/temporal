@@ -92,7 +92,7 @@ func (a *GoActivities) ImportGLEIFGoldenCopy(ctx context.Context, params contrac
 }
 
 func streamGLEIFCompanyRawInputs(file contracts.DownloadedSourceFile, handle func(gleifCompanyRawInput) error) error {
-	return forEachJSONRecord(file, []string{"data", "leiRecords"}, func(rawRecord json.RawMessage) error {
+	return forEachJSONRecord(file, []string{"data", "leiRecords", "records"}, func(rawRecord json.RawMessage) error {
 		input, ok, err := gleifCompanyRawInputFromRaw(rawRecord)
 		if err != nil || !ok {
 			return err
@@ -110,21 +110,35 @@ func gleifCompanyRawInputFromRaw(rawRecord json.RawMessage) (gleifCompanyRawInpu
 		mapString(item, "lei"),
 		mapString(item, "id"),
 		mapString(nestedMap(item, "attributes"), "lei"),
+		mapString(nestedMap(item, "LEI"), "$"),
 	)
 	if lei == "" {
 		return gleifCompanyRawInput{}, false, nil
 	}
 	entity := nestedMap(nestedMap(item, "attributes"), "entity")
+	if entity == nil {
+		entity = nestedMap(item, "Entity")
+	}
 	legalName := firstNonEmptyString(
 		mapString(nestedMap(entity, "legalName"), "name"),
+		mapString(nestedMap(entity, "LegalName"), "$"),
+		mapString(nestedMap(entity, "LegalName"), "name"),
 		mapString(item, "legalName"),
 	)
 	status := firstNonEmptyString(
 		mapString(entity, "status"),
+		mapString(nestedMap(entity, "EntityStatus"), "$"),
+		mapString(entity, "EntityStatus"),
 		mapString(item, "entityStatus"),
 	)
+	headquartersAddress := nestedMap(entity, "headquartersAddress")
+	if headquartersAddress == nil {
+		headquartersAddress = nestedMap(entity, "HeadquartersAddress")
+	}
 	headquartersCountry := firstNonEmptyString(
-		mapString(nestedMap(entity, "headquartersAddress"), "country"),
+		mapString(headquartersAddress, "country"),
+		mapString(nestedMap(headquartersAddress, "Country"), "$"),
+		mapString(headquartersAddress, "Country"),
 		mapString(item, "headquartersCountry"),
 	)
 	return gleifCompanyRawInput{
@@ -441,8 +455,20 @@ func mapString(values map[string]any, key string) string {
 	if values == nil {
 		return ""
 	}
-	value, _ := values[key].(string)
-	return value
+	value, ok := values[key]
+	if !ok {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case json.Number:
+		return typed.String()
+	case map[string]any:
+		return mapString(typed, "$")
+	default:
+		return ""
+	}
 }
 
 func firstNonEmptyString(values ...string) string {

@@ -177,6 +177,41 @@ func TestImportGLEIFGoldenCopy_UsesDirectArrayFallback(t *testing.T) {
 	require.Equal(t, "506700GE1G29325QX363", db.entries[0].args[1])
 }
 
+func TestImportGLEIFGoldenCopy_ParsesOfficialGoldenCopyRecordsShape(t *testing.T) {
+	path := writeTempJSON(t, map[string]any{
+		"records": []map[string]any{{
+			"LEI": map[string]any{"$": "54930084UKLVMY22DS16"},
+			"Entity": map[string]any{
+				"LegalName":    map[string]any{"$": "OFFICIAL GLEIF LTD"},
+				"EntityStatus": map[string]any{"$": "ACTIVE"},
+				"HeadquartersAddress": map[string]any{
+					"Country": map[string]any{"$": "GB"},
+				},
+			},
+		}},
+	})
+	db := &recordingDB{}
+	acts := activities.NewGoActivitiesWithDB(db)
+
+	written, err := acts.ImportGLEIFGoldenCopy(context.Background(), contracts.ImportGLEIFGoldenCopyParams{
+		RunID: "run-gleif-official",
+		Files: []contracts.DownloadedSourceFile{{
+			Source:   "gleif",
+			Dataset:  "lei2",
+			FilePath: path,
+			Format:   "json",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, 1, written)
+	require.Len(t, db.entries, 1)
+	require.Equal(t, "54930084UKLVMY22DS16", db.entries[0].args[1])
+	require.Equal(t, "OFFICIAL GLEIF LTD", db.entries[0].args[2])
+	require.Equal(t, "ACTIVE", db.entries[0].args[3])
+	require.Equal(t, "GB", db.entries[0].args[4])
+}
+
 func TestImportGLEIFGoldenCopy_SniffsZipBytesWhenFormatIsJSON(t *testing.T) {
 	path := writeTempZipJSON(t, "latest.json", map[string]any{
 		"data": []map[string]any{{
