@@ -11,6 +11,8 @@ from typing import Any, Awaitable, Callable
 
 from temporalio import activity
 
+from pydantic import BaseModel
+
 from contracts import (
     TranslatedTerm,
     TranslateTermsInput,
@@ -19,6 +21,11 @@ from contracts import (
 )
 
 log = logging.getLogger(__name__)
+
+
+class Translation(BaseModel):
+    id: str
+    translation: str
 
 DEFAULT_LLM_BASE_URL = "http://100.77.62.33:8888"
 DEFAULT_LLM_MODEL = "qwen3:6b"
@@ -81,11 +88,6 @@ class DSPyTranslationService:
 
 def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
     import dspy
-    from pydantic import BaseModel
-
-    class Translation(BaseModel):
-        id: str
-        translation: str
 
     class TranslateBusinessTerms(dspy.Signature):
         """/no_think
