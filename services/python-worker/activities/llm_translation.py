@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
 import re
 from dataclasses import asdict
@@ -16,6 +17,8 @@ from contracts import (
     TranslateTermsResult,
     TranslationFailure,
 )
+
+log = logging.getLogger(__name__)
 
 DEFAULT_LLM_BASE_URL = "http://100.77.62.33:8888"
 DEFAULT_LLM_MODEL = "qwen3:6b"
@@ -79,23 +82,20 @@ class DSPyTranslationService:
 def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
     import dspy
 
-    system_prompt = (
-        "Translate business registry text to English. "
-        "Return ONLY a JSON object with this exact shape: "
-        '{"translations":[{"id":"same id from input","translation":"English text"}]}. '
-        "Preserve IDs exactly. Return JSON only, no markdown, no extra text."
-    )
-    items_json = json.dumps(
-        {"items": [asdict(item) for item in payload.items]},
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
-    user_message = (
-        f"category: {payload.category}\n"
-        f"source_lang: {payload.source_lang or 'no'}\n"
-        f"target_lang: {payload.target_lang or 'en'}\n"
-        f"items: {items_json}"
-    )
+    class TranslateBusinessTerms(dspy.Signature):
+        """/no_think
+
+        Translate business registry text to English.
+        Return a JSON object using this exact shape:
+        {"translations":[{"id":"same id from input","translation":"English translation"}]}
+        Preserve ids exactly. Never use source text as JSON keys. Return JSON only.
+        """
+
+        category: str = dspy.InputField(desc="Translation category such as legal_form, status, role, or activity.")
+        source_lang: str = dspy.InputField(desc="BCP-47 source language code, for example no, da, or et.")
+        target_lang: str = dspy.InputField(desc="BCP-47 target language code, usually en.")
+        items_json: str = dspy.InputField(desc="JSON array with items: [{id,text}].")
+        translations_json: str = dspy.OutputField(desc="JSON array with translations: [{id,translation}].")
 
     lm = dspy.LM(
         f"openai/{model}",
@@ -105,12 +105,37 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
         temperature=0,
         max_tokens=2048,
     )
-    responses = lm(messages=[
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_message},
-    ])
-    content = responses[0] if responses else ""
-    return parse_translation_payload(str(content), {item.id for item in payload.items})
+    items_json = json.dumps(
+        [asdict(item) for item in payload.items],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    predictor = dspy.Predict(TranslateBusinessTerms)
+    allowed_ids = {item.id for item in payload.items}
+    content = ""
+
+    try:
+        with dspy.context(lm=lm):
+            prediction = predictor(
+                category=payload.category,
+                source_lang=payload.source_lang or "no",
+                target_lang=payload.target_lang or "en",
+                items_json=items_json,
+            )
+        content = getattr(prediction, "translations_json", "")
+    except Exception:
+        log.warning("dspy predict failed, falling back to raw lm output", exc_info=True)
+        try:
+            outputs = lm.history[-1].get("outputs", []) if lm.history else []
+            content = outputs[0] if outputs else ""
+        except Exception:
+            log.warning("could not extract raw lm output from history", exc_info=True)
+
+    try:
+        return parse_translation_payload(str(content), allowed_ids)
+    except Exception:
+        log.warning("parse failed content=%r", str(content)[:200], exc_info=True)
+        return {}
 
 
 def parse_translation_payload(content: str, allowed_ids: set[str]) -> dict[str, str]:
