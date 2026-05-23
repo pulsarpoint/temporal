@@ -176,6 +176,11 @@ type SaveSyncCheckpointParams struct {
 
 // ── Domain enrichment workflow ────────────────────────────────────────────────
 
+const (
+	DomainSinkCompanyDomains       = "company_domains"
+	DomainSinkBrregRawInputDomains = "brreg_raw_input_domains"
+)
+
 // CompanyLookup is a minimal company reference passed to child workflows.
 type CompanyLookup struct {
 	NativeID   string `json:"native_id"`
@@ -185,10 +190,12 @@ type CompanyLookup struct {
 
 // EnrichCompanyDomainsInput is the input for the EnrichCompanyDomains workflow.
 type EnrichCompanyDomainsInput struct {
-	Source    string            `json:"source"`
-	Country   string            `json:"country"`
-	Companies []CompanyLookup   `json:"companies"`
-	ActionIDs map[string]string `json:"action_ids,omitempty"`
+	Source           string            `json:"source"`
+	Country          string            `json:"country"`
+	SourceInputTable string            `json:"source_input_table,omitempty"`
+	DomainSink       string            `json:"domain_sink,omitempty"`
+	Companies        []CompanyLookup   `json:"companies"`
+	ActionIDs        map[string]string `json:"action_ids,omitempty"`
 	// Force bypasses the domain_cache and re-runs discovery even for
 	// companies already searched.
 	Force bool `json:"force,omitempty"`
@@ -203,10 +210,12 @@ type EnrichCompanyDomainsResult struct {
 
 // FilterForDomainDiscoveryParams is the input for FilterForDomainDiscovery.
 type FilterForDomainDiscoveryParams struct {
-	Source    string          `json:"source"`
-	NativeIDs []string        `json:"native_ids"`
-	Companies []CompanyLookup `json:"companies,omitempty"`
-	Force     bool            `json:"force"`
+	Source           string          `json:"source"`
+	SourceInputTable string          `json:"source_input_table,omitempty"`
+	DomainSink       string          `json:"domain_sink,omitempty"`
+	NativeIDs        []string        `json:"native_ids"`
+	Companies        []CompanyLookup `json:"companies,omitempty"`
+	Force            bool            `json:"force"`
 }
 
 // FilterForDomainDiscoveryResult lists company IDs that still need domain search.
@@ -236,11 +245,13 @@ type DiscoverDomainsResult struct {
 
 // WriteDiscoveredDomainsParams is the input for the WriteDiscoveredDomains Go activity.
 type WriteDiscoveredDomainsParams struct {
-	Source      string            `json:"source"`
-	Companies   []CompanyLookup   `json:"companies,omitempty"`
-	ActionIDs   map[string]string `json:"action_ids,omitempty"`
-	Force       bool              `json:"force,omitempty"`
-	Discoveries []DomainDiscovery `json:"discoveries"`
+	Source           string            `json:"source"`
+	SourceInputTable string            `json:"source_input_table,omitempty"`
+	DomainSink       string            `json:"domain_sink,omitempty"`
+	Companies        []CompanyLookup   `json:"companies,omitempty"`
+	ActionIDs        map[string]string `json:"action_ids,omitempty"`
+	Force            bool              `json:"force,omitempty"`
+	Discoveries      []DomainDiscovery `json:"discoveries"`
 }
 
 // MarkDomainsSearchedParams is the input for the MarkDomainsSearched Go activity.

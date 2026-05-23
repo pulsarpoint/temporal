@@ -227,8 +227,10 @@ func TestFilterForDomainDiscoveryBrregUsesRawInputDomainBridge(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"raw_input_id"}).AddRow(rawID1))
 
 	result, err := acts.FilterForDomainDiscovery(context.Background(), contracts.FilterForDomainDiscoveryParams{
-		Source:    "brreg",
-		NativeIDs: []string{"810202572", "999999999"},
+		Source:           "brreg",
+		SourceInputTable: "brreg_company_raw_inputs",
+		DomainSink:       contracts.DomainSinkBrregRawInputDomains,
+		NativeIDs:        []string{"810202572", "999999999"},
 		Companies: []contracts.CompanyLookup{
 			{NativeID: "810202572", Name: "BORTIGARD AS", RawInputID: rawID1},
 			{NativeID: "999999999", Name: "NEW AS", RawInputID: rawID2},
@@ -271,7 +273,9 @@ func TestWriteDiscoveredDomainsBrregWritesRawInputBridge(t *testing.T) {
 	mock.ExpectCommit()
 
 	err := acts.WriteDiscoveredDomains(context.Background(), contracts.WriteDiscoveredDomainsParams{
-		Source: "brreg",
+		Source:           "brreg",
+		SourceInputTable: "brreg_company_raw_inputs",
+		DomainSink:       contracts.DomainSinkBrregRawInputDomains,
 		Companies: []contracts.CompanyLookup{{
 			NativeID:   "810202572",
 			Name:       "BORTIGARD AS",
@@ -306,7 +310,9 @@ func TestWriteDiscoveredDomainsBrregForceReactivatesRemovedConnection(t *testing
 	mock.ExpectCommit()
 
 	err := acts.WriteDiscoveredDomains(context.Background(), contracts.WriteDiscoveredDomainsParams{
-		Source: "brreg",
+		Source:           "brreg",
+		SourceInputTable: "brreg_company_raw_inputs",
+		DomainSink:       contracts.DomainSinkBrregRawInputDomains,
 		Companies: []contracts.CompanyLookup{{
 			NativeID:   "810202572",
 			Name:       "BORTIGARD AS",

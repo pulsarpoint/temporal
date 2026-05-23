@@ -47,10 +47,12 @@ func TestEnrichCompanyDomainsMarksRawInputActionEvents(t *testing.T) {
 	)
 
 	env.OnActivity("FilterForDomainDiscovery", mock.Anything, contracts.FilterForDomainDiscoveryParams{
-		Source:    "brreg",
-		NativeIDs: []string{"810202572"},
-		Companies: []contracts.CompanyLookup{company},
-		Force:     true,
+		Source:           "brreg",
+		SourceInputTable: "brreg_company_raw_inputs",
+		DomainSink:       contracts.DomainSinkBrregRawInputDomains,
+		NativeIDs:        []string{"810202572"},
+		Companies:        []contracts.CompanyLookup{company},
+		Force:            true,
 	}).Return(contracts.FilterForDomainDiscoveryResult{NeedDiscovery: []string{"810202572"}}, nil).Once()
 	env.OnActivity("MarkRawInputActionEvents", mock.Anything, contracts.MarkRawInputActionEventsParams{
 		ActionIDs: map[string]string{"810202572": "action-1"},
@@ -68,10 +70,12 @@ func TestEnrichCompanyDomainsMarksRawInputActionEvents(t *testing.T) {
 		Confidence: 80,
 	}}}, nil).Once()
 	env.OnActivity("WriteDiscoveredDomains", mock.Anything, contracts.WriteDiscoveredDomainsParams{
-		Source:    "brreg",
-		Companies: []contracts.CompanyLookup{company},
-		ActionIDs: map[string]string{"810202572": "action-1"},
-		Force:     true,
+		Source:           "brreg",
+		SourceInputTable: "brreg_company_raw_inputs",
+		DomainSink:       contracts.DomainSinkBrregRawInputDomains,
+		Companies:        []contracts.CompanyLookup{company},
+		ActionIDs:        map[string]string{"810202572": "action-1"},
+		Force:            true,
 		Discoveries: []contracts.DomainDiscovery{{
 			NativeID:   "810202572",
 			Domain:     "bortigard.no",
@@ -90,11 +94,13 @@ func TestEnrichCompanyDomainsMarksRawInputActionEvents(t *testing.T) {
 	}).Return(nil).Once()
 
 	env.ExecuteWorkflow(workflows.EnrichCompanyDomains, contracts.EnrichCompanyDomainsInput{
-		Source:    "brreg",
-		Country:   "NO",
-		Companies: []contracts.CompanyLookup{company},
-		ActionIDs: map[string]string{"810202572": "action-1"},
-		Force:     true,
+		Source:           "brreg",
+		Country:          "NO",
+		SourceInputTable: "brreg_company_raw_inputs",
+		DomainSink:       contracts.DomainSinkBrregRawInputDomains,
+		Companies:        []contracts.CompanyLookup{company},
+		ActionIDs:        map[string]string{"810202572": "action-1"},
+		Force:            true,
 	})
 
 	require.True(t, env.IsWorkflowCompleted())

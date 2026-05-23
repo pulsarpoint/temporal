@@ -361,6 +361,16 @@ func clampConfidence(confidence int) int16 {
 	return int16(confidence)
 }
 
+func domainSinkFor(source, sink string) string {
+	if sink != "" {
+		return sink
+	}
+	if source == "brreg" {
+		return contracts.DomainSinkBrregRawInputDomains
+	}
+	return contracts.DomainSinkCompanyDomains
+}
+
 // FilterForDomainDiscovery returns the subset of native IDs that have not yet
 // had a domain search. Checks the company_domains table directly.
 // If Force is true, all IDs are returned regardless.
@@ -369,7 +379,8 @@ func (a *GoActivities) FilterForDomainDiscovery(ctx context.Context, params cont
 		return contracts.FilterForDomainDiscoveryResult{NeedDiscovery: params.NativeIDs}, nil
 	}
 
-	if params.Source == "brreg" {
+	switch domainSinkFor(params.Source, params.DomainSink) {
+	case contracts.DomainSinkBrregRawInputDomains:
 		companyMap := companiesByNativeID(params.Companies)
 		rawIDs := make([]string, 0, len(params.NativeIDs))
 		nativeByRawID := make(map[string]string, len(params.NativeIDs))
@@ -413,6 +424,9 @@ func (a *GoActivities) FilterForDomainDiscovery(ctx context.Context, params cont
 			}
 		}
 		return contracts.FilterForDomainDiscoveryResult{NeedDiscovery: need}, nil
+	case contracts.DomainSinkCompanyDomains:
+	default:
+		return contracts.FilterForDomainDiscoveryResult{}, errors.Newf("unsupported domain sink %q", params.DomainSink)
 	}
 
 	rows, err := a.pool.Query(ctx,
@@ -447,8 +461,12 @@ func (a *GoActivities) FilterForDomainDiscovery(ctx context.Context, params cont
 
 // WriteDiscoveredDomains persists domain discovery results to company_domains.
 func (a *GoActivities) WriteDiscoveredDomains(ctx context.Context, params contracts.WriteDiscoveredDomainsParams) error {
-	if params.Source == "brreg" {
+	switch domainSinkFor(params.Source, params.DomainSink) {
+	case contracts.DomainSinkBrregRawInputDomains:
 		return a.writeBrregRawInputDomains(ctx, params)
+	case contracts.DomainSinkCompanyDomains:
+	default:
+		return errors.Newf("unsupported domain sink %q", params.DomainSink)
 	}
 	for _, d := range params.Discoveries {
 		if d.NativeID == "" || d.Domain == "" {
@@ -506,12 +524,14 @@ func (a *GoActivities) writeBrregRawInputDomains(ctx context.Context, params con
 
 		actionID := params.ActionIDs[discovery.NativeID]
 		metadataMap := map[string]any{
-			"source":       params.Source,
-			"native_id":    discovery.NativeID,
-			"raw_input_id": company.RawInputID,
-			"action_id":    actionID,
-			"raw_signal":   discovery.Signal,
-			"signal":       signal,
+			"source":             params.Source,
+			"source_input_table": params.SourceInputTable,
+			"domain_sink":        domainSinkFor(params.Source, params.DomainSink),
+			"native_id":          discovery.NativeID,
+			"raw_input_id":       company.RawInputID,
+			"action_id":          actionID,
+			"raw_signal":         discovery.Signal,
+			"signal":             signal,
 		}
 		if params.Force {
 			metadataMap["reactivated"] = true
