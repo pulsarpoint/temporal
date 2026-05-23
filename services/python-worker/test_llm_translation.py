@@ -217,7 +217,7 @@ async def test_translate_terms_with_existing_model_and_real_brreg_data():
 
     base_url = os.environ.get("LLM_INTEGRATION_BASE_URL") or os.environ.get("LLM_BASE_URL") or DEFAULT_LLM_BASE_URL
     model = os.environ.get("LLM_INTEGRATION_MODEL") or os.environ.get("LLM_MODEL") or DEFAULT_LLM_MODEL
-    skip_if_llm_is_unreachable(base_url)
+    skip_if_llm_is_unreachable(base_url, model)
 
     source_terms = {
         "t0": "Å yte regnskapsjenester, inkasso av fordringer og annen administrativ tjenesteyting.",
@@ -242,7 +242,7 @@ async def test_translate_terms_with_existing_model_and_real_brreg_data():
     assert "konsulentvirksomhet" not in translated["t1"].lower()
 
 
-def skip_if_llm_is_unreachable(base_url: str) -> None:
+def skip_if_llm_is_unreachable(base_url: str, model: str = "") -> None:
     parsed = urlparse(base_url)
     host = parsed.hostname
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
@@ -250,6 +250,16 @@ def skip_if_llm_is_unreachable(base_url: str) -> None:
         pytest.fail(f"invalid LLM base URL: {base_url}")
     try:
         with socket.create_connection((host, port), timeout=1.5):
-            return
+            pass
     except OSError as exc:
         pytest.skip(f"local LLM is not reachable at {host}:{port}: {exc}")
+    if not model:
+        return
+    try:
+        response = httpx.get(f"{base_url.rstrip('/').removesuffix('/v1')}/v1/models", timeout=2)
+        response.raise_for_status()
+        available_models = {item.get("id") for item in response.json().get("data", []) if isinstance(item, dict)}
+    except Exception as exc:
+        pytest.skip(f"local LLM model list is not available at {base_url}: {exc}")
+    if model not in available_models:
+        pytest.skip(f"local LLM model {model!r} is not available; available models: {sorted(available_models)}")
