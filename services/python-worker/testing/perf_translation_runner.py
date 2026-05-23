@@ -205,6 +205,7 @@ def make_direct_http_translator(*, model: str, base_url: str) -> Translator:
                     "messages": build_translation_messages(payload),
                     "temperature": 0,
                     "max_tokens": translation_max_tokens(payload),
+                    "chat_template_kwargs": {"enable_thinking": False},
                 },
             )
             response.raise_for_status()

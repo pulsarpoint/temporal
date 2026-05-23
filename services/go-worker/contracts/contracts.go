@@ -303,8 +303,9 @@ type FXRatePayload struct {
 }
 
 type TranslationItem struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
+	ID       string `json:"id"`
+	Category string `json:"category,omitempty"`
+	Text     string `json:"text"`
 }
 
 type TranslatedTerm struct {

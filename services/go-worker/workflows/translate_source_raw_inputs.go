@@ -2,7 +2,6 @@ package workflows
 
 import (
 	"fmt"
-	"sort"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -116,46 +115,35 @@ func translateSourceCacheMisses(
 	sourceLang string,
 	missesByCategory map[string][]contracts.TranslationItem,
 ) ([]contracts.SourceTranslatedTerm, error) {
-	categories := make([]string, 0, len(missesByCategory))
-	for category := range missesByCategory {
-		categories = append(categories, category)
-	}
-	sort.Strings(categories)
-
+	items, itemByID := flattenTranslationMisses(missesByCategory)
 	newTranslations := []contracts.SourceTranslatedTerm{}
-	for _, category := range categories {
-		items := missesByCategory[category]
-		if len(items) == 0 {
+	if len(items) == 0 {
+		return newTranslations, nil
+	}
+
+	var translated contracts.TranslateTermsResult
+	err := workflow.ExecuteActivity(pythonCtx, "TranslateTermsWithDSPy", contracts.TranslateTermsInput{
+		Category:      "mixed",
+		SourceLang:    sourceLang,
+		TargetLang:    "en",
+		Items:         items,
+		Model:         input.Model,
+		PromptVersion: input.PromptVersion,
+	}).Get(ctx, &translated)
+	if err != nil {
+		return nil, err
+	}
+	for _, term := range translated.Translations {
+		item, ok := itemByID[term.ID]
+		if !ok || term.Translation == "" {
 			continue
 		}
-		var translated contracts.TranslateTermsResult
-		err := workflow.ExecuteActivity(pythonCtx, "TranslateTermsWithDSPy", contracts.TranslateTermsInput{
-			Category:      category,
-			SourceLang:    sourceLang,
-			TargetLang:    "en",
-			Items:         items,
-			Model:         input.Model,
-			PromptVersion: input.PromptVersion,
-		}).Get(ctx, &translated)
-		if err != nil {
-			return nil, err
-		}
-		itemByID := map[string]contracts.TranslationItem{}
-		for _, item := range items {
-			itemByID[item.ID] = item
-		}
-		for _, term := range translated.Translations {
-			item, ok := itemByID[term.ID]
-			if !ok || term.Translation == "" {
-				continue
-			}
-			newTranslations = append(newTranslations, contracts.SourceTranslatedTerm{
-				ID:          term.ID,
-				Category:    category,
-				Text:        item.Text,
-				Translation: term.Translation,
-			})
-		}
+		newTranslations = append(newTranslations, contracts.SourceTranslatedTerm{
+			ID:          item.Item.ID,
+			Category:    item.Category,
+			Text:        item.Item.Text,
+			Translation: term.Translation,
+		})
 	}
 	return newTranslations, nil
 }

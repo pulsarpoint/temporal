@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,6 +17,11 @@ const sourceTranslationLeaseMinutes = 10
 type sourceTranslationRow struct {
 	ID         string
 	RawPayload json.RawMessage
+}
+
+type sourceTranslationCacheStat struct {
+	Hits   int
+	Misses int
 }
 
 type SourceTranslationConfig struct {
@@ -96,9 +101,13 @@ func (a *GoActivities) PrepareSourceTranslationBatch(ctx context.Context, params
 	}
 
 	categoryCounters := map[string]int{}
+	categoryStats := map[string]sourceTranslationCacheStat{}
 	for _, term := range sortedTerms {
 		if translated, ok := cached[translationCacheLookupKey(term)]; ok {
 			result.CachedTranslations[termKey(term.Category, term.Text)] = translated
+			stat := categoryStats[term.Category]
+			stat.Hits++
+			categoryStats[term.Category] = stat
 			continue
 		}
 		next := categoryCounters[term.Category]
@@ -107,8 +116,48 @@ func (a *GoActivities) PrepareSourceTranslationBatch(ctx context.Context, params
 			ID:   fmt.Sprintf("t%d", next),
 			Text: term.Text,
 		})
+		stat := categoryStats[term.Category]
+		stat.Misses++
+		categoryStats[term.Category] = stat
 	}
+	logSourceTranslationCacheStats(ctx, cfg, params, len(rows), len(sortedTerms), categoryStats)
 	return result, nil
+}
+
+func logSourceTranslationCacheStats(
+	ctx context.Context,
+	cfg SourceTranslationConfig,
+	params contracts.PrepareSourceTranslationBatchParams,
+	rowCount int,
+	uniqueTermCount int,
+	stats map[string]sourceTranslationCacheStat,
+) {
+	categories := make([]string, 0, len(stats))
+	for category := range stats {
+		categories = append(categories, category)
+	}
+	sort.Strings(categories)
+	for _, category := range categories {
+		stat := stats[category]
+		total := stat.Hits + stat.Misses
+		hitRate := 0.0
+		if total > 0 {
+			hitRate = float64(stat.Hits) / float64(total)
+		}
+		slog.InfoContext(
+			ctx,
+			"source translation cache stats",
+			"source", cfg.SourceName,
+			"category", category,
+			"rows", rowCount,
+			"unique_terms", uniqueTermCount,
+			"hits", stat.Hits,
+			"misses", stat.Misses,
+			"hit_rate", hitRate,
+			"prompt_version", params.PromptVersion,
+			"model", params.Model,
+		)
+	}
 }
 
 func (a *GoActivities) WriteSourceTranslationBatch(ctx context.Context, params contracts.WriteSourceTranslationBatchParams) (contracts.TranslateSourceBatchResult, error) {
@@ -135,10 +184,9 @@ func (a *GoActivities) WriteSourceTranslationBatch(ctx context.Context, params c
 		if term.Text == "" || term.Translation == "" {
 			continue
 		}
-		normalizedText := strings.ToLower(strings.TrimSpace(term.Text))
-		key := termKey(term.Category, normalizedText)
+		key := termKey(term.Category, term.Text)
 		translations[key] = term.Translation
-		newTranslations[key] = SourceTranslationTerm{Category: term.Category, Text: normalizedText}
+		newTranslations[key] = SourceTranslationTerm{Category: term.Category, Text: term.Text}
 	}
 
 	fx := FXRateSet{

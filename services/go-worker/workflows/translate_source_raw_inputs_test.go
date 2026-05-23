@@ -61,32 +61,43 @@ func (s *translateSourceWorkflowSuite) TestCVRUsesDanishSourceLanguageAndGeneric
 			{ID: "row-1", RawPayload: []byte(`{"company_name":"Example Denmark ApS"}`)},
 		},
 		MissesByCategory: map[string][]contracts.TranslationItem{
+			"activity": {
+				{ID: "t0", Text: "Konsulentydelser"},
+			},
 			"legal_form": {
 				{ID: "t0", Text: "Anpartsselskab"},
 			},
 		},
 	}, nil).Once()
 	s.env.OnActivity("TranslateTermsWithDSPy", mock.Anything, contracts.TranslateTermsInput{
-		Category:      "legal_form",
+		Category:      "mixed",
 		SourceLang:    "da",
 		TargetLang:    "en",
 		Model:         "custom-model",
 		PromptVersion: "v2",
 		Items: []contracts.TranslationItem{
-			{ID: "t0", Text: "Anpartsselskab"},
+			{ID: "activity:t0", Category: "activity", Text: "Konsulentydelser"},
+			{ID: "legal_form:t0", Category: "legal_form", Text: "Anpartsselskab"},
 		},
 	}).Return(contracts.TranslateTermsResult{
 		Model: "custom-model",
 		Translations: []contracts.TranslatedTerm{
-			{ID: "t0", Translation: "Private limited company"},
+			{ID: "activity:t0", Translation: "Consulting services"},
+			{ID: "legal_form:t0", Translation: "Private limited company"},
 		},
 	}, nil).Once()
 	s.env.OnActivity("WriteSourceTranslationBatch", mock.Anything, mock.MatchedBy(func(params contracts.WriteSourceTranslationBatchParams) bool {
-		return params.Source == "cvr" &&
-			len(params.NewTranslations) == 1 &&
-			params.NewTranslations[0].Category == "legal_form" &&
-			params.NewTranslations[0].Text == "Anpartsselskab" &&
-			params.NewTranslations[0].Translation == "Private limited company"
+		if params.Source != "cvr" || len(params.NewTranslations) != 2 {
+			return false
+		}
+		byCategory := map[string]contracts.SourceTranslatedTerm{}
+		for _, term := range params.NewTranslations {
+			byCategory[term.Category] = term
+		}
+		return byCategory["activity"].Text == "Konsulentydelser" &&
+			byCategory["activity"].Translation == "Consulting services" &&
+			byCategory["legal_form"].Text == "Anpartsselskab" &&
+			byCategory["legal_form"].Translation == "Private limited company"
 	})).Return(contracts.TranslateSourceBatchResult{Claimed: 1, Translated: 1}, nil).Once()
 	s.env.OnActivity("PrepareSourceTranslationBatch", mock.Anything, mock.Anything).
 		Return(contracts.PrepareSourceTranslationBatchResult{}, nil).

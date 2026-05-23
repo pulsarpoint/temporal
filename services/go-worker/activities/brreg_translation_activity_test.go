@@ -1,9 +1,11 @@
 package activities_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -18,6 +20,12 @@ func TestPrepareBrregTranslationBatch_LooksUpTranslationCacheInBulk(t *testing.T
 	mock := newMock(t)
 	acts := activities.NewGoActivitiesWithTranslationDeps(mock, nil, func(context.Context, string) (activities.FXRateSet, error) {
 		return activities.FXRateSet{}, nil
+	})
+	var logs bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previousLogger)
 	})
 
 	mock.ExpectQuery(`UPDATE brreg_company_raw_inputs`).
@@ -58,6 +66,15 @@ func TestPrepareBrregTranslationBatch_LooksUpTranslationCacheInBulk(t *testing.T
 	require.Equal(t, []contracts.TranslationItem{
 		{ID: "t0", Text: "Konsulentvirksomhet"},
 	}, result.MissesByCategory["activity"])
+	logOutput := logs.String()
+	require.Contains(t, logOutput, `"msg":"source translation cache stats"`)
+	require.Contains(t, logOutput, `"source":"brreg"`)
+	require.Contains(t, logOutput, `"category":"activity"`)
+	require.Contains(t, logOutput, `"hits":1`)
+	require.Contains(t, logOutput, `"misses":1`)
+	require.Contains(t, logOutput, `"category":"org_form"`)
+	require.Contains(t, logOutput, `"hits":1`)
+	require.Contains(t, logOutput, `"misses":0`)
 }
 
 func TestPrepareBrregTranslationBatch_NormalRunPreservesPendingOnlyClaim(t *testing.T) {

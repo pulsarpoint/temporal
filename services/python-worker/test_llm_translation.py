@@ -13,6 +13,7 @@ from contracts import TranslateTermsInput, TranslationItem
 from activities.llm_translation import (
     DEFAULT_LLM_BASE_URL,
     DEFAULT_LLM_MODEL,
+    build_translation_messages,
     DSPyTranslationService,
     parse_translation_payload,
     translate_terms_with_dspy,
@@ -168,6 +169,7 @@ async def test_translate_terms_default_runner_uses_direct_chat_completion_api():
     assert body["model"] == "qwen-test"
     assert body["temperature"] == 0
     assert body["max_tokens"] == 512
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert body["messages"] == [
         {
             "role": "user",
@@ -194,6 +196,35 @@ def test_translation_max_tokens_scales_with_batch_size():
 
     assert translation_max_tokens(small_payload) == 512
     assert translation_max_tokens(large_payload) == 4096
+
+
+def test_build_translation_messages_includes_per_item_category_for_mixed_batches():
+    messages = build_translation_messages(
+        TranslateTermsInput(
+            category="mixed",
+            source_lang="no",
+            target_lang="en",
+            items=[
+                TranslationItem(id="activity:t0", category="activity", text="Eie aksjer"),
+                TranslationItem(id="capital_type:t0", category="capital_type", text="Aksjekapital"),
+            ],
+        )
+    )
+
+    assert messages == [
+        {
+            "role": "user",
+            "content": (
+                "/no_think\n"
+                "Translate no business registry text to en.\n"
+                "Use each item's category as context.\n"
+                'Return only JSON: {"translations":[{"id":"...","translation":"..."}]}\n'
+                "Preserve every input id exactly. Include one translation per input item.\n"
+                'Items: [{"id":"activity:t0","text":"Eie aksjer","category":"activity"},'
+                '{"id":"capital_type:t0","text":"Aksjekapital","category":"capital_type"}]'
+            ),
+        }
+    ]
 
 
 def test_parse_translation_payload_repairs_missing_translation_key():

@@ -73,6 +73,9 @@ func (s *translateBrregWorkflowSuite) TestTranslatesCacheMissesWithPythonDSPyAct
 				{ID: "row-1", RawPayload: []byte(`{"navn":"TEST AS"}`)},
 			},
 			MissesByCategory: map[string][]contracts.TranslationItem{
+				"activity": {
+					{ID: "t0", Text: "Eie aksjer"},
+				},
 				"capital_type": {
 					{ID: "t0", Text: "Aksjekapital"},
 				},
@@ -80,24 +83,36 @@ func (s *translateBrregWorkflowSuite) TestTranslatesCacheMissesWithPythonDSPyAct
 		}, nil).
 		Once()
 	s.env.OnActivity("TranslateTermsWithDSPy", mock.Anything, contracts.TranslateTermsInput{
-		Category:      "capital_type",
+		Category:      "mixed",
+		SourceLang:    "no",
+		TargetLang:    "en",
 		Model:         "custom-model",
 		PromptVersion: "v2",
 		Items: []contracts.TranslationItem{
-			{ID: "t0", Text: "Aksjekapital"},
+			{ID: "activity:t0", Category: "activity", Text: "Eie aksjer"},
+			{ID: "capital_type:t0", Category: "capital_type", Text: "Aksjekapital"},
 		},
 	}).Return(contracts.TranslateTermsResult{
 		Model: "custom-model",
 		Translations: []contracts.TranslatedTerm{
-			{ID: "t0", Translation: "Share capital"},
+			{ID: "activity:t0", Translation: "Own shares"},
+			{ID: "capital_type:t0", Translation: "Share capital"},
 		},
 	}, nil).Once()
 	s.env.OnActivity("WriteBrregTranslationBatch", mock.Anything, mock.MatchedBy(func(params contracts.WriteBrregTranslationBatchParams) bool {
-		return len(params.NewTranslations) == 1 &&
-			params.NewTranslations[0].ID == "t0" &&
-			params.NewTranslations[0].Category == "capital_type" &&
-			params.NewTranslations[0].Text == "Aksjekapital" &&
-			params.NewTranslations[0].Translation == "Share capital"
+		if len(params.NewTranslations) != 2 {
+			return false
+		}
+		byCategory := map[string]contracts.BrregTranslatedTerm{}
+		for _, term := range params.NewTranslations {
+			byCategory[term.Category] = term
+		}
+		return byCategory["activity"].ID == "t0" &&
+			byCategory["activity"].Text == "Eie aksjer" &&
+			byCategory["activity"].Translation == "Own shares" &&
+			byCategory["capital_type"].ID == "t0" &&
+			byCategory["capital_type"].Text == "Aksjekapital" &&
+			byCategory["capital_type"].Translation == "Share capital"
 	})).Return(contracts.TranslateBrregBatchResult{Claimed: 1, Translated: 1}, nil).Once()
 	s.env.OnActivity("PrepareBrregTranslationBatch", mock.Anything, mock.Anything).
 		Return(contracts.PrepareBrregTranslationBatchResult{}, nil).

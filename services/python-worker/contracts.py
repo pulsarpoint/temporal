@@ -59,6 +59,7 @@ class DiscoverDomainsResult:
 class TranslationItem:
     id: str
     text: str
+    category: str = ""
 
 
 @dataclass

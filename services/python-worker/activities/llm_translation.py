@@ -94,6 +94,7 @@ async def run_direct_translation(payload: TranslateTermsInput, model: str, base_
                 "messages": build_translation_messages(payload),
                 "temperature": 0,
                 "max_tokens": translation_max_tokens(payload),
+                "chat_template_kwargs": {"enable_thinking": False},
             },
         )
         response.raise_for_status()
@@ -108,23 +109,39 @@ def translation_max_tokens(payload: TranslateTermsInput) -> int:
 
 def build_translation_messages(payload: TranslateTermsInput) -> list[dict[str, str]]:
     items_json = json.dumps(
-        [asdict(item) for item in payload.items],
+        [translation_item_payload(item) for item in payload.items],
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    if any(item.category for item in payload.items):
+        instruction = (
+            f"Translate {payload.source_lang or 'no'} business registry text to {payload.target_lang or 'en'}.\n"
+            "Use each item's category as context."
+        )
+    else:
+        instruction = (
+            f"Translate {payload.source_lang or 'no'} business registry {payload.category} text "
+            f"to {payload.target_lang or 'en'}."
+        )
     return [
         {
             "role": "user",
             "content": (
                 "/no_think\n"
-                f"Translate {payload.source_lang or 'no'} business registry {payload.category} text "
-                f"to {payload.target_lang or 'en'}.\n"
+                f"{instruction}\n"
                 'Return only JSON: {"translations":[{"id":"...","translation":"..."}]}\n'
                 "Preserve every input id exactly. Include one translation per input item.\n"
                 f"Items: {items_json}"
             ),
         }
     ]
+
+
+def translation_item_payload(item: Any) -> dict[str, str]:
+    values = {"id": item.id, "text": item.text}
+    if getattr(item, "category", ""):
+        values["category"] = item.category
+    return values
 
 
 def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
@@ -140,7 +157,7 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
         category: str = dspy.InputField(desc="Translation category such as legal_form, status, role, or activity.")
         source_lang: str = dspy.InputField(desc="BCP-47 source language code, for example no, da, or et.")
         target_lang: str = dspy.InputField(desc="BCP-47 target language code, usually en.")
-        items_json: str = dspy.InputField(desc="JSON array with items: [{id,text}].")
+        items_json: str = dspy.InputField(desc="JSON array with items: [{id,text,category?}].")
         translations: list[dict] = dspy.OutputField(desc="One object per input item with 'id' and 'translation' fields.")
 
     lm = dspy.LM(
@@ -152,7 +169,7 @@ def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str
         max_tokens=2048,
     )
     items_json = json.dumps(
-        [asdict(item) for item in payload.items],
+        [translation_item_payload(item) for item in payload.items],
         ensure_ascii=False,
         separators=(",", ":"),
     )
