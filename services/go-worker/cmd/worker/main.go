@@ -72,6 +72,7 @@ func main() {
 	w.RegisterActivity(goActs.FilterForDomainDiscovery)
 	w.RegisterActivity(goActs.WriteDiscoveredDomains)
 	w.RegisterActivity(goActs.MarkDomainsSearched)
+	w.RegisterActivity(goActs.MarkRawInputActionEvents)
 	w.RegisterActivity(goActs.PrepareBrregTranslationBatch)
 	w.RegisterActivity(goActs.WriteBrregTranslationBatch)
 	w.RegisterActivity(goActs.PrepareSourceTranslationBatch)

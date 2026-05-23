@@ -184,9 +184,10 @@ type CompanyLookup struct {
 
 // EnrichCompanyDomainsInput is the input for the EnrichCompanyDomains workflow.
 type EnrichCompanyDomainsInput struct {
-	Source    string          `json:"source"`
-	Country   string          `json:"country"`
-	Companies []CompanyLookup `json:"companies"`
+	Source    string            `json:"source"`
+	Country   string            `json:"country"`
+	Companies []CompanyLookup   `json:"companies"`
+	ActionIDs map[string]string `json:"action_ids,omitempty"`
 	// Force bypasses the domain_cache and re-runs discovery even for
 	// companies already searched.
 	Force bool `json:"force,omitempty"`
@@ -242,6 +243,13 @@ type WriteDiscoveredDomainsParams struct {
 type MarkDomainsSearchedParams struct {
 	Source    string   `json:"source"`
 	NativeIDs []string `json:"native_ids"`
+}
+
+type MarkRawInputActionEventsParams struct {
+	ActionIDs map[string]string `json:"action_ids"`
+	Status    string            `json:"status"`
+	Message   string            `json:"message,omitempty"`
+	Error     string            `json:"error,omitempty"`
 }
 
 // TranslateBrregInput is the input for the operator-triggered Brreg translation workflow.

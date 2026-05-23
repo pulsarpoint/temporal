@@ -61,9 +61,22 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 	}
 
 	if len(filterResult.NeedDiscovery) == 0 {
+		if err := markRawInputActionEvents(ctx, goCtx, goAct, input.ActionIDs, nativeIDs, "succeeded", "domain discovery already completed", ""); err != nil {
+			return contracts.EnrichCompanyDomainsResult{}, err
+		}
 		logger.Info("all companies already searched for domains, nothing to do",
 			"total", len(input.Companies), "source", input.Source)
 		return contracts.EnrichCompanyDomainsResult{}, nil
+	}
+
+	if alreadyDone := actionIDsOutsideBatch(input.ActionIDs, nativeIDs, filterResult.NeedDiscovery); len(alreadyDone) > 0 {
+		if err := workflow.ExecuteActivity(goCtx, goAct.MarkRawInputActionEvents, contracts.MarkRawInputActionEventsParams{
+			ActionIDs: alreadyDone,
+			Status:    "succeeded",
+			Message:   "domain discovery already completed",
+		}).Get(ctx, nil); err != nil {
+			return contracts.EnrichCompanyDomainsResult{}, err
+		}
 	}
 
 	logger.Info("starting domain discovery",
@@ -89,6 +102,16 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 				batchCompanies = append(batchCompanies, c)
 			}
 		}
+		batchActionIDs := actionIDsForBatch(input.ActionIDs, batch)
+		if len(batchActionIDs) > 0 {
+			if err := workflow.ExecuteActivity(goCtx, goAct.MarkRawInputActionEvents, contracts.MarkRawInputActionEventsParams{
+				ActionIDs: batchActionIDs,
+				Status:    "running",
+				Message:   "domain discovery started",
+			}).Get(ctx, nil); err != nil {
+				return contracts.EnrichCompanyDomainsResult{}, err
+			}
+		}
 
 		var discoverResult contracts.DiscoverDomainsResult
 		discoverErr := workflow.ExecuteActivity(pythonCtx, "discover_company_domains", contracts.DiscoverDomainsInput{
@@ -102,6 +125,16 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 			// Still mark as searched so we don't retry endlessly.
 			logger.Warn("domain discovery batch failed, marking searched anyway",
 				"batch_start", i, "error", discoverErr)
+			if len(batchActionIDs) > 0 {
+				if err := workflow.ExecuteActivity(goCtx, goAct.MarkRawInputActionEvents, contracts.MarkRawInputActionEventsParams{
+					ActionIDs: batchActionIDs,
+					Status:    "failed",
+					Message:   "domain discovery failed",
+					Error:     discoverErr.Error(),
+				}).Get(ctx, nil); err != nil {
+					return contracts.EnrichCompanyDomainsResult{}, err
+				}
+			}
 		} else if len(discoverResult.Discoveries) > 0 {
 			if err := workflow.ExecuteActivity(goCtx, goAct.WriteDiscoveredDomains, contracts.WriteDiscoveredDomainsParams{
 				Source:      input.Source,
@@ -120,6 +153,15 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 		}).Get(ctx, nil); err != nil {
 			return contracts.EnrichCompanyDomainsResult{}, err
 		}
+		if discoverErr == nil && len(batchActionIDs) > 0 {
+			if err := workflow.ExecuteActivity(goCtx, goAct.MarkRawInputActionEvents, contracts.MarkRawInputActionEventsParams{
+				ActionIDs: batchActionIDs,
+				Status:    "succeeded",
+				Message:   "domain discovery completed",
+			}).Get(ctx, nil); err != nil {
+				return contracts.EnrichCompanyDomainsResult{}, err
+			}
+		}
 
 		logger.Info("domain discovery batch done",
 			"batch", i/domainBatchSize+1,
@@ -132,4 +174,53 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 		DomainsFound:       totalDomainsFound,
 		Discoveries:        allDiscoveries,
 	}, nil
+}
+
+func markRawInputActionEvents(
+	ctx workflow.Context,
+	goCtx workflow.Context,
+	goAct *activities.GoActivities,
+	actionIDs map[string]string,
+	nativeIDs []string,
+	status string,
+	message string,
+	errorText string,
+) error {
+	ids := actionIDsForBatch(actionIDs, nativeIDs)
+	if len(ids) == 0 {
+		return nil
+	}
+	return workflow.ExecuteActivity(goCtx, goAct.MarkRawInputActionEvents, contracts.MarkRawInputActionEventsParams{
+		ActionIDs: ids,
+		Status:    status,
+		Message:   message,
+		Error:     errorText,
+	}).Get(ctx, nil)
+}
+
+func actionIDsForBatch(actionIDs map[string]string, nativeIDs []string) map[string]string {
+	out := map[string]string{}
+	for _, nativeID := range nativeIDs {
+		if actionID := actionIDs[nativeID]; actionID != "" {
+			out[nativeID] = actionID
+		}
+	}
+	return out
+}
+
+func actionIDsOutsideBatch(actionIDs map[string]string, allNativeIDs, batchNativeIDs []string) map[string]string {
+	inBatch := map[string]struct{}{}
+	for _, nativeID := range batchNativeIDs {
+		inBatch[nativeID] = struct{}{}
+	}
+	out := map[string]string{}
+	for _, nativeID := range allNativeIDs {
+		if _, ok := inBatch[nativeID]; ok {
+			continue
+		}
+		if actionID := actionIDs[nativeID]; actionID != "" {
+			out[nativeID] = actionID
+		}
+	}
+	return out
 }

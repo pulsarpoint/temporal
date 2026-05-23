@@ -368,3 +368,18 @@ func (a *GoActivities) WriteDiscoveredDomains(ctx context.Context, params contra
 func (a *GoActivities) MarkDomainsSearched(_ context.Context, _ contracts.MarkDomainsSearchedParams) error {
 	return nil
 }
+
+func (a *GoActivities) MarkRawInputActionEvents(ctx context.Context, params contracts.MarkRawInputActionEventsParams) error {
+	for _, actionID := range params.ActionIDs {
+		if actionID == "" {
+			continue
+		}
+		if _, err := a.pool.Exec(ctx, `
+			INSERT INTO brreg_raw_input_action_events (action_id, status, message, error)
+			VALUES ($1, $2, $3, $4)
+		`, actionID, params.Status, params.Message, params.Error); err != nil {
+			return fmt.Errorf("append brreg raw input action event: %w", err)
+		}
+	}
+	return nil
+}

@@ -230,3 +230,20 @@ func TestFilterForDomainDiscovery_ForceReturnsAll(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, ids, result.NeedDiscovery)
 }
+
+func TestMarkRawInputActionEventsAppendsEvents(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	actionID := "7ffd5bf3-f96e-4907-9ef3-096eb4056ab8"
+	mock.ExpectExec(`INSERT INTO brreg_raw_input_action_events`).
+		WithArgs(actionID, "running", "domain discovery started", "").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	err := acts.MarkRawInputActionEvents(context.Background(), contracts.MarkRawInputActionEventsParams{
+		ActionIDs: map[string]string{"810202572": actionID},
+		Status:    "running",
+		Message:   "domain discovery started",
+	})
+	require.NoError(t, err)
+}
