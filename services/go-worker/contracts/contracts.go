@@ -178,8 +178,9 @@ type SaveSyncCheckpointParams struct {
 
 // CompanyLookup is a minimal company reference passed to child workflows.
 type CompanyLookup struct {
-	NativeID string `json:"native_id"`
-	Name     string `json:"name"`
+	NativeID   string `json:"native_id"`
+	Name       string `json:"name"`
+	RawInputID string `json:"raw_input_id,omitempty"`
 }
 
 // EnrichCompanyDomainsInput is the input for the EnrichCompanyDomains workflow.
@@ -202,9 +203,10 @@ type EnrichCompanyDomainsResult struct {
 
 // FilterForDomainDiscoveryParams is the input for FilterForDomainDiscovery.
 type FilterForDomainDiscoveryParams struct {
-	Source    string   `json:"source"`
-	NativeIDs []string `json:"native_ids"`
-	Force     bool     `json:"force"`
+	Source    string          `json:"source"`
+	NativeIDs []string        `json:"native_ids"`
+	Companies []CompanyLookup `json:"companies,omitempty"`
+	Force     bool            `json:"force"`
 }
 
 // FilterForDomainDiscoveryResult lists company IDs that still need domain search.
@@ -235,6 +237,9 @@ type DiscoverDomainsResult struct {
 // WriteDiscoveredDomainsParams is the input for the WriteDiscoveredDomains Go activity.
 type WriteDiscoveredDomainsParams struct {
 	Source      string            `json:"source"`
+	Companies   []CompanyLookup   `json:"companies,omitempty"`
+	ActionIDs   map[string]string `json:"action_ids,omitempty"`
+	Force       bool              `json:"force,omitempty"`
 	Discoveries []DomainDiscovery `json:"discoveries"`
 }
 

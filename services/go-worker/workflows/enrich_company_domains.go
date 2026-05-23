@@ -55,6 +55,7 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 	if err := workflow.ExecuteActivity(goCtx, goAct.FilterForDomainDiscovery, contracts.FilterForDomainDiscoveryParams{
 		Source:    input.Source,
 		NativeIDs: nativeIDs,
+		Companies: input.Companies,
 		Force:     input.Force,
 	}).Get(ctx, &filterResult); err != nil {
 		return contracts.EnrichCompanyDomainsResult{}, err
@@ -138,6 +139,9 @@ func EnrichCompanyDomains(ctx workflow.Context, input contracts.EnrichCompanyDom
 		} else if len(discoverResult.Discoveries) > 0 {
 			if err := workflow.ExecuteActivity(goCtx, goAct.WriteDiscoveredDomains, contracts.WriteDiscoveredDomainsParams{
 				Source:      input.Source,
+				Companies:   batchCompanies,
+				ActionIDs:   batchActionIDs,
+				Force:       input.Force,
 				Discoveries: discoverResult.Discoveries,
 			}).Get(ctx, nil); err != nil {
 				return contracts.EnrichCompanyDomainsResult{}, err

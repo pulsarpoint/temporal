@@ -16,6 +16,11 @@ import (
 func TestEnrichCompanyDomainsMarksRawInputActionEvents(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
+	company := contracts.CompanyLookup{
+		NativeID:   "810202572",
+		Name:       "BORTIGARD AS",
+		RawInputID: "7ffd5bf3-f96e-4907-9ef3-096eb4056ab8",
+	}
 	env.RegisterActivityWithOptions(
 		func(context.Context, contracts.FilterForDomainDiscoveryParams) (contracts.FilterForDomainDiscoveryResult, error) {
 			return contracts.FilterForDomainDiscoveryResult{}, nil
@@ -44,6 +49,7 @@ func TestEnrichCompanyDomainsMarksRawInputActionEvents(t *testing.T) {
 	env.OnActivity("FilterForDomainDiscovery", mock.Anything, contracts.FilterForDomainDiscoveryParams{
 		Source:    "brreg",
 		NativeIDs: []string{"810202572"},
+		Companies: []contracts.CompanyLookup{company},
 		Force:     true,
 	}).Return(contracts.FilterForDomainDiscoveryResult{NeedDiscovery: []string{"810202572"}}, nil).Once()
 	env.OnActivity("MarkRawInputActionEvents", mock.Anything, contracts.MarkRawInputActionEventsParams{
@@ -52,12 +58,9 @@ func TestEnrichCompanyDomainsMarksRawInputActionEvents(t *testing.T) {
 		Message:   "domain discovery started",
 	}).Return(nil).Once()
 	env.OnActivity("discover_company_domains", mock.Anything, contracts.DiscoverDomainsInput{
-		Source:  "brreg",
-		Country: "NO",
-		Companies: []contracts.CompanyLookup{{
-			NativeID: "810202572",
-			Name:     "BORTIGARD AS",
-		}},
+		Source:    "brreg",
+		Country:   "NO",
+		Companies: []contracts.CompanyLookup{company},
 	}).Return(contracts.DiscoverDomainsResult{Discoveries: []contracts.DomainDiscovery{{
 		NativeID:   "810202572",
 		Domain:     "bortigard.no",
@@ -65,7 +68,10 @@ func TestEnrichCompanyDomainsMarksRawInputActionEvents(t *testing.T) {
 		Confidence: 80,
 	}}}, nil).Once()
 	env.OnActivity("WriteDiscoveredDomains", mock.Anything, contracts.WriteDiscoveredDomainsParams{
-		Source: "brreg",
+		Source:    "brreg",
+		Companies: []contracts.CompanyLookup{company},
+		ActionIDs: map[string]string{"810202572": "action-1"},
+		Force:     true,
 		Discoveries: []contracts.DomainDiscovery{{
 			NativeID:   "810202572",
 			Domain:     "bortigard.no",
@@ -84,12 +90,9 @@ func TestEnrichCompanyDomainsMarksRawInputActionEvents(t *testing.T) {
 	}).Return(nil).Once()
 
 	env.ExecuteWorkflow(workflows.EnrichCompanyDomains, contracts.EnrichCompanyDomainsInput{
-		Source:  "brreg",
-		Country: "NO",
-		Companies: []contracts.CompanyLookup{{
-			NativeID: "810202572",
-			Name:     "BORTIGARD AS",
-		}},
+		Source:    "brreg",
+		Country:   "NO",
+		Companies: []contracts.CompanyLookup{company},
 		ActionIDs: map[string]string{"810202572": "action-1"},
 		Force:     true,
 	})

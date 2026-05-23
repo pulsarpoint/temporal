@@ -216,6 +216,28 @@ func TestFilterForDomainDiscovery_FiltersAlreadySearched(t *testing.T) {
 	require.ElementsMatch(t, []string{"id2", "id3"}, result.NeedDiscovery)
 }
 
+func TestFilterForDomainDiscoveryBrregUsesRawInputDomainBridge(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	rawID1 := "7ffd5bf3-f96e-4907-9ef3-096eb4056ab8"
+	rawID2 := "4d80f241-0e9e-48b2-b4b4-8f919a5ff34d"
+	mock.ExpectQuery(`SELECT DISTINCT raw_input_id::text FROM brreg_raw_input_domains`).
+		WithArgs([]string{rawID1, rawID2}).
+		WillReturnRows(pgxmock.NewRows([]string{"raw_input_id"}).AddRow(rawID1))
+
+	result, err := acts.FilterForDomainDiscovery(context.Background(), contracts.FilterForDomainDiscoveryParams{
+		Source:    "brreg",
+		NativeIDs: []string{"810202572", "999999999"},
+		Companies: []contracts.CompanyLookup{
+			{NativeID: "810202572", Name: "BORTIGARD AS", RawInputID: rawID1},
+			{NativeID: "999999999", Name: "NEW AS", RawInputID: rawID2},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"999999999"}, result.NeedDiscovery)
+}
+
 func TestFilterForDomainDiscovery_ForceReturnsAll(t *testing.T) {
 	mock := newMock(t)
 	acts := activities.NewGoActivitiesWithDB(mock)
@@ -229,6 +251,77 @@ func TestFilterForDomainDiscovery_ForceReturnsAll(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Equal(t, ids, result.NeedDiscovery)
+}
+
+func TestWriteDiscoveredDomainsBrregWritesRawInputBridge(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	rawID := "7ffd5bf3-f96e-4907-9ef3-096eb4056ab8"
+	actionID := "25dbfdd1-6971-4498-8061-d296d1651986"
+	domainID := "030c7e19-f08b-487c-a8c1-41cb969a0b59"
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO domains`).
+		WithArgs("bortigard.no").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(domainID))
+	mock.ExpectExec(`INSERT INTO brreg_raw_input_domains`).
+		WithArgs(rawID, domainID, actionID, "search", int16(80), pgxmock.AnyArg(), false).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	err := acts.WriteDiscoveredDomains(context.Background(), contracts.WriteDiscoveredDomainsParams{
+		Source: "brreg",
+		Companies: []contracts.CompanyLookup{{
+			NativeID:   "810202572",
+			Name:       "BORTIGARD AS",
+			RawInputID: rawID,
+		}},
+		ActionIDs: map[string]string{"810202572": actionID},
+		Discoveries: []contracts.DomainDiscovery{{
+			NativeID:   "810202572",
+			Domain:     "https://bortigard.no/",
+			Signal:     "duckduckgo",
+			Confidence: 80,
+		}},
+	})
+	require.NoError(t, err)
+}
+
+func TestWriteDiscoveredDomainsBrregForceReactivatesRemovedConnection(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	rawID := "7ffd5bf3-f96e-4907-9ef3-096eb4056ab8"
+	actionID := "25dbfdd1-6971-4498-8061-d296d1651986"
+	domainID := "030c7e19-f08b-487c-a8c1-41cb969a0b59"
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO domains`).
+		WithArgs("bortigard.no").
+		WillReturnRows(pgxmock.NewRows([]string{"id"}).AddRow(domainID))
+	mock.ExpectExec(`INSERT INTO brreg_raw_input_domains`).
+		WithArgs(rawID, domainID, actionID, "heuristic", int16(70), pgxmock.AnyArg(), true).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	err := acts.WriteDiscoveredDomains(context.Background(), contracts.WriteDiscoveredDomainsParams{
+		Source: "brreg",
+		Companies: []contracts.CompanyLookup{{
+			NativeID:   "810202572",
+			Name:       "BORTIGARD AS",
+			RawInputID: rawID,
+		}},
+		ActionIDs: map[string]string{"810202572": actionID},
+		Force:     true,
+		Discoveries: []contracts.DomainDiscovery{{
+			NativeID:   "810202572",
+			Domain:     "bortigard.no",
+			Signal:     "heuristic",
+			Confidence: 70,
+		}},
+	})
+	require.NoError(t, err)
 }
 
 func TestMarkRawInputActionEventsAppendsEvents(t *testing.T) {

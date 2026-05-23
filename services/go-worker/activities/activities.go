@@ -9,9 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/cockroachdb/errors"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -304,12 +307,112 @@ func (a *GoActivities) SaveSyncCheckpoint(ctx context.Context, params contracts.
 
 // ── Domain enrichment activities ──────────────────────────────────────────────
 
+func companiesByNativeID(companies []contracts.CompanyLookup) map[string]contracts.CompanyLookup {
+	out := make(map[string]contracts.CompanyLookup, len(companies))
+	for _, company := range companies {
+		out[company.NativeID] = company
+	}
+	return out
+}
+
+func normalizeDiscoveryDomain(raw string) (string, bool) {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	s = strings.TrimPrefix(s, "http://")
+	s = strings.TrimPrefix(s, "https://")
+	if slash := strings.IndexByte(s, '/'); slash >= 0 {
+		s = s[:slash]
+	}
+	if host, _, err := net.SplitHostPort(s); err == nil {
+		s = host
+	}
+	s = strings.Trim(s, ".")
+	if s == "" || !strings.Contains(s, ".") {
+		return "", false
+	}
+	return s, true
+}
+
+func normalizeDiscoverySignal(signal string) string {
+	switch strings.ToLower(strings.TrimSpace(signal)) {
+	case "manual":
+		return "manual"
+	case "wikidata":
+		return "wikidata"
+	case "certsh", "crtsh":
+		return "certsh"
+	case "whois":
+		return "whois"
+	case "duckduckgo", "search":
+		return "search"
+	case "heuristic":
+		return "heuristic"
+	default:
+		return "heuristic"
+	}
+}
+
+func clampConfidence(confidence int) int16 {
+	if confidence < 1 {
+		return 1
+	}
+	if confidence > 100 {
+		return 100
+	}
+	return int16(confidence)
+}
+
 // FilterForDomainDiscovery returns the subset of native IDs that have not yet
 // had a domain search. Checks the company_domains table directly.
 // If Force is true, all IDs are returned regardless.
 func (a *GoActivities) FilterForDomainDiscovery(ctx context.Context, params contracts.FilterForDomainDiscoveryParams) (contracts.FilterForDomainDiscoveryResult, error) {
 	if params.Force || len(params.NativeIDs) == 0 {
 		return contracts.FilterForDomainDiscoveryResult{NeedDiscovery: params.NativeIDs}, nil
+	}
+
+	if params.Source == "brreg" {
+		companyMap := companiesByNativeID(params.Companies)
+		rawIDs := make([]string, 0, len(params.NativeIDs))
+		nativeByRawID := make(map[string]string, len(params.NativeIDs))
+		for _, nativeID := range params.NativeIDs {
+			company := companyMap[nativeID]
+			if company.RawInputID == "" {
+				return contracts.FilterForDomainDiscoveryResult{}, errors.Newf("missing brreg raw input id for native id %s", nativeID)
+			}
+			rawIDs = append(rawIDs, company.RawInputID)
+			nativeByRawID[company.RawInputID] = nativeID
+		}
+		rows, err := a.pool.Query(ctx,
+			`SELECT DISTINCT raw_input_id::text
+			 FROM brreg_raw_input_domains
+			 WHERE raw_input_id::text = ANY($1)
+			   AND status = 'active'`,
+			rawIDs,
+		)
+		if err != nil {
+			return contracts.FilterForDomainDiscoveryResult{}, errors.Wrap(err, "query brreg raw input domain bridge")
+		}
+		defer rows.Close()
+
+		already := map[string]struct{}{}
+		for rows.Next() {
+			var rawID string
+			if err := rows.Scan(&rawID); err != nil {
+				return contracts.FilterForDomainDiscoveryResult{}, errors.Wrap(err, "scan brreg raw input domain bridge")
+			}
+			if nativeID := nativeByRawID[rawID]; nativeID != "" {
+				already[nativeID] = struct{}{}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return contracts.FilterForDomainDiscoveryResult{}, errors.Wrap(err, "iterate brreg raw input domain bridge")
+		}
+		need := make([]string, 0, len(params.NativeIDs))
+		for _, nativeID := range params.NativeIDs {
+			if _, ok := already[nativeID]; !ok {
+				need = append(need, nativeID)
+			}
+		}
+		return contracts.FilterForDomainDiscoveryResult{NeedDiscovery: need}, nil
 	}
 
 	rows, err := a.pool.Query(ctx,
@@ -344,6 +447,9 @@ func (a *GoActivities) FilterForDomainDiscovery(ctx context.Context, params cont
 
 // WriteDiscoveredDomains persists domain discovery results to company_domains.
 func (a *GoActivities) WriteDiscoveredDomains(ctx context.Context, params contracts.WriteDiscoveredDomainsParams) error {
+	if params.Source == "brreg" {
+		return a.writeBrregRawInputDomains(ctx, params)
+	}
 	for _, d := range params.Discoveries {
 		if d.NativeID == "" || d.Domain == "" {
 			continue
@@ -359,6 +465,85 @@ func (a *GoActivities) WriteDiscoveredDomains(ctx context.Context, params contra
 		if err != nil {
 			return fmt.Errorf("upsert company_domain %s/%s: %w", d.NativeID, d.Domain, err)
 		}
+	}
+	return nil
+}
+
+func (a *GoActivities) writeBrregRawInputDomains(ctx context.Context, params contracts.WriteDiscoveredDomainsParams) error {
+	companyMap := companiesByNativeID(params.Companies)
+	tx, err := a.pool.Begin(ctx)
+	if err != nil {
+		return errors.Wrap(err, "begin brreg raw input domain write")
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	for _, discovery := range params.Discoveries {
+		if discovery.NativeID == "" {
+			continue
+		}
+		company := companyMap[discovery.NativeID]
+		if company.RawInputID == "" {
+			return errors.Newf("missing brreg raw input id for native id %s", discovery.NativeID)
+		}
+		domain, ok := normalizeDiscoveryDomain(discovery.Domain)
+		if !ok {
+			continue
+		}
+		signal := normalizeDiscoverySignal(discovery.Signal)
+		confidence := clampConfidence(discovery.Confidence)
+
+		var domainID string
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO domains (domain)
+			VALUES ($1)
+			ON CONFLICT (domain) DO UPDATE SET last_verified_at = now()
+			RETURNING id::text
+		`, domain).Scan(&domainID); err != nil {
+			return errors.Wrapf(err, "upsert domain %s", domain)
+		}
+
+		actionID := params.ActionIDs[discovery.NativeID]
+		metadataMap := map[string]any{
+			"source":       params.Source,
+			"native_id":    discovery.NativeID,
+			"raw_input_id": company.RawInputID,
+			"action_id":    actionID,
+			"raw_signal":   discovery.Signal,
+			"signal":       signal,
+		}
+		if params.Force {
+			metadataMap["reactivated"] = true
+			metadataMap["reactivated_by"] = "ops"
+		}
+		metadata, err := json.Marshal(metadataMap)
+		if err != nil {
+			return errors.Wrap(err, "marshal brreg raw input domain metadata")
+		}
+
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO brreg_raw_input_domains (
+				raw_input_id, domain_id, action_id, signal, confidence, status, metadata, removed_at, removed_by
+			)
+			VALUES ($1::uuid, $2::uuid, NULLIF($3, '')::uuid, $4, $5, 'active', $6::jsonb, NULL, NULL)
+			ON CONFLICT (raw_input_id, domain_id, signal) DO UPDATE SET
+				confidence = EXCLUDED.confidence,
+				action_id = EXCLUDED.action_id,
+				metadata = brreg_raw_input_domains.metadata || EXCLUDED.metadata ||
+					CASE WHEN $7::boolean THEN jsonb_build_object('reactivated_at', now()) ELSE '{}'::jsonb END,
+				status = CASE WHEN $7::boolean THEN 'active' ELSE brreg_raw_input_domains.status END,
+				removed_at = CASE WHEN $7::boolean THEN NULL ELSE brreg_raw_input_domains.removed_at END,
+				removed_by = CASE WHEN $7::boolean THEN NULL ELSE brreg_raw_input_domains.removed_by END,
+				updated_at = now()
+			WHERE brreg_raw_input_domains.status = 'active' OR $7::boolean
+		`, company.RawInputID, domainID, actionID, signal, confidence, metadata, params.Force); err != nil {
+			return errors.Wrapf(err, "upsert brreg raw input domain %s/%s", discovery.NativeID, domain)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return errors.Wrap(err, "commit brreg raw input domain write")
 	}
 	return nil
 }
