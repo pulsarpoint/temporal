@@ -54,6 +54,7 @@ func (s *translateSourceWorkflowSuite) TestCVRUsesDanishSourceLanguageAndGeneric
 		return params.Source == "cvr" &&
 			params.PromptVersion == "v2" &&
 			params.Model == "custom-model" &&
+			params.Filters["translation_action_status"] == "failed" &&
 			params.BatchSize == 50
 	})).Return(contracts.PrepareSourceTranslationBatchResult{
 		Claimed: 1,
@@ -107,6 +108,7 @@ func (s *translateSourceWorkflowSuite) TestCVRUsesDanishSourceLanguageAndGeneric
 		Source:        "cvr",
 		PromptVersion: "v2",
 		Model:         "custom-model",
+		Filters:       map[string]string{"translation_action_status": "failed"},
 	})
 
 	s.True(s.env.IsWorkflowCompleted())

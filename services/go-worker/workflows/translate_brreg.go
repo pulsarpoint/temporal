@@ -51,6 +51,7 @@ func TranslateBrregRawInputs(ctx workflow.Context, input contracts.TranslateBrre
 		var prepared contracts.PrepareBrregTranslationBatchResult
 		err := workflow.ExecuteActivity(goCtx, goAct.PrepareBrregTranslationBatch, contracts.PrepareBrregTranslationBatchParams{
 			IDs:           input.IDs,
+			Filters:       input.Filters,
 			PromptVersion: input.PromptVersion,
 			Model:         input.Model,
 			FXRateDate:    input.FXRateDate,

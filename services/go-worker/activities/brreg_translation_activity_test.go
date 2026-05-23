@@ -29,7 +29,7 @@ func TestPrepareBrregTranslationBatch_LooksUpTranslationCacheInBulk(t *testing.T
 	})
 
 	mock.ExpectQuery(`UPDATE brreg_company_raw_inputs`).
-		WithArgs("run-1", 10, 50, nil).
+		WithArgs("run-1", 10, 50, nil, []string{"notdone"}, true, "input").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}).
 			AddRow("row-1", []byte(`{
 				"organisasjonsform":{"beskrivelse":"Aksjeselskap"},
@@ -83,8 +83,8 @@ func TestPrepareBrregTranslationBatch_NormalRunPreservesPendingOnlyClaim(t *test
 		return activities.FXRateSet{}, nil
 	})
 
-	mock.ExpectQuery(`translation_status = 'pending'`).
-		WithArgs("run-1", 10, 50, nil).
+	mock.ExpectQuery(`v_brreg_raw_input_action_attributes`).
+		WithArgs("run-1", 10, 50, nil, []string{"notdone"}, true, "input").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
 
 	result, err := acts.PrepareBrregTranslationBatch(context.Background(), contracts.PrepareBrregTranslationBatchParams{
@@ -103,12 +103,33 @@ func TestPrepareBrregTranslationBatch_ExplicitIDsCanRetryFailedRows(t *testing.T
 		return activities.FXRateSet{}, nil
 	})
 
-	mock.ExpectQuery(`translation_status IN \('pending', 'failed'\)`).
-		WithArgs("run-1", 10, 50, []string{"row-1"}).
+	mock.ExpectQuery(`latest_translation_action_status = ANY`).
+		WithArgs("run-1", 10, 50, []string{"row-1"}, []string{"notdone", "failed", "cancelled", "skipped"}, true, "input").
 		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
 
 	result, err := acts.PrepareBrregTranslationBatch(context.Background(), contracts.PrepareBrregTranslationBatchParams{
 		IDs:           []string{"row-1"},
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		WorkflowRunID: "run-1",
+		BatchSize:     50,
+	})
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+}
+
+func TestPrepareBrregTranslationBatch_ActionStatusFilterCanRetryFailedRows(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithTranslationDeps(mock, nil, func(context.Context, string) (activities.FXRateSet, error) {
+		return activities.FXRateSet{}, nil
+	})
+
+	mock.ExpectQuery(`latest_translation_action_status = ANY`).
+		WithArgs("run-1", 10, 50, nil, []string{"failed"}, false, "input").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
+
+	result, err := acts.PrepareBrregTranslationBatch(context.Background(), contracts.PrepareBrregTranslationBatchParams{
+		Filters:       map[string]string{"translation_action_status": "failed"},
 		PromptVersion: "v1",
 		Model:         "qwen3:6b",
 		WorkflowRunID: "run-1",
@@ -142,9 +163,12 @@ func TestWriteBrregTranslationBatch_UpsertsTranslationCacheInBulk(t *testing.T) 
 			"qwen3:6b",
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", 2))
-	mock.ExpectExec(`UPDATE brreg_company_raw_inputs`).
+	mock.ExpectExec(`translation_status = 'translated'`).
 		WithArgs("row-1", pgxmock.AnyArg(), "qwen3:6b", "v1", nil, nil).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec(`INSERT INTO brreg_raw_input_action_events`).
+		WithArgs("row-1", "succeeded", "translation completed", nil).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 
 	result, err := acts.WriteBrregTranslationBatch(context.Background(), contracts.WriteBrregTranslationBatchParams{
@@ -160,6 +184,36 @@ func TestWriteBrregTranslationBatch_UpsertsTranslationCacheInBulk(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.Equal(t, contracts.TranslateBrregBatchResult{Claimed: 1, Translated: 1}, result)
+}
+
+func TestWriteBrregTranslationBatch_MissingTermMarksActionFailed(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	rawPayload := []byte(`{
+		"organisasjonsnummer":"831909242",
+		"navn":"CERI HOLDING AS",
+		"organisasjonsform":{"kode":"AS","beskrivelse":"Aksjeselskap"}
+	}`)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`translation_status = 'failed'`).
+		WithArgs("row-1", "translation failed for one or more fields").
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectExec(`INSERT INTO brreg_raw_input_action_events`).
+		WithArgs("row-1", "failed", "translation failed", "translation failed for one or more fields").
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	result, err := acts.WriteBrregTranslationBatch(context.Background(), contracts.WriteBrregTranslationBatchParams{
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		Rows: []contracts.BrregTranslationRowPayload{
+			{ID: "row-1", RawPayload: rawPayload},
+		},
+	})
+	require.NoError(t, err)
+	require.Equal(t, contracts.TranslateBrregBatchResult{Claimed: 1, Failed: 1}, result)
 }
 
 func testTranslationHash(text string) string {

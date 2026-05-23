@@ -263,6 +263,7 @@ func normalizeSourceTranslationPrepareParams(params *contracts.PrepareSourceTran
 
 func sourceClaimSQL(table string, includeFailed bool) string {
 	predicate := "translation_status = 'pending'"
+	stalePredicate := "translation_status = 'translating'"
 	if includeFailed {
 		predicate = "translation_status IN ('pending', 'failed')"
 	}
@@ -278,7 +279,7 @@ func sourceClaimSQL(table string, includeFailed bool) string {
 		    SELECT id FROM %s
 		    WHERE (
 		        %s
-		        OR (translation_status = 'translating' AND (translation_lease_until < now() OR translation_lease_by = $1))
+		        OR (%s AND (translation_lease_until < now() OR translation_lease_by = $1))
 		    )
 		    AND ($4::text[] IS NULL OR id::text = ANY($4))
 		    ORDER BY created_at
@@ -286,7 +287,7 @@ func sourceClaimSQL(table string, includeFailed bool) string {
 		    FOR UPDATE SKIP LOCKED
 		)
 		RETURNING id::text, raw_payload
-	`, table, table, predicate)
+	`, table, table, predicate, stalePredicate)
 }
 
 func sourceWriteSuccessSQL(table string) string {
@@ -320,17 +321,167 @@ func sourceWriteFailureSQL(table string) string {
 	`, table)
 }
 
+func brregSourceClaimSQL() string {
+	return `
+		WITH candidate AS (
+		    SELECT bri.id
+		    FROM brreg_company_raw_inputs bri
+		    JOIN v_brreg_raw_input_action_attributes baa ON baa.raw_input_id = bri.id
+		    WHERE bri.state = $7
+		      AND ($4::text[] IS NULL OR bri.id::text = ANY($4))
+		      AND (
+		          baa.latest_translation_action_status = ANY($5::text[])
+		          OR (
+		              $6::boolean
+		              AND baa.latest_translation_action_status = 'running'
+		              AND (bri.translation_lease_until < now() OR bri.translation_lease_by = $1)
+		          )
+		      )
+		    ORDER BY bri.created_at
+		    LIMIT $3
+		    FOR UPDATE SKIP LOCKED
+		),
+		claimed AS (
+		    UPDATE brreg_company_raw_inputs bri
+		    SET translation_status = 'translating',
+		        translation_attempts = translation_attempts + 1,
+		        translation_error = NULL,
+		        translation_lease_by = $1,
+		        translation_lease_until = now() + ($2 * interval '1 minute'),
+		        updated_at = now()
+		    FROM candidate c
+		    WHERE bri.id = c.id
+		    RETURNING bri.id, bri.raw_payload, bri.payload_hash
+		),
+		next_attempt AS (
+		    SELECT
+		        c.id,
+		        c.raw_payload,
+		        c.payload_hash,
+		        COALESCE(MAX(a.attempt), 0) + 1 AS attempt
+		    FROM claimed c
+		    LEFT JOIN brreg_raw_input_actions a
+		      ON a.raw_input_id = c.id
+		     AND a.action_type = 'translate'
+		    GROUP BY c.id, c.raw_payload, c.payload_hash
+		),
+		created_actions AS (
+		    INSERT INTO brreg_raw_input_actions (
+		        raw_input_id,
+		        action_type,
+		        attempt,
+		        payload_hash,
+		        trigger,
+		        worker_id,
+		        workflow_run_id,
+		        metadata
+		    )
+		    SELECT
+		        id,
+		        'translate',
+		        attempt,
+		        payload_hash,
+		        'workflow',
+		        $1,
+		        $1,
+		        jsonb_build_object('source', 'data-pipelines')
+		    FROM next_attempt
+		    RETURNING id AS action_id, raw_input_id
+		),
+		action_events AS (
+		    INSERT INTO brreg_raw_input_action_events (action_id, status, message, metadata)
+		    SELECT
+		        action_id,
+		        'running',
+		        'translation worker claimed row',
+		        '{}'::jsonb
+		    FROM created_actions
+		)
+		SELECT id::text, raw_payload
+		FROM next_attempt
+	`
+}
+
+var brregTranslationActionStatuses = map[string]bool{
+	"notdone":   true,
+	"queued":    true,
+	"running":   true,
+	"succeeded": true,
+	"failed":    true,
+	"skipped":   true,
+	"cancelled": true,
+}
+
+var brregTranslationLifecycleStates = map[string]bool{
+	"input":                true,
+	"suggestion_submitted": true,
+	"completed":            true,
+	"superseded":           true,
+}
+
+func brregTranslationClaimFilters(filters map[string]string, includeFailed bool) ([]string, bool, string, error) {
+	lifecycleState := "input"
+	statuses := []string{"notdone"}
+	allowStaleRunning := true
+	if includeFailed {
+		statuses = []string{"notdone", "failed", "cancelled", "skipped"}
+	}
+	if filters == nil {
+		return statuses, allowStaleRunning, lifecycleState, nil
+	}
+	if state := filters["state"]; state != "" {
+		switch state {
+		case "raw":
+			lifecycleState = "input"
+			statuses = []string{"notdone"}
+			allowStaleRunning = false
+		case "translation_failed":
+			lifecycleState = "input"
+			statuses = []string{"failed"}
+			allowStaleRunning = false
+		default:
+			if !brregTranslationLifecycleStates[state] {
+				return nil, false, "", fmt.Errorf("unsupported brreg lifecycle state filter %q", state)
+			}
+			lifecycleState = state
+		}
+	}
+	if status := filters["translation_action_status"]; status != "" {
+		if !brregTranslationActionStatuses[status] {
+			return nil, false, "", fmt.Errorf("unsupported brreg translation action status filter %q", status)
+		}
+		if status == "running" {
+			statuses = []string{}
+			allowStaleRunning = true
+		} else {
+			statuses = []string{status}
+			allowStaleRunning = false
+		}
+	}
+	return statuses, allowStaleRunning, lifecycleState, nil
+}
+
 func (a *GoActivities) claimSourceTranslationRows(ctx context.Context, cfg SourceTranslationConfig, params contracts.PrepareSourceTranslationBatchParams) ([]sourceTranslationRow, error) {
 	var ids any
 	if len(params.IDs) > 0 {
 		ids = params.IDs
 	}
 	claimSQL := cfg.ClaimSQL
+	args := []any{params.WorkflowRunID, sourceTranslationLeaseMinutes, params.BatchSize, ids}
 	if claimSQL == "" {
 		includeFailed := len(params.IDs) > 0
-		claimSQL = sourceClaimSQL(cfg.TableName, includeFailed)
+		if cfg.SourceName == "brreg" {
+			statuses, allowStaleRunning, lifecycleState, err := brregTranslationClaimFilters(params.Filters, includeFailed)
+			if err != nil {
+				return nil, err
+			}
+			claimSQL = brregSourceClaimSQL()
+			args = append(args, statuses, allowStaleRunning, lifecycleState)
+		} else {
+			claimSQL = sourceClaimSQL(cfg.TableName, includeFailed)
+		}
 	}
-	rows, err := a.pool.Query(ctx, claimSQL, params.WorkflowRunID, sourceTranslationLeaseMinutes, params.BatchSize, ids)
+	rows, err := a.pool.Query(ctx, claimSQL, args...)
 	if err != nil {
 		return nil, fmt.Errorf("claim %s translation rows: %w", cfg.SourceName, err)
 	}
@@ -423,14 +574,54 @@ func (a *GoActivities) writeSourceTranslationResults(
 		if _, err := tx.Exec(ctx, cfg.WriteSuccessSQL, id, []byte(payload), params.Model, params.PromptVersion, fxSource, fxRateDate); err != nil {
 			return fmt.Errorf("mark %s row translated: %w", cfg.SourceName, err)
 		}
+		if cfg.SourceName == "brreg" {
+			if err := appendBrregTranslationActionEvent(ctx, tx, id, "succeeded", "translation completed", ""); err != nil {
+				return err
+			}
+		}
 	}
 	for id, reason := range failures {
 		if _, err := tx.Exec(ctx, cfg.WriteFailureSQL, id, reason); err != nil {
 			return fmt.Errorf("mark %s row failed: %w", cfg.SourceName, err)
 		}
+		if cfg.SourceName == "brreg" {
+			if err := appendBrregTranslationActionEvent(ctx, tx, id, "failed", "translation failed", reason); err != nil {
+				return err
+			}
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit %s translation write: %w", cfg.SourceName, err)
+	}
+	return nil
+}
+
+func appendBrregTranslationActionEvent(ctx context.Context, tx pgx.Tx, rawInputID, status, message, errorText string) error {
+	var actionError any
+	if errorText != "" {
+		actionError = errorText
+	}
+	tag, err := tx.Exec(ctx, `
+		WITH latest AS (
+		    SELECT a.id AS action_id
+		    FROM brreg_raw_input_actions a
+		    JOIN brreg_company_raw_inputs bri
+		      ON bri.id = a.raw_input_id
+		     AND bri.payload_hash = a.payload_hash
+		    WHERE a.raw_input_id = $1::uuid
+		      AND a.action_type = 'translate'
+		    ORDER BY a.attempt DESC, a.created_at DESC
+		    LIMIT 1
+		)
+		INSERT INTO brreg_raw_input_action_events (action_id, status, message, error, metadata)
+		SELECT action_id, $2, $3, $4, '{}'::jsonb
+		FROM latest
+	`, rawInputID, status, message, actionError)
+	if err != nil {
+		return fmt.Errorf("append brreg translation action event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("append brreg translation action event: no latest translate action for raw input %s", rawInputID)
 	}
 	return nil
 }

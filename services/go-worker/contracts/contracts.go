@@ -246,32 +246,35 @@ type MarkDomainsSearchedParams struct {
 
 // TranslateBrregInput is the input for the operator-triggered Brreg translation workflow.
 type TranslateBrregInput struct {
-	IDs           []string `json:"ids,omitempty"`
-	PromptVersion string   `json:"prompt_version"`
-	Model         string   `json:"model"`
-	Accumulated   int      `json:"accumulated,omitempty"`
-	FXRateDate    string   `json:"fx_rate_date,omitempty"`
+	IDs           []string          `json:"ids,omitempty"`
+	Filters       map[string]string `json:"filters,omitempty"`
+	PromptVersion string            `json:"prompt_version"`
+	Model         string            `json:"model"`
+	Accumulated   int               `json:"accumulated,omitempty"`
+	FXRateDate    string            `json:"fx_rate_date,omitempty"`
 }
 
 // TranslateSourceInput is the input for source-generic raw input translation.
 type TranslateSourceInput struct {
-	Source        string   `json:"source"`
-	IDs           []string `json:"ids,omitempty"`
-	PromptVersion string   `json:"prompt_version"`
-	Model         string   `json:"model"`
-	Accumulated   int      `json:"accumulated,omitempty"`
-	FXRateDate    string   `json:"fx_rate_date,omitempty"`
+	Source        string            `json:"source"`
+	IDs           []string          `json:"ids,omitempty"`
+	Filters       map[string]string `json:"filters,omitempty"`
+	PromptVersion string            `json:"prompt_version"`
+	Model         string            `json:"model"`
+	Accumulated   int               `json:"accumulated,omitempty"`
+	FXRateDate    string            `json:"fx_rate_date,omitempty"`
 }
 
 // PrepareBrregTranslationBatchParams is the input for the Go activity that claims
 // raw Brreg rows, loads FX data, and finds translation cache misses.
 type PrepareBrregTranslationBatchParams struct {
-	IDs           []string `json:"ids,omitempty"`
-	PromptVersion string   `json:"prompt_version"`
-	Model         string   `json:"model"`
-	FXRateDate    string   `json:"fx_rate_date,omitempty"`
-	WorkflowRunID string   `json:"workflow_run_id"`
-	BatchSize     int      `json:"batch_size"`
+	IDs           []string          `json:"ids,omitempty"`
+	Filters       map[string]string `json:"filters,omitempty"`
+	PromptVersion string            `json:"prompt_version"`
+	Model         string            `json:"model"`
+	FXRateDate    string            `json:"fx_rate_date,omitempty"`
+	WorkflowRunID string            `json:"workflow_run_id"`
+	BatchSize     int               `json:"batch_size"`
 }
 
 // TranslateBrregBatchParams is retained for older workers and tests. New
@@ -280,13 +283,14 @@ type TranslateBrregBatchParams = PrepareBrregTranslationBatchParams
 
 // PrepareSourceTranslationBatchParams is the source-generic prepare activity input.
 type PrepareSourceTranslationBatchParams struct {
-	Source        string   `json:"source"`
-	IDs           []string `json:"ids,omitempty"`
-	PromptVersion string   `json:"prompt_version"`
-	Model         string   `json:"model"`
-	FXRateDate    string   `json:"fx_rate_date,omitempty"`
-	WorkflowRunID string   `json:"workflow_run_id"`
-	BatchSize     int      `json:"batch_size"`
+	Source        string            `json:"source"`
+	IDs           []string          `json:"ids,omitempty"`
+	Filters       map[string]string `json:"filters,omitempty"`
+	PromptVersion string            `json:"prompt_version"`
+	Model         string            `json:"model"`
+	FXRateDate    string            `json:"fx_rate_date,omitempty"`
+	WorkflowRunID string            `json:"workflow_run_id"`
+	BatchSize     int               `json:"batch_size"`
 }
 
 type SourceTranslationRowPayload struct {

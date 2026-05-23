@@ -66,7 +66,11 @@ func (s *translateBrregWorkflowSuite) TestStopsWhenClaimedIsZero() {
 }
 
 func (s *translateBrregWorkflowSuite) TestTranslatesCacheMissesWithPythonDSPyActivity() {
-	s.env.OnActivity("PrepareBrregTranslationBatch", mock.Anything, mock.Anything).
+	s.env.OnActivity("PrepareBrregTranslationBatch", mock.Anything, mock.MatchedBy(func(params contracts.PrepareBrregTranslationBatchParams) bool {
+		return params.PromptVersion == "v2" &&
+			params.Model == "custom-model" &&
+			params.Filters["translation_action_status"] == "failed"
+	})).
 		Return(contracts.PrepareBrregTranslationBatchResult{
 			Claimed: 1,
 			Rows: []contracts.BrregTranslationRowPayload{
@@ -121,6 +125,7 @@ func (s *translateBrregWorkflowSuite) TestTranslatesCacheMissesWithPythonDSPyAct
 	s.env.ExecuteWorkflow(workflows.TranslateBrregRawInputs, contracts.TranslateBrregInput{
 		PromptVersion: "v2",
 		Model:         "custom-model",
+		Filters:       map[string]string{"translation_action_status": "failed"},
 	})
 
 	s.True(s.env.IsWorkflowCompleted())

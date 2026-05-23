@@ -58,6 +58,7 @@ func TranslateSourceRawInputs(ctx workflow.Context, input contracts.TranslateSou
 		err := workflow.ExecuteActivity(goCtx, goAct.PrepareSourceTranslationBatch, contracts.PrepareSourceTranslationBatchParams{
 			Source:        input.Source,
 			IDs:           input.IDs,
+			Filters:       input.Filters,
 			PromptVersion: input.PromptVersion,
 			Model:         input.Model,
 			FXRateDate:    input.FXRateDate,

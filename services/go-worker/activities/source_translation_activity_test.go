@@ -71,3 +71,62 @@ func TestPrepareSourceTranslationBatch_ExplicitIDsCanRetryFailedRows(t *testing.
 	require.NoError(t, err)
 	require.Zero(t, result.Claimed)
 }
+
+func TestPrepareSourceTranslationBatch_BrregUsesLifecycleState(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	mock.ExpectQuery(`bri.state = \$7`).
+		WithArgs("run-1", 10, 50, nil, []string{"notdone"}, true, "input").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
+
+	result, err := acts.PrepareSourceTranslationBatch(context.Background(), contracts.PrepareSourceTranslationBatchParams{
+		Source:        "brreg",
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		WorkflowRunID: "run-1",
+		BatchSize:     50,
+	})
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+}
+
+func TestPrepareSourceTranslationBatch_BrregStateFilterUsesLifecycleState(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	mock.ExpectQuery(`bri.state = \$7`).
+		WithArgs("run-1", 10, 50, nil, []string{"notdone"}, false, "input").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
+
+	result, err := acts.PrepareSourceTranslationBatch(context.Background(), contracts.PrepareSourceTranslationBatchParams{
+		Source:        "brreg",
+		Filters:       map[string]string{"state": "raw"},
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		WorkflowRunID: "run-1",
+		BatchSize:     50,
+	})
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+}
+
+func TestPrepareSourceTranslationBatch_BrregTranslationActionFilter(t *testing.T) {
+	mock := newMock(t)
+	acts := activities.NewGoActivitiesWithDB(mock)
+
+	mock.ExpectQuery(`latest_translation_action_status = ANY`).
+		WithArgs("run-1", 10, 50, nil, []string{"failed"}, false, "input").
+		WillReturnRows(pgxmock.NewRows([]string{"id", "raw_payload"}))
+
+	result, err := acts.PrepareSourceTranslationBatch(context.Background(), contracts.PrepareSourceTranslationBatchParams{
+		Source:        "brreg",
+		Filters:       map[string]string{"translation_action_status": "failed"},
+		PromptVersion: "v1",
+		Model:         "qwen3:6b",
+		WorkflowRunID: "run-1",
+		BatchSize:     50,
+	})
+	require.NoError(t, err)
+	require.Zero(t, result.Claimed)
+}
