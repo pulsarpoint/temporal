@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "description": "Small real-world translation corpus for comparing llm_translation prompt and runner latency.",
+  "cases": [
+    {
+      "name": "no-activity-common",
+      "category": "activity",
+      "source_lang": "no",
+      "target_lang": "en",
+      "items": [
+        {
+          "id": "t0",
+          "text": "Regnskapsjenester",
+          "expected_any": ["accounting"],
+          "forbidden_any": ["regnskaps"]
+        },
+        {
+          "id": "t1",
+          "text": "Konsulentvirksomhet tilknyttet informasjonsteknologi.",
+          "expected_any": ["information technology", "IT consulting", "technology consulting", "consulting"],
+          "forbidden_any": ["konsulentvirksomhet", "tilknyttet"]
+        },
+        {
+          "id": "t2",
+          "text": "Utvikling og salg av programvare samt rådgivning innen digitalisering.",
+          "expected_any": ["software", "digitalization", "digitalisation"],
+          "forbidden_any": ["programvare", "rådgivning"]
+        }
+      ]
+    },
+    {
+      "name": "no-org-forms",
+      "category": "org_form",
+      "source_lang": "no",
+      "target_lang": "en",
+      "items": [
+        {
+          "id": "t0",
+          "text": "Aksjeselskap",
+          "expected_any": ["limited", "joint-stock", "stock company"],
+          "forbidden_any": ["aksjeselskap"]
+        },
+        {
+          "id": "t1",
+          "text": "Enkeltpersonforetak",
+          "expected_any": ["sole", "individual"],
+          "forbidden_any": ["enkeltpersonforetak"]
+        },
+        {
+          "id": "t2",
+          "text": "Stiftelse",
+          "expected_any": ["foundation"],
+          "forbidden_any": ["stiftelse"]
+        }
+      ]
+    },
+    {
+      "name": "no-capital-types",
+      "category": "capital_type",
+      "source_lang": "no",
+      "target_lang": "en",
+      "items": [
+        {
+          "id": "t0",
+          "text": "Aksjekapital",
+          "expected_any": ["share capital", "equity capital"],
+          "forbidden_any": ["aksjekapital"]
+        },
+        {
+          "id": "t1",
+          "text": "Egenkapital",
+          "expected_any": ["equity"],
+          "forbidden_any": ["egenkapital"]
+        }
+      ]
+    },
+    {
+      "name": "no-statutory-purpose",
+      "category": "statutory_purpose",
+      "source_lang": "no",
+      "target_lang": "en",
+      "items": [
+        {
+          "id": "t0",
+          "text": "Å eie aksjer i andre selskaper, investere i fast eiendom og annen virksomhet som naturlig står i forbindelse med dette.",
+          "expected_any": ["shares", "companies", "real estate", "invest"],
+          "forbidden_any": ["aksjer", "eiendom"]
+        },
+        {
+          "id": "t1",
+          "text": "Import og salg av landbruksprodukter samt konsulenttjenester innen bærekraftig utvikling.",
+          "expected_any": ["import", "sale", "agricultural", "sustainable"],
+          "forbidden_any": ["landbruksprodukter", "bærekraftig"]
+        }
+      ]
+    },
+    {
+      "name": "no-industry-code",
+      "category": "industry_code",
+      "source_lang": "no",
+      "target_lang": "en",
+      "items": [
+        {
+          "id": "t0",
+          "text": "Programmeringstjenester",
+          "expected_any": ["programming", "software"],
+          "forbidden_any": ["programmeringstjenester"]
+        },
+        {
+          "id": "t1",
+          "text": "Drift av restauranter og kafeer",
+          "expected_any": ["restaurants", "cafes", "cafés"],
+          "forbidden_any": ["drift av", "kafeer"]
+        }
+      ]
+    }
+  ]
+}

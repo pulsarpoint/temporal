@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import socket
 from urllib.parse import urlparse
 
+import httpx
 import pytest
+import respx
 
 from contracts import TranslateTermsInput, TranslationItem
 from activities.llm_translation import (
@@ -13,6 +16,7 @@ from activities.llm_translation import (
     DSPyTranslationService,
     parse_translation_payload,
     translate_terms_with_dspy,
+    translation_max_tokens,
 )
 
 
@@ -128,6 +132,68 @@ async def test_translate_terms_activity_uses_service_factory(monkeypatch):
     )
 
     assert result.translations[0].translation == "Association/organization/entity"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_translate_terms_default_runner_uses_direct_chat_completion_api():
+    route = respx.post("http://llm.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": '{"translations":[{"id":"t0","translation":"Accounting services"}]}'
+                        }
+                    }
+                ]
+            },
+        )
+    )
+    service = DSPyTranslationService(default_base_url="http://llm.test", default_model="qwen-test")
+
+    result = await service.translate_terms(
+        TranslateTermsInput(
+            category="activity",
+            source_lang="no",
+            target_lang="en",
+            items=[TranslationItem(id="t0", text="Regnskapsjenester")],
+        )
+    )
+
+    assert result.translations[0].translation == "Accounting services"
+    request = route.calls.last.request
+    body = json.loads(request.content)
+    assert body["model"] == "qwen-test"
+    assert body["temperature"] == 0
+    assert body["max_tokens"] == 512
+    assert body["messages"] == [
+        {
+            "role": "user",
+            "content": (
+                "/no_think\n"
+                "Translate no business registry activity text to en.\n"
+                'Return only JSON: {"translations":[{"id":"...","translation":"..."}]}\n'
+                "Preserve every input id exactly. Include one translation per input item.\n"
+                'Items: [{"id":"t0","text":"Regnskapsjenester"}]'
+            ),
+        }
+    ]
+
+
+def test_translation_max_tokens_scales_with_batch_size():
+    small_payload = TranslateTermsInput(
+        category="activity",
+        items=[TranslationItem(id="t0", text="Regnskapsjenester")],
+    )
+    large_payload = TranslateTermsInput(
+        category="activity",
+        items=[TranslationItem(id=f"t{index}", text="Regnskapsjenester") for index in range(50)],
+    )
+
+    assert translation_max_tokens(small_payload) == 512
+    assert translation_max_tokens(large_payload) == 4096
 
 
 def test_parse_translation_payload_repairs_missing_translation_key():

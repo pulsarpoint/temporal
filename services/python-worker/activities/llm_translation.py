@@ -36,7 +36,7 @@ class DSPyTranslationService:
     ) -> None:
         self.model = default_model or os.environ.get("LLM_MODEL") or DEFAULT_LLM_MODEL
         self.base_url = normalize_base_url(default_base_url or os.environ.get("LLM_BASE_URL") or DEFAULT_LLM_BASE_URL)
-        self._runner = runner or self._run_with_dspy
+        self._runner = runner or self._run_with_llm_api
 
     async def translate_terms(self, payload: TranslateTermsInput) -> TranslateTermsResult:
         model = payload.model or self.model
@@ -67,7 +67,7 @@ class DSPyTranslationService:
 
         for item_id in translated_by_id:
             if item_id not in requested_ids:
-                activity.logger.warning("DSPy translation returned unexpected id", extra={"id": item_id})
+                activity.logger.warning("LLM translation returned unexpected id", extra={"id": item_id})
 
         return TranslateTermsResult(translations=translations, failures=failures, model=model)
 
@@ -75,10 +75,58 @@ class DSPyTranslationService:
         raw_result = self._runner(payload, model, self.base_url)
         return await raw_result if inspect.isawaitable(raw_result) else raw_result
 
+    async def _run_with_llm_api(self, payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
+        return await run_direct_translation(payload, model, base_url)
+
     async def _run_with_dspy(self, payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
         return await asyncio.to_thread(run_dspy_translation, payload, model, base_url)
 
-# a
+
+async def run_direct_translation(payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=120) as client:
+        response = await client.post(
+            openai_api_base(base_url) + "/chat/completions",
+            headers={"Authorization": f"Bearer {os.environ.get('LLM_API_KEY', 'local')}"},
+            json={
+                "model": model,
+                "messages": build_translation_messages(payload),
+                "temperature": 0,
+                "max_tokens": translation_max_tokens(payload),
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+
+    return parse_translation_payload(str(content), {item.id for item in payload.items})
+
+
+def translation_max_tokens(payload: TranslateTermsInput) -> int:
+    return min(4096, max(512, len(payload.items) * 96))
+
+
+def build_translation_messages(payload: TranslateTermsInput) -> list[dict[str, str]]:
+    items_json = json.dumps(
+        [asdict(item) for item in payload.items],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return [
+        {
+            "role": "user",
+            "content": (
+                "/no_think\n"
+                f"Translate {payload.source_lang or 'no'} business registry {payload.category} text "
+                f"to {payload.target_lang or 'en'}.\n"
+                'Return only JSON: {"translations":[{"id":"...","translation":"..."}]}\n'
+                "Preserve every input id exactly. Include one translation per input item.\n"
+                f"Items: {items_json}"
+            ),
+        }
+    ]
+
+
 def run_dspy_translation(payload: TranslateTermsInput, model: str, base_url: str) -> dict[str, str]:
     import dspy
 
