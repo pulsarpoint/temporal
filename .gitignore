@@ -9,3 +9,4 @@ __pycache__/
 *.egg-info/
 dist/
 services/python-worker/testing/.perf-results/
+dagster/.dagster_home/

@@ -1,0 +1,36 @@
+services:
+  dagster-webserver:
+    build: .
+    image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
+    restart: always
+    network_mode: host
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+      DAGSTER_WEBSERVER_HOST: 0.0.0.0
+      DAGSTER_WEBSERVER_PORT: ${DAGSTER_PORT:-3000}
+    volumes:
+      - ${DAGSTER_HOME_DIR:-./.dagster_home}:/opt/dagster/dagster_home
+    command: >
+      sh -c 'mkdir -p "$$DAGSTER_HOME" &&
+      touch "$$DAGSTER_HOME/dagster.yaml" &&
+      dagster-webserver -h 0.0.0.0 -p "$${DAGSTER_WEBSERVER_PORT:-3000}" -w /app/workspace.yaml'
+
+  dagster-daemon:
+    image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
+    build: .
+    restart: always
+    network_mode: host
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DAGSTER_HOME: /opt/dagster/dagster_home
+    volumes:
+      - ${DAGSTER_HOME_DIR:-./.dagster_home}:/opt/dagster/dagster_home
+    command: >
+      sh -c 'mkdir -p "$$DAGSTER_HOME" &&
+      touch "$$DAGSTER_HOME/dagster.yaml" &&
+      dagster-daemon run -w /app/workspace.yaml'
