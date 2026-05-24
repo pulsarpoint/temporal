@@ -79,16 +79,19 @@ Translation and domain enrichment both read current rows from
 `dagster_brreg.raw_records`; they do not depend on each other. The translation
 job uses the same OpenAI-compatible local LLM request shape as the old Temporal
 worker, writes reusable term translations to `dagster_brreg.translation_cache`,
-and records per-row task attempts in `dagster_brreg.task_attempts`. Domain
-signals are stored independently in `dagster_brreg.domain_candidates`; the
-proposal job merges those observations into `dagster_brreg.domain_proposals`
-with a score, source signals, and evidence. Each signal keeps its own batch size
-because DuckDuckGo/crawler, crt.sh, Wikidata, website-field parsing, and DNS
-heuristics have different speed and rate-limit profiles. Each run continues
-claiming pending batches until `BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or
-there are no pending records left for that signal.
-Default translation/domain jobs claim records that have not attempted that task
-yet; retrying failed attempts should be exposed as an explicit retry job/action.
+and records per-row task attempts in `dagster_brreg.task_attempts`. Translation
+keeps claiming `BRREG_TRANSLATION_BATCH_SIZE` chunks until there are no pending
+translation rows left; `BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0` means drain the
+queue fully in one materialization. Domain signals are stored independently in
+`dagster_brreg.domain_candidates`; the proposal job merges those observations
+into `dagster_brreg.domain_proposals` with a score, source signals, and
+evidence. Each domain signal keeps its own batch size because DuckDuckGo/crawler,
+crt.sh, Wikidata, website-field parsing, and DNS heuristics have different speed
+and rate-limit profiles. Each domain run continues claiming pending batches
+until `BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or there are no pending
+records left for that signal. Default translation/domain jobs claim records that
+have not attempted that task yet; retrying failed attempts should be exposed as
+an explicit retry job/action.
 
 The enhanced-record job requires a successful or skipped translation task. It
 uses domain proposals when they exist; domain signal work remains best-effort
@@ -143,6 +146,7 @@ Optional environment:
 
 ```bash
 BRREG_TRANSLATION_BATCH_SIZE=50
+BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0
 BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE=5000
 BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE=10
 BRREG_DOMAIN_CRTSH_BATCH_SIZE=10

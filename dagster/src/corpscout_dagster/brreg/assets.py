@@ -50,6 +50,7 @@ from corpscout_dagster.brreg.working_store import (
 BRREG_BULK_URL = f"{BRREG_API_BASE_URL}{BRREG_BULK_PATH}"
 DEFAULT_RAW_RECORD_BATCH_SIZE = 5000
 DEFAULT_TRANSLATION_RECORD_BATCH_SIZE = 50
+DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN = 0
 DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE = 5000
 DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE = 10
 DEFAULT_DOMAIN_CRTSH_BATCH_SIZE = 10
@@ -95,6 +96,10 @@ def brreg_translation_results(context) -> dict[str, int]:
         database_url=_corpscout_database_url(),
         translator=DirectLLMTermTranslator(),
         batch_size=_env_int("BRREG_TRANSLATION_BATCH_SIZE", DEFAULT_TRANSLATION_RECORD_BATCH_SIZE),
+        max_batches_per_run=_env_int(
+            "BRREG_TRANSLATION_MAX_BATCHES_PER_RUN",
+            DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN,
+        ),
         model=os.environ.get("BRREG_TRANSLATION_MODEL") or DEFAULT_LLM_MODEL,
         prompt_version=os.environ.get("BRREG_TRANSLATION_PROMPT_VERSION") or DEFAULT_PROMPT_VERSION,
     )
@@ -291,14 +296,19 @@ def materialize_brreg_translation_results(
     database_url: str,
     translator: TermTranslator,
     batch_size: int,
+    max_batches_per_run: int = DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN,
     model: str,
     prompt_version: str,
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    if max_batches_per_run < 0:
+        raise ValueError("max_batches_per_run must be zero or positive")
     rows_seen = 0
     rows_completed = 0
     rows_failed = 0
+    batches_processed = 0
+    stopped_reason = "max_batches_reached"
     enrichment_run_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
@@ -317,48 +327,57 @@ def materialize_brreg_translation_results(
         conn.commit()
 
         try:
-            with conn.cursor() as cursor:
-                records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
-                    task_type="translate",
-                    limit=batch_size,
-                )
-
-            for record in records:
-                rows_seen += 1
-                attempt = _create_task_attempt(
-                    conn=conn,
-                    enrichment_run_id=enrichment_run_id,
-                    record=record,
-                    task_type="translate",
-                )
-                try:
-                    _translate_record(
-                        conn=conn,
-                        enrichment_run_id=enrichment_run_id,
-                        attempt=attempt,
-                        record=record,
-                        translator=translator,
-                        model=model,
-                        prompt_version=prompt_version,
+            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
+                with conn.cursor() as cursor:
+                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
+                        task_type="translate",
+                        limit=batch_size,
                     )
-                    rows_completed += 1
-                except Exception as exc:
-                    conn.rollback()
-                    _mark_record_task_failed(
+
+                if not records:
+                    stopped_reason = "no_pending_records"
+                    break
+
+                batches_processed += 1
+                for record in records:
+                    rows_seen += 1
+                    attempt = _create_task_attempt(
                         conn=conn,
                         enrichment_run_id=enrichment_run_id,
-                        attempt=attempt,
                         record=record,
                         task_type="translate",
-                        error=str(exc),
                     )
-                    rows_failed += 1
+                    try:
+                        _translate_record(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            translator=translator,
+                            model=model,
+                            prompt_version=prompt_version,
+                        )
+                        rows_completed += 1
+                    except Exception as exc:
+                        conn.rollback()
+                        _mark_record_task_failed(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            task_type="translate",
+                            error=str(exc),
+                        )
+                        rows_failed += 1
 
             context.log.info(
-                "BRREG translation batch committed rows_seen=%s rows_completed=%s rows_failed=%s",
+                "BRREG translation batches committed rows_seen=%s rows_completed=%s rows_failed=%s batches_processed=%s max_batches_per_run=%s stopped_reason=%s",
                 rows_seen,
                 rows_completed,
                 rows_failed,
+                batches_processed,
+                max_batches_per_run,
+                stopped_reason,
             )
 
             with conn.cursor() as cursor:
@@ -388,8 +407,16 @@ def materialize_brreg_translation_results(
         "rows_seen": rows_seen,
         "rows_completed": rows_completed,
         "rows_failed": rows_failed,
+        "batches_processed": batches_processed,
     }
-    context.add_output_metadata({**result, "dagster_run_id": context.run_id})
+    context.add_output_metadata(
+        {
+            **result,
+            "dagster_run_id": context.run_id,
+            "max_batches_per_run": max_batches_per_run,
+            "stopped_reason": stopped_reason,
+        }
+    )
     return result
 
 

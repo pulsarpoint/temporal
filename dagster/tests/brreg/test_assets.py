@@ -252,6 +252,87 @@ def test_materialize_brreg_translation_results_writes_task_cache_and_result() ->
     assert context.metadata[-1]["rows_completed"] == 1
 
 
+def test_materialize_brreg_translation_results_drains_multiple_batches_until_empty() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    first_raw_record_id = "00000000-0000-0000-0000-000000000010"
+    second_raw_record_id = "00000000-0000-0000-0000-000000000020"
+    third_raw_record_id = "00000000-0000-0000-0000-000000000030"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", first_raw_record_id, 1),
+        ("00000000-0000-0000-0000-000000000021", second_raw_record_id, 1),
+        ("00000000-0000-0000-0000-000000000031", third_raw_record_id, 1),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                first_raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                None,
+                {
+                    "organisasjonsnummer": "810202572",
+                    "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
+                },
+            ),
+            (
+                second_raw_record_id,
+                "910202572",
+                "NEXT AS",
+                None,
+                {
+                    "organisasjonsnummer": "910202572",
+                    "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
+                },
+            ),
+        ],
+        [],
+        [],
+        [
+            (
+                third_raw_record_id,
+                "710202572",
+                "THIRD AS",
+                None,
+                {
+                    "organisasjonsnummer": "710202572",
+                    "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
+                },
+            )
+        ],
+        [],
+        [],
+    ]
+
+    result = materialize_brreg_translation_results(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        translator=FakeTranslator(),
+        batch_size=2,
+        max_batches_per_run=0,
+        model="qwen3:6b",
+        prompt_version="v1",
+    )
+
+    assert result["rows_seen"] == 3
+    assert result["rows_completed"] == 3
+    assert result["rows_failed"] == 0
+    assert result["batches_processed"] == 2
+    assert context.metadata[-1]["stopped_reason"] == "no_pending_records"
+    fetch_calls = [
+        params
+        for sql, params in connection.cursor_instance.calls
+        if "FROM dagster_brreg.raw_records rr" in sql
+    ]
+    assert fetch_calls == [
+        {"task_type": "translate", "limit": 2},
+        {"task_type": "translate", "limit": 2},
+        {"task_type": "translate", "limit": 2},
+    ]
+
+
 def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -> None:
     context = FakeContext()
     connection = FakeConnection()
