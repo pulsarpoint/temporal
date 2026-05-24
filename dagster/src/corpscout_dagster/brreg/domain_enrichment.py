@@ -27,6 +27,7 @@ LIMIT 5
 """.strip()
 
 _WIKIDATA_BACKOFF_UNTIL: float = 0.0
+_CERTSH_BACKOFF_UNTIL: float = 0.0
 
 _certsh_lock: asyncio.Lock | None = None
 _wikidata_lock: asyncio.Lock | None = None
@@ -301,11 +302,12 @@ async def _wikidata_signal(company_name: str) -> list[tuple[str, str, int]]:
                     "https://query.wikidata.org/sparql",
                     params={"query": query, "format": "json"},
                     headers={"User-Agent": _USER_AGENT, "Accept": "application/sparql-results+json"},
+                    timeout=8.0,
                 )
-                if response.status_code == 429:
-                    retry_after = int(response.headers.get("retry-after", "60"))
-                    _WIKIDATA_BACKOFF_UNTIL = time.monotonic() + min(retry_after, 60)
-                    logger.warning("wikidata 429, backing off for %ds", min(retry_after, 60))
+                if _should_back_off_external_signal(response.status_code):
+                    retry_after = _retry_after_seconds(response, default_seconds=300)
+                    _WIKIDATA_BACKOFF_UNTIL = time.monotonic() + retry_after
+                    logger.warning("wikidata status %s, backing off for %ds", response.status_code, retry_after)
                     return []
                 response.raise_for_status()
             except httpx.HTTPError as exc:
@@ -325,6 +327,11 @@ async def _wikidata_signal(company_name: str) -> list[tuple[str, str, int]]:
 
 
 async def _certsh_signal(company_name: str) -> list[tuple[str, str, int]]:
+    global _CERTSH_BACKOFF_UNTIL
+
+    if time.monotonic() < _CERTSH_BACKOFF_UNTIL:
+        return []
+
     lock = _certsh_lock_()
     if lock.locked():
         return []
@@ -339,7 +346,13 @@ async def _certsh_signal(company_name: str) -> list[tuple[str, str, int]]:
                     "https://crt.sh/",
                     params={"q": company_name, "output": "json"},
                     headers={"User-Agent": _USER_AGENT, "Accept": "application/json"},
+                    timeout=5.0,
                 )
+                if _should_back_off_external_signal(response.status_code):
+                    retry_after = _retry_after_seconds(response, default_seconds=300)
+                    _CERTSH_BACKOFF_UNTIL = time.monotonic() + retry_after
+                    logger.warning("crt.sh status %s, backing off for %ds", response.status_code, retry_after)
+                    return []
                 response.raise_for_status()
                 entries = response.json()
             except (httpx.HTTPError, ValueError) as exc:
@@ -372,6 +385,18 @@ async def _heuristic_signal(company_name: str, country: str) -> list[tuple[str, 
         if resolves:
             results.append((domain, "heuristic", 40))
     return results
+
+
+def _should_back_off_external_signal(status_code: int) -> bool:
+    return status_code in (403, 429) or status_code >= 500
+
+
+def _retry_after_seconds(response: httpx.Response, *, default_seconds: int) -> int:
+    raw_value = response.headers.get("retry-after", "")
+    try:
+        return max(1, min(int(raw_value), default_seconds))
+    except ValueError:
+        return default_seconds
 
 
 def _candidate_from_signal(

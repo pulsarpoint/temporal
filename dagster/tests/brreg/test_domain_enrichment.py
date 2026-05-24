@@ -6,6 +6,7 @@ import corpscout_dagster.brreg.domain_enrichment as domain_enrichment
 from corpscout_dagster.brreg.domain_enrichment import (
     DomainCandidate,
     _candidate_domains,
+    _should_back_off_external_signal,
     discover_domain_candidates,
     extract_domain_candidates,
     normalize_domain,
@@ -48,6 +49,13 @@ def test_extract_domain_candidates_prefers_explicit_website_column() -> None:
 
 def test_candidate_domains_remove_legal_suffix_and_use_norway_tld() -> None:
     assert _candidate_domains("BORTIGARD AS", "NO") == ["bortigard.no", "bortigard.com"]
+
+
+def test_external_signal_backoff_statuses_cover_rate_limits_and_remote_outages() -> None:
+    assert _should_back_off_external_signal(403) is True
+    assert _should_back_off_external_signal(429) is True
+    assert _should_back_off_external_signal(502) is True
+    assert _should_back_off_external_signal(404) is False
 
 
 @pytest.mark.asyncio
