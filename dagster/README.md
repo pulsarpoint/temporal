@@ -36,7 +36,8 @@ The compose stack runs:
 
 Dagster runtime state is bind-mounted from `DAGSTER_HOME_DIR`, default
 `./.dagster_home`, so logs, run metadata, and local instance files are visible
-on the host.
+on the host. The tracked `dagster.yaml` enables Dagster run monitoring in both
+local and Docker Compose runs.
 
 ## Database Migrations
 
@@ -52,6 +53,20 @@ make migrate-up
 make migrate-version
 make migrate-down
 ```
+
+## BRREG Maintenance
+
+Dagster can leave a run in `STARTED` when Docker Compose is recreated while the
+in-process worker is running. Recover BRREG rows with:
+
+```bash
+make cleanup-stale-brreg-runs
+```
+
+This cancels stale `dagster_brreg.enrichment_runs`, marks still-running
+`task_attempts` cancelled, resets matching `raw_record_task_states` to
+`failed_retryable` with `next_retry_at = now()`, and marks matching Dagster run
+records canceled when the local Dagster instance still has them.
 
 ## BRREG Working Raw Records
 
@@ -160,6 +175,7 @@ BRREG_DOMAIN_PROPOSAL_BATCH_SIZE=500
 BRREG_DOMAIN_MAX_BATCHES_PER_RUN=20
 BRREG_ENHANCED_RECORD_BATCH_SIZE=500
 BRREG_PUBLISH_ENHANCED_RECORD_BATCH_SIZE=250
+BRREG_STALE_RUN_CLEANUP_MINUTES=30
 BRREG_TRANSLATION_MODEL=qwen3:6b
 BRREG_TRANSLATION_PROMPT_VERSION=v1
 LLM_BASE_URL=http://100.77.62.33:8888

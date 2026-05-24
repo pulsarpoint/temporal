@@ -36,11 +36,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && CRAWL4AI_MODE=api crawl4ai-setup \
     && python -m playwright install --no-shell chromium
 
-COPY workspace.yaml ./
+COPY workspace.yaml dagster.yaml ./
 COPY src ./src
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev
+    cp dagster.yaml "${DAGSTER_HOME}/dagster.yaml" \
+    && uv sync --frozen --no-dev
 
 EXPOSE 3000
 

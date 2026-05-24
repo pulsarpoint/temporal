@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Iterable
+from dataclasses import dataclass
 from itertools import groupby
 
 import psycopg
-from dagster import AssetKey, asset
+from dagster import AssetKey, Field, Int, asset
 
 from corpscout_dagster.brreg.domain_enrichment import build_domain_proposals, discover_domain_candidates_for_signal
 from corpscout_dagster.brreg.enhanced_payload import (
@@ -57,7 +58,7 @@ DEFAULT_DOMAIN_CRTSH_BATCH_SIZE = 10
 DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE = 25
 DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE = 10
 DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE = 500
-DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 20
+DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 0
 DEFAULT_ENHANCED_RECORD_BATCH_SIZE = 500
 DEFAULT_PUBLISH_ENHANCED_RECORD_BATCH_SIZE = 250
 
@@ -68,6 +69,47 @@ DOMAIN_SIGNAL_ASSET_KEYS = [
     AssetKey("brreg_domain_wikidata_candidates"),
     AssetKey("brreg_domain_web_search_llm_candidates"),
 ]
+
+
+@dataclass(frozen=True)
+class BrregBatchRunConfig:
+    batch_size: int
+    max_batches_per_run: int
+
+
+def brreg_batch_run_config_schema(*, batch_size_default: int, max_batches_default: int) -> dict[str, Field]:
+    return {
+        "batch_size": Field(
+            Int,
+            default_value=batch_size_default,
+            description="Number of BRREG rows claimed in each batch.",
+        ),
+        "max_batches_per_run": Field(
+            Int,
+            default_value=max_batches_default,
+            description="Maximum batches for this run. Use 0 to keep running until no pending rows remain.",
+        ),
+    }
+
+
+def resolve_brreg_batch_run_config(
+    context,
+    *,
+    batch_size_env: str,
+    batch_size_default: int,
+    max_batches_env: str,
+    max_batches_default: int,
+) -> BrregBatchRunConfig:
+    op_config = getattr(context, "op_config", None) or {}
+    return BrregBatchRunConfig(
+        batch_size=int(op_config.get("batch_size", _env_int(batch_size_env, batch_size_default))),
+        max_batches_per_run=int(
+            op_config.get(
+                "max_batches_per_run",
+                _env_int(max_batches_env, max_batches_default),
+            )
+        ),
+    )
 
 
 def build_brreg_working_raw_record_rows(
@@ -88,96 +130,188 @@ def brreg_working_raw_records(context) -> dict[str, int]:
     )
 
 
-@asset(name="brreg_translation_results")
+@asset(
+    name="brreg_translation_results",
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_TRANSLATION_BATCH_SIZE", DEFAULT_TRANSLATION_RECORD_BATCH_SIZE),
+        max_batches_default=_env_int(
+            "BRREG_TRANSLATION_MAX_BATCHES_PER_RUN",
+            DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN,
+        ),
+    ),
+)
 def brreg_translation_results(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_TRANSLATION_BATCH_SIZE",
+        batch_size_default=DEFAULT_TRANSLATION_RECORD_BATCH_SIZE,
+        max_batches_env="BRREG_TRANSLATION_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN,
+    )
     return materialize_brreg_translation_results(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
         translator=DirectLLMTermTranslator(),
-        batch_size=_env_int("BRREG_TRANSLATION_BATCH_SIZE", DEFAULT_TRANSLATION_RECORD_BATCH_SIZE),
-        max_batches_per_run=_env_int(
-            "BRREG_TRANSLATION_MAX_BATCHES_PER_RUN",
-            DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN,
-        ),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
         model=os.environ.get("BRREG_TRANSLATION_MODEL") or DEFAULT_LLM_MODEL,
         prompt_version=os.environ.get("BRREG_TRANSLATION_PROMPT_VERSION") or DEFAULT_PROMPT_VERSION,
     )
 
 
-@asset(name="brreg_domain_website_field_candidates")
+@asset(
+    name="brreg_domain_website_field_candidates",
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE", DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE),
+        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    ),
+)
 def brreg_domain_website_field_candidates(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE",
+        batch_size_default=DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE,
+        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+    )
     return materialize_brreg_domain_signal_candidates(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
         signal="website_field",
         task_type="domain_website_field",
-        batch_size=_env_int("BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE", DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE),
-        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
     )
 
 
-@asset(name="brreg_domain_duckduckgo_candidates")
+@asset(
+    name="brreg_domain_duckduckgo_candidates",
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE", DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE),
+        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    ),
+)
 def brreg_domain_duckduckgo_candidates(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE",
+        batch_size_default=DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE,
+        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+    )
     return materialize_brreg_domain_signal_candidates(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
         signal="duckduckgo",
         task_type="domain_duckduckgo",
-        batch_size=_env_int("BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE", DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE),
-        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
     )
 
 
-@asset(name="brreg_domain_crtsh_candidates")
+@asset(
+    name="brreg_domain_crtsh_candidates",
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_DOMAIN_CRTSH_BATCH_SIZE", DEFAULT_DOMAIN_CRTSH_BATCH_SIZE),
+        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    ),
+)
 def brreg_domain_crtsh_candidates(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_DOMAIN_CRTSH_BATCH_SIZE",
+        batch_size_default=DEFAULT_DOMAIN_CRTSH_BATCH_SIZE,
+        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+    )
     return materialize_brreg_domain_signal_candidates(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
         signal="crtsh",
         task_type="domain_crtsh",
-        batch_size=_env_int("BRREG_DOMAIN_CRTSH_BATCH_SIZE", DEFAULT_DOMAIN_CRTSH_BATCH_SIZE),
-        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
     )
 
 
-@asset(name="brreg_domain_wikidata_candidates")
+@asset(
+    name="brreg_domain_wikidata_candidates",
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_DOMAIN_WIKIDATA_BATCH_SIZE", DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE),
+        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    ),
+)
 def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_DOMAIN_WIKIDATA_BATCH_SIZE",
+        batch_size_default=DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE,
+        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+    )
     return materialize_brreg_domain_signal_candidates(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
         signal="wikidata",
         task_type="domain_wikidata",
-        batch_size=_env_int("BRREG_DOMAIN_WIKIDATA_BATCH_SIZE", DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE),
-        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
     )
 
 
-@asset(name="brreg_domain_web_search_llm_candidates")
+@asset(
+    name="brreg_domain_web_search_llm_candidates",
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE", DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE),
+        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    ),
+)
 def brreg_domain_web_search_llm_candidates(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE",
+        batch_size_default=DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE,
+        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+    )
     return materialize_brreg_domain_signal_candidates(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
         signal="web_search_llm",
         task_type="domain_web_search_llm",
-        batch_size=_env_int("BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE", DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE),
-        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
     )
 
 
-@asset(name="brreg_domain_proposals", deps=DOMAIN_SIGNAL_ASSET_KEYS)
+@asset(
+    name="brreg_domain_proposals",
+    deps=DOMAIN_SIGNAL_ASSET_KEYS,
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_DOMAIN_PROPOSAL_BATCH_SIZE", DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE),
+        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    ),
+)
 def brreg_domain_proposals(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_DOMAIN_PROPOSAL_BATCH_SIZE",
+        batch_size_default=DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE,
+        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+    )
     return materialize_brreg_domain_proposals(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
-        batch_size=_env_int("BRREG_DOMAIN_PROPOSAL_BATCH_SIZE", DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE),
-        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
     )
 
 

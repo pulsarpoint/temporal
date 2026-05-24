@@ -24,9 +24,9 @@ services:
       - ${DAGSTER_PORT:-3000}:${DAGSTER_WEBSERVER_PORT:-3000}
     volumes:
       - ${DAGSTER_HOME_DIR:-./.dagster_home}:/opt/dagster/dagster_home
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     command: >
       sh -c 'mkdir -p "$$DAGSTER_HOME" &&
-      touch "$$DAGSTER_HOME/dagster.yaml" &&
       dagster-webserver -h 0.0.0.0 -p "$${DAGSTER_WEBSERVER_PORT:-3000}" -w /app/workspace.yaml'
 
   dagster-daemon:
@@ -41,9 +41,9 @@ services:
       - companycollect:100.85.212.113
     volumes:
       - ${DAGSTER_HOME_DIR:-./.dagster_home}:/opt/dagster/dagster_home
+      - ./dagster.yaml:/opt/dagster/dagster_home/dagster.yaml:ro
     command: >
       sh -c 'mkdir -p "$$DAGSTER_HOME" &&
-      touch "$$DAGSTER_HOME/dagster.yaml" &&
       dagster-daemon run -w /app/workspace.yaml'
 
   dagster-migrate-up:

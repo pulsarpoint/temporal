@@ -17,6 +17,7 @@ from corpscout_dagster.brreg.assets import (
     materialize_brreg_domain_signal_candidates,
     materialize_brreg_translation_results,
     materialize_brreg_working_raw_records,
+    resolve_brreg_batch_run_config,
 )
 from corpscout_dagster.brreg.models import BrregRawRecord
 from corpscout_dagster.brreg.translation import TranslationItem, translation_item_id
@@ -32,10 +33,11 @@ class FakeLogger:
 
 
 class FakeContext:
-    def __init__(self) -> None:
+    def __init__(self, op_config: dict | None = None) -> None:
         self.run_id = "dagster-run-1"
         self.log = FakeLogger()
         self.metadata: list[dict] = []
+        self.op_config = op_config or {}
 
     def add_output_metadata(self, metadata: dict) -> None:
         self.metadata.append(metadata)
@@ -177,6 +179,41 @@ def test_definitions_include_independent_brreg_jobs() -> None:
     assert "brreg_enhanced_records_job" in job_names
     assert "brreg_publish_enhanced_records_job" in job_names
     assert brreg_enhanced_records is not brreg_publish_enhanced_records
+
+
+def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
+    configurable_assets = [
+        brreg_translation_results,
+        brreg_domain_website_field_candidates,
+        brreg_domain_duckduckgo_candidates,
+        brreg_domain_crtsh_candidates,
+        brreg_domain_wikidata_candidates,
+        brreg_domain_web_search_llm_candidates,
+        brreg_domain_proposals,
+    ]
+
+    for asset_def in configurable_assets:
+        fields = asset_def.node_def.config_schema.config_type.fields
+        assert set(fields) == {"batch_size", "max_batches_per_run"}
+        assert fields["batch_size"].default_provided
+        assert fields["max_batches_per_run"].default_provided
+
+
+def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkeypatch) -> None:
+    monkeypatch.setenv("BRREG_TEST_BATCH_SIZE", "100")
+    monkeypatch.setenv("BRREG_TEST_MAX_BATCHES", "20")
+    context = FakeContext(op_config={"batch_size": 7, "max_batches_per_run": 3})
+
+    config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_TEST_BATCH_SIZE",
+        batch_size_default=50,
+        max_batches_env="BRREG_TEST_MAX_BATCHES",
+        max_batches_default=0,
+    )
+
+    assert config.batch_size == 7
+    assert config.max_batches_per_run == 3
 
 
 def test_materialize_brreg_working_raw_records_writes_batches_and_progress() -> None:
@@ -486,6 +523,56 @@ def test_materialize_brreg_domain_signal_candidates_drains_multiple_batches_for_
         {"task_type": "domain_website_field", "limit": 2},
         {"task_type": "domain_website_field", "limit": 2},
     ]
+
+
+def test_materialize_brreg_domain_signal_candidates_zero_max_batches_drains_until_empty() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    first_raw_record_id = "00000000-0000-0000-0000-000000000010"
+    second_raw_record_id = "00000000-0000-0000-0000-000000000020"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", first_raw_record_id, 1),
+        ("00000000-0000-0000-0000-000000000021", second_raw_record_id, 1),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                first_raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                None,
+                {"organisasjonsnummer": "810202572", "hjemmeside": "https://www.bortigard.no"},
+            )
+        ],
+        [
+            (
+                second_raw_record_id,
+                "910202572",
+                "NEXT AS",
+                None,
+                {"organisasjonsnummer": "910202572", "hjemmeside": "https://www.next.no"},
+            )
+        ],
+        [],
+    ]
+
+    result = materialize_brreg_domain_signal_candidates(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        signal="website_field",
+        task_type="domain_website_field",
+        batch_size=1,
+        max_batches_per_run=0,
+    )
+
+    assert result["rows_seen"] == 2
+    assert result["rows_completed"] == 2
+    assert result["domains_written"] == 2
+    assert result["batches_processed"] == 2
+    assert context.metadata[-1]["max_batches_per_run"] == 0
+    assert context.metadata[-1]["stopped_reason"] == "no_pending_records"
 
 
 def test_materialize_brreg_domain_proposals_scores_candidates_for_pending_records() -> None:
