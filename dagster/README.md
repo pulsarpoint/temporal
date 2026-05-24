@@ -13,8 +13,11 @@ make webserver
 
 ## Docker Compose
 
-Dagster is configured to run on the same host network as Temporal workers and
-Corpscout Postgres.
+Dagster runs as its own Docker Compose stack. It is not attached to the
+Corpscout or Temporal Docker networks. Containers resolve `companycollect` to
+the Tailscale address `100.85.212.113`, so Dagster connects to Postgres,
+Temporal, and other services through published host ports. The web UI is
+published on `DAGSTER_PORT`, default `3000`.
 
 ```bash
 cp .env.example .env
@@ -35,7 +38,10 @@ on the host.
 
 Dagster-owned migrations live in `db/migrations` and run through Docker Compose
 using the official `migrate/migrate` image. The remote host only needs Docker
-Compose, this folder, and `CORPSCOUT_DATABASE_URL` in `.env`.
+Compose, this folder, and `DAGSTER_MIGRATIONS_DATABASE_URL` in `.env`.
+
+Use a migration-only DSN with `x-migrations-table=dagster_schema_migrations` so
+Dagster migration versions do not collide with Corpscout application migrations.
 
 ```bash
 make migrate-up
@@ -43,16 +49,17 @@ make migrate-version
 make migrate-down
 ```
 
-## BRREG Raw Inputs
+## BRREG Working Raw Records
 
-The `brreg_raw_inputs` asset downloads the BRREG bulk gzip payload from
-`https://data.brreg.no/enhetsregisteret/api/enheter/lastned` and upserts rows
-directly into Corpscout table `brreg_company_raw_inputs`.
+The `brreg_working_raw_records` asset downloads the BRREG bulk gzip payload from
+`https://data.brreg.no/enhetsregisteret/api/enheter/lastned` and upserts rows into
+Dagster-owned table `dagster_brreg.raw_records`.
 
 Required environment:
 
 ```bash
-CORPSCOUT_DATABASE_URL=postgresql://user:password@127.0.0.1:5432/corpscout
+CORPSCOUT_DATABASE_URL=postgresql://user:password@companycollect:5432/corpscout?sslmode=disable
+DAGSTER_MIGRATIONS_DATABASE_URL=postgresql://user:password@companycollect:5432/corpscout?sslmode=disable&x-migrations-table=dagster_schema_migrations
 ```
 
 Verify the database write path without leaving a row behind:

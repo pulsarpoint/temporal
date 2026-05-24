@@ -2,7 +2,8 @@ x-dagster-migrate-base: &dagster-migrate-base
   image: ${MIGRATE_IMAGE:-migrate/migrate}
   profiles:
     - tools
-  network_mode: host
+  extra_hosts:
+    - companycollect:100.85.212.113
   volumes:
     - ./db/migrations:/migrations:ro
 
@@ -11,7 +12,6 @@ services:
     build: .
     image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
     restart: always
-    network_mode: host
     env_file:
       - path: .env
         required: false
@@ -19,6 +19,10 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_WEBSERVER_HOST: 0.0.0.0
       DAGSTER_WEBSERVER_PORT: ${DAGSTER_PORT:-3000}
+    extra_hosts:
+      - companycollect:100.85.212.113
+    ports:
+      - ${DAGSTER_PORT:-3000}:${DAGSTER_WEBSERVER_PORT:-3000}
     volumes:
       - ${DAGSTER_HOME_DIR:-./.dagster_home}:/opt/dagster/dagster_home
     command: >
@@ -30,12 +34,13 @@ services:
     image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
     build: .
     restart: always
-    network_mode: host
     env_file:
       - path: .env
         required: false
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
+    extra_hosts:
+      - companycollect:100.85.212.113
     volumes:
       - ${DAGSTER_HOME_DIR:-./.dagster_home}:/opt/dagster/dagster_home
     command: >
@@ -48,7 +53,7 @@ services:
     command:
       - -path=/migrations
       - -database
-      - ${CORPSCOUT_DATABASE_URL:?CORPSCOUT_DATABASE_URL is required}
+      - ${DAGSTER_MIGRATIONS_DATABASE_URL:?DAGSTER_MIGRATIONS_DATABASE_URL is required}
       - up
 
   dagster-migrate-down:
@@ -56,7 +61,7 @@ services:
     command:
       - -path=/migrations
       - -database
-      - ${CORPSCOUT_DATABASE_URL:?CORPSCOUT_DATABASE_URL is required}
+      - ${DAGSTER_MIGRATIONS_DATABASE_URL:?DAGSTER_MIGRATIONS_DATABASE_URL is required}
       - down
       - "1"
 
@@ -65,5 +70,5 @@ services:
     command:
       - -path=/migrations
       - -database
-      - ${CORPSCOUT_DATABASE_URL:?CORPSCOUT_DATABASE_URL is required}
+      - ${DAGSTER_MIGRATIONS_DATABASE_URL:?DAGSTER_MIGRATIONS_DATABASE_URL is required}
       - version

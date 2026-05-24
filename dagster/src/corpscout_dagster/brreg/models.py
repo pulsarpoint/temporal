@@ -20,6 +20,19 @@ class CorpscoutBrregRawInputRow:
 
 
 @dataclass(frozen=True)
+class BrregWorkingRawRecordRow:
+    source_native_id: str
+    organization_number: str
+    organization_name: str
+    registration_status: str
+    website: str | None
+    country_iso2: str
+    raw_payload: dict[str, Any]
+    payload_hash: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class BrregRawRecord:
     payload: dict[str, Any]
     organization_number: str
@@ -38,7 +51,6 @@ class BrregRawRecord:
         )
 
     def to_corpscout_row(self, *, run_id: str) -> CorpscoutBrregRawInputRow:
-        raw_bytes = json.dumps(self.payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         return CorpscoutBrregRawInputRow(
             source_native_id=self.organization_number,
             organization_number=self.organization_number,
@@ -47,8 +59,21 @@ class BrregRawRecord:
             website=_blank_to_none(self.payload.get("hjemmeside")),
             country_iso2="NO",
             raw_payload=self.payload,
-            payload_hash=hashlib.sha256(raw_bytes).hexdigest(),
+            payload_hash=_payload_hash(self.payload),
             run_id=run_id,
+        )
+
+    def to_working_row(self) -> BrregWorkingRawRecordRow:
+        return BrregWorkingRawRecordRow(
+            source_native_id=self.organization_number,
+            organization_number=self.organization_number,
+            organization_name=self.organization_name,
+            registration_status=self._registration_status(),
+            website=_blank_to_none(self.payload.get("hjemmeside")),
+            country_iso2="NO",
+            raw_payload=self.payload,
+            payload_hash=_payload_hash(self.payload),
+            metadata={},
         )
 
     def _registration_status(self) -> str:
@@ -60,3 +85,8 @@ class BrregRawRecord:
 def _blank_to_none(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
+
+
+def _payload_hash(payload: dict[str, Any]) -> str:
+    raw_bytes = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw_bytes).hexdigest()

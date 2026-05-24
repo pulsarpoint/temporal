@@ -1,0 +1,1 @@
+DROP SCHEMA IF EXISTS dagster_brreg CASCADE;

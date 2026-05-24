@@ -6,8 +6,13 @@ from typing import Callable
 
 import psycopg
 
-from corpscout_dagster.brreg.models import BrregRawRecord, CorpscoutBrregRawInputRow
-from corpscout_dagster.brreg.writer import BrregRawInputWriter
+from corpscout_dagster.brreg.assets import BRREG_BULK_URL
+from corpscout_dagster.brreg.models import BrregRawRecord, BrregWorkingRawRecordRow
+from corpscout_dagster.brreg.working_store import (
+    BrregWorkingStore,
+    CreateBulkSnapshot,
+    CreateEnrichmentRun,
+)
 
 SMOKE_ORG_NUMBER = "999999991"
 SMOKE_RUN_ID = "dagster-smoke"
@@ -21,7 +26,7 @@ class SmokeResult:
     rolled_back: bool
 
 
-def build_smoke_row(*, run_id: str = SMOKE_RUN_ID) -> CorpscoutBrregRawInputRow:
+def build_smoke_row() -> BrregWorkingRawRecordRow:
     record = BrregRawRecord.from_payload(
         {
             "organisasjonsnummer": SMOKE_ORG_NUMBER,
@@ -33,7 +38,7 @@ def build_smoke_row(*, run_id: str = SMOKE_RUN_ID) -> CorpscoutBrregRawInputRow:
     )
     if record is None:
         raise RuntimeError("invalid BRREG smoke payload")
-    return record.to_corpscout_row(run_id=run_id)
+    return record.to_working_row()
 
 
 def run_smoke(
@@ -44,18 +49,39 @@ def run_smoke(
     row = build_smoke_row()
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
-            BrregRawInputWriter(cursor).upsert_many([row])
+            store = BrregWorkingStore(cursor)
+            enrichment_run_id = store.create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=SMOKE_RUN_ID,
+                    run_type="bulk_ingest",
+                    metadata={"smoke": True},
+                )
+            )
+            bulk_snapshot_id = store.create_bulk_snapshot(
+                CreateBulkSnapshot(
+                    enrichment_run_id=enrichment_run_id,
+                    source_url=BRREG_BULK_URL,
+                    content_length_bytes=None,
+                    compressed_payload_hash=None,
+                    storage_uri=None,
+                    metadata={"smoke": True},
+                )
+            )
+            store.upsert_raw_records([row], bulk_snapshot_id=bulk_snapshot_id)
             cursor.execute(
                 """
-                SELECT organization_name, run_id
-                FROM brreg_company_raw_inputs
-                WHERE organization_number = %s
-                  AND payload_hash = %s
+                SELECT organization_name
+                FROM dagster_brreg.raw_records
+                WHERE organization_number = %(organization_number)s
+                  AND payload_hash = %(payload_hash)s
                 """,
-                (row.organization_number, row.payload_hash),
+                {
+                    "organization_number": row.organization_number,
+                    "payload_hash": row.payload_hash,
+                },
             )
             found = cursor.fetchone()
-            if found != (SMOKE_NAME, SMOKE_RUN_ID):
+            if found != (SMOKE_NAME,):
                 raise RuntimeError("BRREG smoke row was not readable after upsert")
         conn.rollback()
     return SmokeResult(

@@ -39,6 +39,30 @@ def test_brreg_raw_record_maps_active_payload_to_corpscout_row() -> None:
     assert row.run_id == "dagster-run-1"
 
 
+def test_brreg_raw_record_maps_active_payload_to_working_row() -> None:
+    payload = {
+        "organisasjonsnummer": "810202572",
+        "navn": "BORTIGARD AS",
+        "konkurs": False,
+        "underAvvikling": False,
+        "hjemmeside": "https://bortigard.no",
+    }
+
+    record = BrregRawRecord.from_payload(payload)
+    assert record is not None
+
+    row = record.to_working_row()
+
+    assert row.source_native_id == "810202572"
+    assert row.organization_number == "810202572"
+    assert row.organization_name == "BORTIGARD AS"
+    assert row.registration_status == "active"
+    assert row.website == "https://bortigard.no"
+    assert row.country_iso2 == "NO"
+    assert row.raw_payload == payload
+    assert len(row.payload_hash) == 64
+
+
 def test_brreg_raw_record_marks_bankrupt_or_liquidating_as_dissolved() -> None:
     bankrupt = BrregRawRecord.from_payload(
         {
