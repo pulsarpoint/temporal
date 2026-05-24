@@ -6,6 +6,7 @@ from corpscout_dagster.brreg.smoke import SMOKE_ORG_NUMBER, build_smoke_row, run
 class FakeCursor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
+        self.many_calls: list[tuple[str, list[dict]]] = []
         self.fetchone_values = [
             ("00000000-0000-0000-0000-000000000001",),
             ("00000000-0000-0000-0000-000000000002",),
@@ -20,6 +21,9 @@ class FakeCursor:
 
     def execute(self, sql: str, params) -> None:
         self.calls.append((sql, params))
+
+    def executemany(self, sql: str, params_seq: list[dict]) -> None:
+        self.many_calls.append((sql, params_seq))
 
     def fetchone(self):
         return self.fetchone_values.pop(0)
@@ -63,9 +67,10 @@ def test_run_smoke_upserts_verifies_and_rolls_back() -> None:
     assert result.organization_number == SMOKE_ORG_NUMBER
     assert result.rolled_back is True
     assert connection.rolled_back is True
-    assert len(connection.cursor_instance.calls) == 5
+    assert len(connection.cursor_instance.calls) == 3
+    assert len(connection.cursor_instance.many_calls) == 2
     assert "INSERT INTO dagster_brreg.enrichment_runs" in connection.cursor_instance.calls[0][0]
     assert "INSERT INTO dagster_brreg.bulk_snapshots" in connection.cursor_instance.calls[1][0]
-    assert "UPDATE dagster_brreg.raw_records" in connection.cursor_instance.calls[2][0]
-    assert "INSERT INTO dagster_brreg.raw_records" in connection.cursor_instance.calls[3][0]
-    assert "SELECT organization_name" in connection.cursor_instance.calls[4][0]
+    assert "UPDATE dagster_brreg.raw_records" in connection.cursor_instance.many_calls[0][0]
+    assert "INSERT INTO dagster_brreg.raw_records" in connection.cursor_instance.many_calls[1][0]
+    assert "SELECT organization_name" in connection.cursor_instance.calls[2][0]

@@ -5,6 +5,8 @@ from corpscout_dagster.brreg.working_store import (
     BrregWorkingStore,
     CreateBulkSnapshot,
     CreateEnrichmentRun,
+    FinishEnrichmentRun,
+    IncrementEnrichmentRunProgress,
     UpsertResult,
 )
 
@@ -12,6 +14,7 @@ from corpscout_dagster.brreg.working_store import (
 class FakeCursor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
+        self.many_calls: list[tuple[str, list[dict]]] = []
         self.fetchone_values = [
             ("00000000-0000-0000-0000-000000000001",),
             ("00000000-0000-0000-0000-000000000002",),
@@ -19,6 +22,9 @@ class FakeCursor:
 
     def execute(self, sql: str, params: dict) -> None:
         self.calls.append((sql, params))
+
+    def executemany(self, sql: str, params_seq: list[dict]) -> None:
+        self.many_calls.append((sql, params_seq))
 
     def fetchone(self):
         return self.fetchone_values.pop(0)
@@ -73,16 +79,18 @@ def test_working_store_upserts_raw_records_as_current_working_rows() -> None:
     )
 
     assert result == UpsertResult(rows_seen=1, rows_written=1)
-    assert len(cursor.calls) == 2
-    supersede_sql, supersede_params = cursor.calls[0]
+    assert len(cursor.many_calls) == 2
+    supersede_sql, supersede_params_seq = cursor.many_calls[0]
     assert "UPDATE dagster_brreg.raw_records" in supersede_sql
     assert "is_current = false" in supersede_sql
+    supersede_params = supersede_params_seq[0]
     assert supersede_params["organization_number"] == "810202572"
 
-    upsert_sql, upsert_params = cursor.calls[1]
+    upsert_sql, upsert_params_seq = cursor.many_calls[1]
     assert "INSERT INTO dagster_brreg.raw_records" in upsert_sql
     assert "ON CONFLICT (organization_number, payload_hash) DO UPDATE" in upsert_sql
     assert "is_current = true" in upsert_sql
+    upsert_params = upsert_params_seq[0]
     assert upsert_params["bulk_snapshot_id"] == "00000000-0000-0000-0000-000000000002"
     assert upsert_params["raw_payload"] == (
         '{"hjemmeside":"https://bortigard.no","navn":"BORTIGARD AS",'
@@ -98,3 +106,36 @@ def test_working_store_ignores_empty_raw_record_batches() -> None:
 
     assert result == UpsertResult(rows_seen=0, rows_written=0)
     assert cursor.calls == []
+    assert cursor.many_calls == []
+
+
+def test_working_store_updates_enrichment_run_progress_and_completion() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.increment_enrichment_run_progress(
+        IncrementEnrichmentRunProgress(
+            enrichment_run_id="00000000-0000-0000-0000-000000000001",
+            records_seen=5000,
+            records_completed=4998,
+            records_failed=2,
+        )
+    )
+    store.finish_enrichment_run(
+        FinishEnrichmentRun(
+            enrichment_run_id="00000000-0000-0000-0000-000000000001",
+            status="succeeded",
+            error=None,
+        )
+    )
+
+    progress_sql, progress_params = cursor.calls[0]
+    assert "UPDATE dagster_brreg.enrichment_runs" in progress_sql
+    assert "records_seen = records_seen + %(records_seen)s" in progress_sql
+    assert progress_params["records_seen"] == 5000
+    assert progress_params["records_completed"] == 4998
+    assert progress_params["records_failed"] == 2
+
+    finish_sql, finish_params = cursor.calls[1]
+    assert "finished_at = now()" in finish_sql
+    assert finish_params["status"] == "succeeded"

@@ -11,6 +11,9 @@ class Cursor(Protocol):
     def execute(self, sql: str, params: dict[str, Any]) -> object:
         ...
 
+    def executemany(self, sql: str, params_seq: list[dict[str, Any]]) -> object:
+        ...
+
     def fetchone(self):
         ...
 
@@ -36,6 +39,21 @@ class CreateBulkSnapshot:
 class UpsertResult:
     rows_seen: int
     rows_written: int
+
+
+@dataclass(frozen=True)
+class IncrementEnrichmentRunProgress:
+    enrichment_run_id: str
+    records_seen: int
+    records_completed: int
+    records_failed: int = 0
+
+
+@dataclass(frozen=True)
+class FinishEnrichmentRun:
+    enrichment_run_id: str
+    status: str
+    error: str | None
 
 
 class BrregWorkingStore:
@@ -73,8 +91,8 @@ class BrregWorkingStore:
         *,
         bulk_snapshot_id: str,
     ) -> UpsertResult:
-        for row in rows:
-            params = {
+        params_seq = [
+            {
                 "bulk_snapshot_id": bulk_snapshot_id,
                 "source_native_id": row.source_native_id,
                 "organization_number": row.organization_number,
@@ -86,9 +104,33 @@ class BrregWorkingStore:
                 "payload_hash": row.payload_hash,
                 "metadata": _json(row.metadata),
             }
-            self._cursor.execute(SUPERSEDE_CURRENT_RAW_RECORD_SQL, params)
-            self._cursor.execute(UPSERT_RAW_RECORD_SQL, params)
+            for row in rows
+        ]
+        if params_seq:
+            self._cursor.executemany(SUPERSEDE_CURRENT_RAW_RECORD_SQL, params_seq)
+            self._cursor.executemany(UPSERT_RAW_RECORD_SQL, params_seq)
         return UpsertResult(rows_seen=len(rows), rows_written=len(rows))
+
+    def increment_enrichment_run_progress(self, command: IncrementEnrichmentRunProgress) -> None:
+        self._cursor.execute(
+            INCREMENT_ENRICHMENT_RUN_PROGRESS_SQL,
+            {
+                "enrichment_run_id": command.enrichment_run_id,
+                "records_seen": command.records_seen,
+                "records_completed": command.records_completed,
+                "records_failed": command.records_failed,
+            },
+        )
+
+    def finish_enrichment_run(self, command: FinishEnrichmentRun) -> None:
+        self._cursor.execute(
+            FINISH_ENRICHMENT_RUN_SQL,
+            {
+                "enrichment_run_id": command.enrichment_run_id,
+                "status": command.status,
+                "error": command.error,
+            },
+        )
 
 
 def _json(value: dict[str, Any]) -> str:
@@ -187,4 +229,22 @@ SET
     is_current = true,
     last_seen_at = now(),
     metadata = EXCLUDED.metadata
+"""
+
+INCREMENT_ENRICHMENT_RUN_PROGRESS_SQL = """
+UPDATE dagster_brreg.enrichment_runs
+SET
+    records_seen = records_seen + %(records_seen)s,
+    records_completed = records_completed + %(records_completed)s,
+    records_failed = records_failed + %(records_failed)s
+WHERE id = %(enrichment_run_id)s
+"""
+
+FINISH_ENRICHMENT_RUN_SQL = """
+UPDATE dagster_brreg.enrichment_runs
+SET
+    status = %(status)s,
+    finished_at = now(),
+    error = %(error)s
+WHERE id = %(enrichment_run_id)s
 """

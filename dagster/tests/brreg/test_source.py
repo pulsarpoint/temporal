@@ -9,6 +9,7 @@ import pytest
 from corpscout_dagster.brreg.models import BrregRawRecord
 from corpscout_dagster.brreg.source import (
     BrregBulkClient,
+    iter_brreg_bulk_payload,
     iter_brreg_bulk_records,
     parse_brreg_bulk_payload,
 )
@@ -91,8 +92,7 @@ def test_brreg_raw_record_rejects_payload_without_org_number() -> None:
     assert record is None
 
 
-@pytest.mark.asyncio
-async def test_brreg_bulk_client_downloads_gzipped_bulk_file() -> None:
+def test_brreg_bulk_client_streams_gzipped_bulk_file() -> None:
     requests: list[httpx.Request] = []
     payload = gzip.compress(
         json.dumps(
@@ -107,17 +107,17 @@ async def test_brreg_bulk_client_downloads_gzipped_bulk_file() -> None:
         ).encode("utf-8")
     )
 
-    async def handler(request: httpx.Request) -> httpx.Response:
+    def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         assert request.url.path == "/enhetsregisteret/api/enheter/lastned"
         return httpx.Response(200, content=payload)
 
-    async with httpx.AsyncClient(
+    with httpx.Client(
         transport=httpx.MockTransport(handler),
         base_url="https://data.brreg.no",
     ) as http:
         client = BrregBulkClient(http_client=http)
-        records = await client.fetch_records()
+        records = list(client.iter_records())
 
     assert [record.organization_number for record in records] == ["810202572"]
     assert requests[0].headers["User-Agent"] == "corpscout-dagster/0.1"
@@ -157,10 +157,49 @@ def test_parse_brreg_bulk_payload_accepts_direct_array_payload() -> None:
     assert [record.organization_number for record in records] == ["810202572"]
 
 
+def test_iter_brreg_bulk_payload_accepts_chunked_gzip_stream() -> None:
+    compressed = gzip.compress(
+        json.dumps(
+            {
+                "_embedded": {
+                    "enheter": [
+                        {"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"},
+                        {"organisasjonsnummer": "910202572", "navn": "NEXT AS"},
+                    ]
+                }
+            }
+        ).encode("utf-8")
+    )
+    chunks = [compressed[index : index + 7] for index in range(0, len(compressed), 7)]
+
+    records = list(iter_brreg_bulk_payload(chunks))
+
+    assert [record.organization_number for record in records] == ["810202572", "910202572"]
+
+
+def test_iter_brreg_bulk_payload_keeps_numbers_json_serializable() -> None:
+    compressed = gzip.compress(
+        json.dumps(
+            [
+                {
+                    "organisasjonsnummer": "810202572",
+                    "navn": "BORTIGARD AS",
+                    "kapital": {"belop": 81870.0},
+                }
+            ]
+        ).encode("utf-8")
+    )
+
+    [record] = list(iter_brreg_bulk_payload([compressed]))
+
+    assert isinstance(record.payload["kapital"]["belop"], float)
+    assert record.to_working_row().raw_payload["kapital"]["belop"] == 81870.0
+
+
 def test_iter_brreg_bulk_records_sync_wrapper_yields_records() -> None:
     class FakeClient:
-        async def fetch_records(self):
-            return [
+        def iter_records(self):
+            yield from [
                 BrregRawRecord.from_payload({"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"}),
                 BrregRawRecord.from_payload({"organisasjonsnummer": "910202572", "navn": "NEXT AS"}),
             ]
