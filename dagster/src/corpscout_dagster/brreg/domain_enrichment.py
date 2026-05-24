@@ -33,10 +33,11 @@ _wikidata_lock: asyncio.Lock | None = None
 
 _DOMAIN_SIGNAL_PRIORITY = {
     "website_field": 0,
-    "wikidata": 1,
-    "duckduckgo": 2,
-    "crtsh": 3,
-    "certsh": 3,
+    "web_search_llm": 1,
+    "wikidata": 2,
+    "duckduckgo": 3,
+    "crtsh": 4,
+    "certsh": 4,
 }
 
 
@@ -129,6 +130,15 @@ async def discover_domain_candidates_for_signal(
         signal_rows = await _wikidata_signal(name)
     elif signal in ("crtsh", "certsh"):
         signal_rows = await _certsh_signal(name)
+    elif signal == "web_search_llm":
+        from corpscout_dagster.brreg.domain_search_llm import discover_web_search_llm_domain_candidates
+
+        return await discover_web_search_llm_domain_candidates(
+            raw_payload=raw_payload,
+            organization_number=organization_number,
+            organization_name=name,
+            country=country,
+        )
     else:
         raise ValueError(f"unknown domain signal {signal!r}")
 

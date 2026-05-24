@@ -67,6 +67,8 @@ BRREG now has separate Dagster jobs for each independent stage:
 - `brreg_domain_duckduckgo_job` materializes DuckDuckGo/crawler signal rows.
 - `brreg_domain_crtsh_job` materializes crt.sh certificate signal rows.
 - `brreg_domain_wikidata_job` materializes Wikidata signal rows.
+- `brreg_domain_web_search_llm_job` materializes DuckDuckGo first-page search
+  triage plus candidate-domain crawl verification using an OpenAI-compatible LLM.
 - `brreg_domain_proposals_job` scores signal rows into proposed domains.
 - `brreg_domain_enrichment_job` materializes all domain signal jobs and proposals.
 - `brreg_enhanced_records_job` builds Corpscout-compatible `brreg.enhanced.v1`
@@ -85,12 +87,15 @@ queue fully in one materialization. Domain signals are stored independently in
 `dagster_brreg.domain_candidates`; the proposal job merges those observations
 into `dagster_brreg.domain_proposals` with a score, source signals, and
 evidence. Each domain signal keeps its own batch size because DuckDuckGo/crawler,
-crt.sh, Wikidata, and website-field parsing have different speed and rate-limit
-profiles. Each domain run continues claiming pending batches until
-`BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or there are no pending records
-left for that signal. Default translation/domain jobs claim records that have
-not attempted that task yet; retrying failed attempts should be exposed as an
-explicit retry job/action.
+LLM verification, crt.sh, Wikidata, and website-field parsing have different
+speed and rate-limit profiles. The web-search LLM signal only crawls the first
+DuckDuckGo results page for each query. It asks the LLM to triage result domains
+from title/description/domain, then crawls only candidates above the triage
+threshold for separate markdown-based verification. Each domain run continues
+claiming pending batches until `BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or
+there are no pending records left for that signal. Default translation/domain
+jobs claim records that have not attempted that task yet; retrying failed
+attempts should be exposed as an explicit retry job/action.
 
 The enhanced-record job requires a successful or skipped translation task. It
 uses domain proposals when they exist; domain signal work remains best-effort
@@ -150,6 +155,7 @@ BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE=5000
 BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE=10
 BRREG_DOMAIN_CRTSH_BATCH_SIZE=10
 BRREG_DOMAIN_WIKIDATA_BATCH_SIZE=25
+BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE=10
 BRREG_DOMAIN_PROPOSAL_BATCH_SIZE=500
 BRREG_DOMAIN_MAX_BATCHES_PER_RUN=20
 BRREG_ENHANCED_RECORD_BATCH_SIZE=500
@@ -158,7 +164,21 @@ BRREG_TRANSLATION_MODEL=qwen3:6b
 BRREG_TRANSLATION_PROMPT_VERSION=v1
 LLM_BASE_URL=http://100.77.62.33:8888
 LLM_API_KEY=local
+DOMAIN_LLM_BASE_URL=https://api.deepseek.com
+DOMAIN_LLM_MODEL=deepseek-v4-flash
+DOMAIN_LLM_PROMPT_VERSION=v1
+DOMAIN_LLM_API_KEY=...
+DOMAIN_CRAWLER_BROWSER_TYPE=chromium
+DOMAIN_CRAWLER_CHROME_CHANNEL=chromium
+DOMAIN_CRAWLER_HEADLESS=true
+DOMAIN_CRAWLER_LIGHT_MODE=true
 ```
+
+The container installs a full Chromium executable for crawl4ai/Playwright, not
+only the headless shell. For local debugging you can set
+`DOMAIN_CRAWLER_HEADLESS=false`; a visible browser also needs a runtime with
+`DISPLAY` or Xvfb configured. If Chrome is installed in that runtime,
+`DOMAIN_CRAWLER_CHROME_CHANNEL=chrome` makes the crawler use the Chrome channel.
 
 Required environment:
 
