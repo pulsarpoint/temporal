@@ -5,6 +5,7 @@ from corpscout_dagster.brreg.enhanced_payload import (
     build_brreg_enhanced_payload,
     enhanced_payload_hash,
 )
+from corpscout_dagster.brreg.fx_rates import FxRateSet
 from corpscout_dagster.brreg.working_store import DomainProposalRow, RawTaskRecord
 
 
@@ -117,6 +118,15 @@ def test_build_brreg_enhanced_payload_matches_corpscout_contract() -> None:
             "domain_website_field": "succeeded",
             "merge_domain_proposals": "succeeded",
         },
+        fx_rates=FxRateSet(
+            source="ECB",
+            rate_date="2026-05-21",
+            eur_per={
+                "EUR": 1.0,
+                "NOK": 10.7075,
+                "USD": 1.1599,
+            },
+        ),
         dagster_run_id="dagster-run-1",
     )
 
@@ -129,8 +139,18 @@ def test_build_brreg_enhanced_payload_matches_corpscout_contract() -> None:
     assert payload["addresses"][0]["address_type"] == "business"
     assert payload["industries"][0]["description_en"]["value"] == "Construction of buildings"
     assert payload["capital"]["capital_type_en"]["value"] == "Share capital"
-    assert payload["capital"]["original_amount"] is None
-    assert payload["capital"]["amount_usd_cents"] is None
+    assert payload["capital"]["original_amount"] == 81870.0
+    assert payload["capital"]["original_currency"] == "NOK"
+    assert payload["capital"]["amount_usd"] == 8868.64
+    assert payload["capital"]["amount_usd_cents"] == 886864
+    assert payload["capital"]["fx_source"] == "ECB"
+    assert payload["capital"]["fx_rate_date"] == "2026-05-21"
+    assert payload["capital"]["fx_metadata"] == {
+        "source_currency": "NOK",
+        "target_currency": "USD",
+        "source_rate_per_eur": 10.7075,
+        "target_rate_per_eur": 1.1599,
+    }
     assert payload["domains"][0]["normalized_domain"] == "bortigard.no"
     assert payload["domains"][0]["source"] == "dagster"
     assert payload["financials"] == []

@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from corpscout_dagster.brreg.fx_rates import FxRateSet
 from corpscout_dagster.brreg.working_store import DomainProposalRow, RawTaskRecord
 
 
@@ -20,6 +22,7 @@ def build_brreg_enhanced_payload(
     domain_status: str,
     domain_proposals: list[DomainProposalRow],
     task_statuses: dict[str, str],
+    fx_rates: FxRateSet | None = None,
     dagster_run_id: str,
 ) -> dict[str, Any]:
     raw = record.raw_payload
@@ -50,7 +53,12 @@ def build_brreg_enhanced_payload(
         ),
         "addresses": _address_sections(raw),
         "industries": _industry_sections(raw=raw, translations=translations, translation_status=translation_status),
-        "capital": _capital_section(raw=raw, translations=translations, translation_status=translation_status),
+        "capital": _capital_section(
+            raw=raw,
+            translations=translations,
+            translation_status=translation_status,
+            fx_rates=fx_rates,
+        ),
         "domains": _domain_sections(domain_proposals),
         "financials": [],
     }
@@ -194,11 +202,30 @@ def _capital_section(
     raw: dict[str, Any],
     translations: dict[tuple[str, str], str],
     translation_status: str,
+    fx_rates: FxRateSet | None,
 ) -> dict[str, Any] | None:
     capital = _dict(raw.get("kapital"))
     if not capital:
         return None
     capital_type = _optional_str(capital.get("type"))
+    original_amount = _optional_decimal(capital.get("belop"))
+    original_currency = _optional_str(capital.get("valuta"))
+    amount_usd_cents = None
+    amount_usd = None
+    fx_metadata: dict[str, Any] = {}
+    fx_source = None
+    fx_rate_date = None
+    if original_amount is not None or original_currency is not None:
+        if original_amount is None or original_currency is None:
+            raise ValueError("incomplete capital currency data")
+        if fx_rates is None:
+            raise ValueError("FX rates are required for BRREG capital conversion")
+        amount_usd_cents = fx_rates.to_usd_cents(original_amount, original_currency)
+        amount_usd = amount_usd_cents / 100
+        fx_source = fx_rates.source
+        fx_rate_date = fx_rates.rate_date
+        fx_metadata = fx_rates.exchange_metadata(original_currency)
+
     return {
         "capital_type": capital_type,
         "capital_type_en": _translated_string(
@@ -207,14 +234,15 @@ def _capital_section(
             original=capital_type,
             translation_status=translation_status,
         ),
-        "original_amount": None,
-        "original_currency": _optional_str(capital.get("valuta")),
+        "original_amount": float(original_amount) if original_amount is not None else None,
+        "original_currency": original_currency,
         "introduced_at": _optional_str(capital.get("innfortDato")),
         "share_count": _optional_int(capital.get("antallAksjer")),
-        "amount_usd_cents": None,
-        "fx_source": None,
-        "fx_rate_date": None,
-        "fx_metadata": {},
+        "amount_usd": amount_usd,
+        "amount_usd_cents": amount_usd_cents,
+        "fx_source": fx_source,
+        "fx_rate_date": fx_rate_date,
+        "fx_metadata": fx_metadata,
     }
 
 
@@ -342,6 +370,17 @@ def _optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("amount must be numeric")
+    try:
+        return Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError("amount must be numeric") from exc
 
 
 def _optional_bool(value: Any) -> bool | None:

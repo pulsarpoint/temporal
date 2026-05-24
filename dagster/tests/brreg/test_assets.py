@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from corpscout_dagster.brreg.assets import (
     build_brreg_working_raw_record_rows,
     brreg_domain_crtsh_candidates,
@@ -19,6 +21,7 @@ from corpscout_dagster.brreg.assets import (
     materialize_brreg_working_raw_records,
     resolve_brreg_batch_run_config,
 )
+from corpscout_dagster.brreg.fx_rates import FxRateSet
 from corpscout_dagster.brreg.models import BrregRawRecord
 from corpscout_dagster.brreg.translation import TranslationItem, translation_item_id
 from corpscout_dagster.definitions import defs
@@ -741,6 +744,13 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
                     "organisasjonsnummer": "810202572",
                     "navn": "BORTIGARD AS",
                     "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
+                    "kapital": {
+                        "type": "Aksjekapital",
+                        "belop": 81870.00,
+                        "valuta": "NOK",
+                        "innfortDato": "2012-07-09",
+                        "antallAksjer": 8187,
+                    },
                 },
                 "payload-hash",
                 "succeeded",
@@ -750,6 +760,11 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
                             "category": "org_form",
                             "original_text": "Aksjeselskap",
                             "translated_text": "Limited Liability Company",
+                        },
+                        {
+                            "category": "capital_type",
+                            "original_text": "Aksjekapital",
+                            "translated_text": "Share capital",
                         }
                     ]
                 },
@@ -765,6 +780,15 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
         connection_factory=lambda _: connection,
         database_url="postgresql://example.invalid/corpscout",
         batch_size=50,
+        fx_rate_loader=lambda _: FxRateSet(
+            source="ECB",
+            rate_date="2026-05-21",
+            eur_per={
+                "EUR": 1.0,
+                "NOK": 10.7075,
+                "USD": 1.1599,
+            },
+        ),
     )
 
     assert result["rows_seen"] == 1
@@ -777,7 +801,9 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
         for sql, params in connection.cursor_instance.calls
         if "INSERT INTO dagster_brreg.enhanced_records" in sql
     )
-    assert '"schema_version":"brreg.enhanced.v1"' in insert_params["enhanced_payload"]
+    enhanced_payload = json.loads(insert_params["enhanced_payload"])
+    assert enhanced_payload["schema_version"] == "brreg.enhanced.v1"
+    assert enhanced_payload["capital"]["amount_usd_cents"] == 886864
     assert context.metadata[-1]["rows_completed"] == 1
 
 

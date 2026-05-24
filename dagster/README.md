@@ -114,8 +114,12 @@ attempts should be exposed as an explicit retry job/action.
 
 The enhanced-record job requires a successful or skipped translation task. It
 uses domain proposals when they exist; domain signal work remains best-effort
-and each signal status is preserved in Dagster task-state views. Financials are
-currently emitted as `not_available` until the BRREG financial extraction job is
+and each signal status is preserved in Dagster task-state views. BRREG capital
+amounts are preserved in the original currency and converted to USD cents using
+ECB rates when `kapital.belop` and `kapital.valuta` are present. Set
+`BRREG_FX_RATE_DATE=YYYY-MM-DD` to use the latest ECB rate on or before a fixed
+date; leave it empty to use the latest daily ECB feed. Financials are currently
+emitted as `not_available` until the BRREG financial extraction job is
 implemented. Publishing writes directly to Postgres:
 
 ```text
@@ -175,6 +179,7 @@ BRREG_DOMAIN_PROPOSAL_BATCH_SIZE=500
 BRREG_DOMAIN_MAX_BATCHES_PER_RUN=20
 BRREG_ENHANCED_RECORD_BATCH_SIZE=500
 BRREG_PUBLISH_ENHANCED_RECORD_BATCH_SIZE=250
+BRREG_FX_RATE_DATE=2026-05-21
 BRREG_STALE_RUN_CLEANUP_MINUTES=30
 BRREG_TRANSLATION_MODEL=qwen3:6b
 BRREG_TRANSLATION_PROMPT_VERSION=v1

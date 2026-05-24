@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import date
 
 import psycopg
 from dagster import AssetKey, Field, Int, asset
@@ -14,6 +15,7 @@ from corpscout_dagster.brreg.enhanced_payload import (
     build_brreg_enhanced_payload,
     enhanced_payload_hash,
 )
+from corpscout_dagster.brreg.fx_rates import FxRateSet, load_ecb_rates_for_date, load_latest_ecb_rates
 from corpscout_dagster.brreg.models import BrregRawRecord, BrregWorkingRawRecordRow
 from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH, iter_brreg_bulk_records
 from corpscout_dagster.brreg.translation import (
@@ -797,6 +799,7 @@ def materialize_brreg_enhanced_records(
     connection_factory,
     database_url: str,
     batch_size: int,
+    fx_rate_loader: Callable[[str | None], FxRateSet] | None = None,
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -820,6 +823,10 @@ def materialize_brreg_enhanced_records(
         try:
             with conn.cursor() as cursor:
                 records = BrregWorkingStore(cursor).fetch_pending_enhanced_build_records(limit=batch_size)
+            fx_rates = None
+            if _enhanced_build_records_need_fx(records):
+                loader = fx_rate_loader or _load_brreg_fx_rates
+                fx_rates = loader(os.environ.get("BRREG_FX_RATE_DATE"))
 
             for build_record in records:
                 rows_seen += 1
@@ -835,6 +842,7 @@ def materialize_brreg_enhanced_records(
                         enrichment_run_id=enrichment_run_id,
                         attempt=attempt,
                         build_record=build_record,
+                        fx_rates=fx_rates,
                         dagster_run_id=context.run_id,
                     )
                     rows_completed += 1
@@ -1325,6 +1333,7 @@ def _build_record_enhanced_payload(
     enrichment_run_id: str,
     attempt: TaskAttempt,
     build_record,
+    fx_rates: FxRateSet | None = None,
     dagster_run_id: str,
 ) -> None:
     payload = build_brreg_enhanced_payload(
@@ -1335,6 +1344,7 @@ def _build_record_enhanced_payload(
         domain_status=build_record.domain_status,
         domain_proposals=build_record.domain_proposals,
         task_statuses=build_record.task_statuses,
+        fx_rates=fx_rates,
         dagster_run_id=dagster_run_id,
     )
     with conn.cursor() as cursor:
@@ -1358,6 +1368,20 @@ def _build_record_enhanced_payload(
             IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
         )
     conn.commit()
+
+
+def _enhanced_build_records_need_fx(records) -> bool:
+    for build_record in records:
+        capital = build_record.record.raw_payload.get("kapital")
+        if isinstance(capital, dict) and ("belop" in capital or "valuta" in capital):
+            return True
+    return False
+
+
+def _load_brreg_fx_rates(rate_date: str | None) -> FxRateSet:
+    if not rate_date:
+        return load_latest_ecb_rates()
+    return load_ecb_rates_for_date(date.fromisoformat(rate_date))
 
 
 def _publish_record_to_corpscout(
