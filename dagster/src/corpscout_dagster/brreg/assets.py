@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import asyncio
 from collections.abc import Iterable
 from itertools import groupby
 
 import psycopg
 from dagster import asset
 
-from corpscout_dagster.brreg.domain_enrichment import extract_domain_candidates
+from corpscout_dagster.brreg.domain_enrichment import discover_domain_candidates
 from corpscout_dagster.brreg.models import BrregRawRecord, BrregWorkingRawRecordRow
 from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH, iter_brreg_bulk_records
 from corpscout_dagster.brreg.translation import (
@@ -41,7 +42,7 @@ from corpscout_dagster.brreg.working_store import (
 BRREG_BULK_URL = f"{BRREG_API_BASE_URL}{BRREG_BULK_PATH}"
 DEFAULT_RAW_RECORD_BATCH_SIZE = 5000
 DEFAULT_TRANSLATION_RECORD_BATCH_SIZE = 50
-DEFAULT_DOMAIN_RECORD_BATCH_SIZE = 500
+DEFAULT_DOMAIN_RECORD_BATCH_SIZE = 25
 
 
 def build_brreg_working_raw_record_rows(
@@ -557,7 +558,15 @@ def _translate_missing_terms(
 
 
 def _discover_record_domains(*, conn, enrichment_run_id: str, attempt: TaskAttempt, record: RawTaskRecord) -> int:
-    candidates = extract_domain_candidates(raw_payload=record.raw_payload, website=record.website)
+    candidates = asyncio.run(
+        discover_domain_candidates(
+            raw_payload=record.raw_payload,
+            organization_number=record.organization_number,
+            organization_name=record.organization_name,
+            website=record.website,
+            country="NO",
+        )
+    )
     with conn.cursor() as cursor:
         store = BrregWorkingStore(cursor)
         store.insert_domain_candidates(

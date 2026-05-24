@@ -69,7 +69,10 @@ Translation and domain enrichment both read current rows from
 `dagster_brreg.raw_records`; they do not depend on each other. The translation
 job uses the same OpenAI-compatible local LLM request shape as the old Temporal
 worker, writes reusable term translations to `dagster_brreg.translation_cache`,
-and records per-row task attempts in `dagster_brreg.task_attempts`.
+and records per-row task attempts in `dagster_brreg.task_attempts`. The domain
+job ports the old Temporal Python activity signals into Dagster: BRREG website
+field, DuckDuckGo when `crawl4ai` is installed, Wikidata, crt.sh, and heuristic
+DNS.
 Default translation/domain jobs claim records that have not attempted that task
 yet; retrying failed attempts should be exposed as an explicit retry job/action.
 
@@ -77,7 +80,7 @@ Optional environment:
 
 ```bash
 BRREG_TRANSLATION_BATCH_SIZE=50
-BRREG_DOMAIN_BATCH_SIZE=500
+BRREG_DOMAIN_BATCH_SIZE=25
 BRREG_TRANSLATION_MODEL=qwen3:6b
 BRREG_TRANSLATION_PROMPT_VERSION=v1
 LLM_BASE_URL=http://100.77.62.33:8888
