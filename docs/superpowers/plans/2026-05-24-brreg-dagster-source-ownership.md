@@ -4,7 +4,7 @@
 
 **Goal:** Build the first BRREG Dagster slice where Dagster pulls original BRREG data directly from BRREG and writes raw rows directly into Corpscout Postgres.
 
-**Architecture:** Keep Dagster in `data-pipelines/dagster` as the BRREG orchestration owner. The first slice implements a BRREG HTTP/dlt source, maps records into Corpscout raw input rows, and upserts them into `brreg_company_raw_inputs` using direct Postgres access. Corpscout HTTP APIs are not used in this path.
+**Architecture:** Keep Dagster in `data-pipelines/dagster` as the BRREG orchestration owner. The first slice implements a BRREG bulk HTTP/dlt source using `https://data.brreg.no/enhetsregisteret/api/enheter/lastned`, maps records into Corpscout raw input rows, and upserts them into `brreg_company_raw_inputs` using direct Postgres access. Corpscout HTTP APIs are not used in this path.
 
 **Tech Stack:** Python 3.12, Dagster, dlt, httpx, psycopg 3, pytest, pytest-asyncio, uv, Postgres.
 
@@ -19,10 +19,10 @@
 - Create `dagster/src/corpscout_dagster/definitions.py`: top-level Dagster `Definitions`.
 - Create `dagster/src/corpscout_dagster/brreg/__init__.py`: BRREG package exports.
 - Create `dagster/src/corpscout_dagster/brreg/models.py`: BRREG raw record and Corpscout raw input row models.
-- Create `dagster/src/corpscout_dagster/brreg/source.py`: direct BRREG HTTP fetcher and dlt resource.
+- Create `dagster/src/corpscout_dagster/brreg/source.py`: direct BRREG bulk HTTP fetcher and dlt resource.
 - Create `dagster/src/corpscout_dagster/brreg/writer.py`: Corpscout Postgres writer for `brreg_company_raw_inputs`.
 - Create `dagster/src/corpscout_dagster/brreg/assets.py`: Dagster asset that connects source to writer.
-- Create `dagster/tests/brreg/test_source.py`: source parsing and pagination tests.
+- Create `dagster/tests/brreg/test_source.py`: source model, bulk gzip, and bulk payload parsing tests.
 - Create `dagster/tests/brreg/test_writer.py`: SQL shape and idempotency tests with a fake cursor.
 - Create `dagster/tests/brreg/test_assets.py`: asset orchestration test with fakes.
 
@@ -294,90 +294,98 @@ git add dagster/src/corpscout_dagster/brreg dagster/tests/brreg/test_source.py
 git commit -m "feat: model brreg raw input rows"
 ```
 
-## Task 4: Add Direct BRREG HTTP and dlt Source
+## Task 4: Add Direct BRREG Bulk HTTP and dlt Source
 
 **Files:**
 - Create: `dagster/src/corpscout_dagster/brreg/source.py`
 - Modify: `dagster/tests/brreg/test_source.py`
 
-- [ ] **Step 1: Extend tests for page parsing and pagination**
+- [ ] **Step 1: Extend tests for bulk gzip download and payload parsing**
 
 Append to `dagster/tests/brreg/test_source.py`:
 
 ```python
+import gzip
+import json
+
 import httpx
 import pytest
 
-from corpscout_dagster.brreg.source import BrregClient, iter_brreg_records
+from corpscout_dagster.brreg.source import BrregBulkClient, iter_brreg_bulk_records, parse_brreg_bulk_payload
 
 
 @pytest.mark.asyncio
-async def test_brreg_client_fetches_records_from_public_api_page() -> None:
+async def test_brreg_bulk_client_downloads_gzipped_bulk_file() -> None:
     requests: list[httpx.Request] = []
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        assert request.url.params["page"] == "0"
-        assert request.url.params["size"] == "2"
-        return httpx.Response(
-            200,
-            json={
+    payload = gzip.compress(
+        json.dumps(
+            {
                 "_embedded": {
                     "enheter": [
                         {"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"},
                         {"organisasjonsnummer": "", "navn": "INVALID AS"},
                     ]
-                },
-                "page": {"number": 0, "totalPages": 1},
-            },
-        )
+                }
+            }
+        ).encode("utf-8")
+    )
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url.path == "/enhetsregisteret/api/enheter/lastned"
+        return httpx.Response(200, content=payload)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://data.brreg.no") as http:
-        client = BrregClient(http_client=http, page_size=2)
-        page = await client.fetch_page(page=0)
+        client = BrregBulkClient(http_client=http)
+        records = await client.fetch_records()
 
-    assert [record.organization_number for record in page.records] == ["810202572"]
-    assert page.next_page is None
+    assert [record.organization_number for record in records] == ["810202572"]
     assert requests[0].headers["User-Agent"] == "corpscout-dagster/0.1"
 
 
-@pytest.mark.asyncio
-async def test_brreg_client_returns_next_page_when_more_pages_exist() -> None:
-    async def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "_embedded": {"enheter": [{"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"}]},
-                "page": {"number": 0, "totalPages": 2},
-            },
-        )
+def test_parse_brreg_bulk_payload_accepts_wrapped_payload() -> None:
+    payload = gzip.compress(
+        json.dumps(
+            {
+                "_embedded": {
+                    "enheter": [
+                        {"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"},
+                        {"organisasjonsnummer": "910202572", "navn": "NEXT AS"},
+                    ]
+                }
+            }
+        ).encode("utf-8")
+    )
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="https://data.brreg.no") as http:
-        client = BrregClient(http_client=http, page_size=1)
-        page = await client.fetch_page(page=0)
+    records = parse_brreg_bulk_payload(payload)
 
-    assert page.next_page == 1
+    assert [record.organization_number for record in records] == ["810202572", "910202572"]
 
 
-def test_iter_brreg_records_sync_wrapper_yields_records() -> None:
+def test_parse_brreg_bulk_payload_accepts_direct_array_payload() -> None:
+    payload = gzip.compress(
+        json.dumps(
+            [
+                {"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"},
+                {"navn": "INVALID AS"},
+            ]
+        ).encode("utf-8")
+    )
+
+    records = parse_brreg_bulk_payload(payload)
+
+    assert [record.organization_number for record in records] == ["810202572"]
+
+
+def test_iter_brreg_bulk_records_sync_wrapper_yields_records() -> None:
     class FakeClient:
-        async def fetch_page(self, *, page: int):
-            if page == 0:
-                return type(
-                    "Page",
-                    (),
-                    {
-                        "records": [
-                            BrregRawRecord.from_payload(
-                                {"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"}
-                            )
-                        ],
-                        "next_page": None,
-                    },
-                )()
-            raise AssertionError(f"unexpected page {page}")
+        async def fetch_records(self):
+            return [
+                BrregRawRecord.from_payload({"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"}),
+                BrregRawRecord.from_payload({"organisasjonsnummer": "910202572", "navn": "NEXT AS"}),
+            ]
 
-    records = list(iter_brreg_records(client=FakeClient(), start_page=0, max_pages=1))
+    records = list(iter_brreg_bulk_records(client=FakeClient(), max_records=1))
 
     assert [record.organization_number for record in records] == ["810202572"]
 ```
@@ -401,7 +409,8 @@ Create `dagster/src/corpscout_dagster/brreg/source.py`:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+import gzip
+import json
 from typing import Iterator, Protocol
 
 import dlt
@@ -410,99 +419,82 @@ import httpx
 from corpscout_dagster.brreg.models import BrregRawRecord
 
 BRREG_API_BASE_URL = "https://data.brreg.no"
-BRREG_UNITS_PATH = "/enhetsregisteret/api/enheter"
+BRREG_BULK_PATH = "/enhetsregisteret/api/enheter/lastned"
 USER_AGENT = "corpscout-dagster/0.1"
-DEFAULT_PAGE_SIZE = 200
 
 
-@dataclass(frozen=True)
-class BrregPage:
-    records: list[BrregRawRecord]
-    next_page: int | None
-
-
-class BrregPageClient(Protocol):
-    async def fetch_page(self, *, page: int) -> BrregPage:
+class BrregBulkRecordClient(Protocol):
+    async def fetch_records(self) -> list[BrregRawRecord | None]:
         ...
 
 
-class BrregClient:
+class BrregBulkClient:
     def __init__(
         self,
         *,
         http_client: httpx.AsyncClient | None = None,
-        page_size: int = DEFAULT_PAGE_SIZE,
     ) -> None:
         self._http_client = http_client
-        self._page_size = page_size
 
-    async def fetch_page(self, *, page: int) -> BrregPage:
+    async def fetch_records(self) -> list[BrregRawRecord]:
         if self._http_client is None:
-            async with httpx.AsyncClient(base_url=BRREG_API_BASE_URL, timeout=60.0) as client:
-                return await self._fetch_page(client, page=page)
-        return await self._fetch_page(self._http_client, page=page)
+            async with httpx.AsyncClient(base_url=BRREG_API_BASE_URL, timeout=600.0) as client:
+                return await self._fetch_records(client)
+        return await self._fetch_records(self._http_client)
 
-    async def _fetch_page(self, client: httpx.AsyncClient, *, page: int) -> BrregPage:
+    async def _fetch_records(self, client: httpx.AsyncClient) -> list[BrregRawRecord]:
         response = await client.get(
-            BRREG_UNITS_PATH,
-            params={
-                "page": str(page),
-                "size": str(self._page_size),
-                "sort": "registreringsdatoEnhetsregisteret,asc",
-            },
-            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
+            BRREG_BULK_PATH,
+            headers={"Accept": "*/*", "User-Agent": USER_AGENT},
+            follow_redirects=True,
         )
         response.raise_for_status()
-        data = response.json()
-        records = [
-            record
-            for item in ((data.get("_embedded") or {}).get("enheter") or [])
-            if (record := BrregRawRecord.from_payload(item)) is not None
-        ]
-        page_info = data.get("page") or {}
-        current = int(page_info.get("number") or page)
-        total_pages = int(page_info.get("totalPages") or 0)
-        next_page = current + 1 if current + 1 < total_pages else None
-        return BrregPage(records=records, next_page=next_page)
+        return parse_brreg_bulk_payload(response.content)
 
 
-def iter_brreg_records(
+def parse_brreg_bulk_payload(content: bytes) -> list[BrregRawRecord]:
+    data = json.loads(gzip.decompress(content).decode("utf-8"))
+    if isinstance(data, dict):
+        entities = (data.get("_embedded") or {}).get("enheter") or []
+    elif isinstance(data, list):
+        entities = data
+    else:
+        entities = []
+    return [
+        record
+        for item in entities
+        if isinstance(item, dict) and (record := BrregRawRecord.from_payload(item)) is not None
+    ]
+
+
+def iter_brreg_bulk_records(
     *,
-    client: BrregPageClient | None = None,
-    start_page: int = 0,
-    max_pages: int | None = None,
+    client: BrregBulkRecordClient | None = None,
+    max_records: int | None = None,
 ) -> Iterator[BrregRawRecord]:
-    return _run_async_iterator(_collect_records(client=client or BrregClient(), start_page=start_page, max_pages=max_pages))
+    records = _run_async(_collect_records(client=client or BrregBulkClient(), max_records=max_records))
+    yield from records
 
 
 @dlt.resource(name="brreg_raw_records", write_disposition="append")
-def brreg_raw_records(start_page: int = 0, max_pages: int | None = None) -> Iterator[dict]:
-    for record in iter_brreg_records(start_page=start_page, max_pages=max_pages):
+def brreg_raw_records(max_records: int | None = None) -> Iterator[dict]:
+    for record in iter_brreg_bulk_records(max_records=max_records):
         yield record.payload
 
 
 async def _collect_records(
     *,
-    client: BrregPageClient,
-    start_page: int,
-    max_pages: int | None,
+    client: BrregBulkRecordClient,
+    max_records: int | None,
 ) -> list[BrregRawRecord]:
-    records: list[BrregRawRecord] = []
-    current_page: int | None = start_page
-    pages_read = 0
-    while current_page is not None:
-        if max_pages is not None and pages_read >= max_pages:
-            break
-        page = await client.fetch_page(page=current_page)
-        records.extend(page.records)
-        current_page = page.next_page
-        pages_read += 1
-    return records
+    records = [record for record in await client.fetch_records() if record is not None]
+    if max_records is None:
+        return records
+    return records[:max_records]
 
 
-def _run_async_iterator(awaitable) -> Iterator[BrregRawRecord]:
-    for record in asyncio.run(awaitable):
-        yield record
+def _run_async(awaitable) -> list[BrregRawRecord]:
+    return asyncio.run(awaitable)
 ```
 
 - [ ] **Step 4: Run tests**
@@ -791,7 +783,7 @@ import psycopg
 from dagster import AssetExecutionContext, asset
 
 from corpscout_dagster.brreg.models import BrregRawRecord, CorpscoutBrregRawInputRow
-from corpscout_dagster.brreg.source import iter_brreg_records
+from corpscout_dagster.brreg.source import iter_brreg_bulk_records
 from corpscout_dagster.brreg.writer import BrregRawInputWriter
 
 
@@ -807,9 +799,9 @@ def build_brreg_raw_input_rows(
 def brreg_raw_inputs(context: AssetExecutionContext) -> dict[str, int]:
     connection_url = _corpscout_database_url()
     run_id = context.run_id
-    max_pages = _optional_int_env("BRREG_MAX_PAGES")
+    max_records = _optional_int_env("BRREG_MAX_RECORDS")
     rows = build_brreg_raw_input_rows(
-        records=iter_brreg_records(max_pages=max_pages),
+        records=iter_brreg_bulk_records(max_records=max_records),
         run_id=run_id,
     )
     with psycopg.connect(connection_url) as conn:
@@ -875,7 +867,7 @@ Dagster pipelines for source ingestion and enrichment.
 
 ## BRREG Raw Input Ingestion
 
-The first BRREG asset pulls original company records directly from the BRREG public API and upserts them into Corpscout Postgres table `brreg_company_raw_inputs`.
+The first BRREG asset pulls original company records directly from the BRREG bulk endpoint and upserts them into Corpscout Postgres table `brreg_company_raw_inputs`.
 
 Required environment:
 
@@ -886,7 +878,7 @@ export CORPSCOUT_DATABASE_URL='postgresql://user:password@localhost:5432/corpsco
 Optional local limiter:
 
 ```bash
-export BRREG_MAX_PAGES=1
+export BRREG_MAX_RECORDS=1000
 ```
 
 Run tests:
