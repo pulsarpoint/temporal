@@ -282,7 +282,7 @@ def _country_tld(country: str) -> str:
 def _safe_domain(url: str) -> str | None:
     if not url:
         return None
-    parsed = urllib.parse.urlparse(url)
+    parsed = urllib.parse.urlparse(url if "://" in url else f"https://{url}")
     host = parsed.netloc or parsed.path
     if not host:
         return None

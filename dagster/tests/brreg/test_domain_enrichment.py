@@ -19,6 +19,7 @@ from corpscout_dagster.brreg.domain_enrichment import (
 def test_normalize_domain_handles_urls_and_www_prefixes() -> None:
     assert normalize_domain("https://www.example.no/path?q=1") == "example.no"
     assert normalize_domain("WWW.BORTIGARD.NO") == "bortigard.no"
+    assert normalize_domain("lasseevensentaksering.com/") == "lasseevensentaksering.com"
     assert normalize_domain("not a domain") is None
 
 
