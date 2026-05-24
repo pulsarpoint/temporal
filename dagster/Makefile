@@ -1,7 +1,7 @@
 COMPOSE ?= docker compose
 DAGSTER_PORT ?= 3000
 
-.PHONY: sync test validate webserver daemon build up run down logs logs-webserver logs-daemon shell
+.PHONY: sync test validate smoke-brreg-db webserver daemon build up run down logs logs-webserver logs-daemon shell
 
 sync:
 	uv sync
@@ -11,6 +11,9 @@ test:
 
 validate:
 	tmp=$$(mktemp -d); touch "$$tmp/dagster.yaml"; DAGSTER_HOME="$$tmp" uv run dagster definitions validate -w workspace.yaml
+
+smoke-brreg-db:
+	uv run python -m corpscout_dagster.brreg.smoke
 
 webserver:
 	tmp=$$(mktemp -d); touch "$$tmp/dagster.yaml"; DAGSTER_HOME="$$tmp" uv run dagster-webserver -h 0.0.0.0 -p $(DAGSTER_PORT) -w workspace.yaml

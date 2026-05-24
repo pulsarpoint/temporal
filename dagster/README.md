@@ -43,5 +43,11 @@ Required environment:
 CORPSCOUT_DATABASE_URL=postgresql://user:password@127.0.0.1:5432/corpscout
 ```
 
+Verify the database write path without leaving a row behind:
+
+```bash
+make smoke-brreg-db
+```
+
 The container image is built by `.github/workflows/dagster-image.yml` and pushed
 to `ghcr.io/pulsarpoint/corpscout-dagster`.
