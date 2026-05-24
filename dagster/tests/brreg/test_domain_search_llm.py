@@ -195,6 +195,35 @@ def test_search_results_include_duckduckgo_redirects_from_internal_links() -> No
     assert results[0].title == "LASSE EVENSEN AS - official site"
 
 
+def test_search_results_exclude_registry_and_directory_domains() -> None:
+    crawl_result = FakeCrawlResult(
+        links={
+            "internal": [
+                {
+                    "href": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fvirksomhet.brreg.no%2Fnb%2Foppslag%2Fenheter%2F811552372&rut=abc",
+                    "text": "Virksomhetsopplysninger - Brønnøysundregistrene",
+                },
+                {
+                    "href": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.proff.no%2Fselskap%2Flasse-evensen-as&rut=abc",
+                    "text": "Lasse Evensen AS - Proff",
+                },
+                {
+                    "href": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.dansesonen.no%2F&rut=abc",
+                    "text": "Dansesonen - Hjem",
+                },
+            ],
+            "external": [],
+        }
+    )
+
+    results = search_results_from_crawl_result(
+        query='"DANSESONEN TIRIL ANDØL DANSESTUDIO AS" Norway official website',
+        crawl_result=crawl_result,
+    )
+
+    assert [result.normalized_domain for result in results] == ["dansesonen.no"]
+
+
 def test_domain_crawler_browser_config_defaults_to_headless_full_chromium(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DOMAIN_CRAWLER_HEADLESS", raising=False)
     monkeypatch.delenv("DOMAIN_CRAWLER_BROWSER_TYPE", raising=False)

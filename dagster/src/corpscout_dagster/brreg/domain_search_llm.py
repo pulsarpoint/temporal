@@ -24,6 +24,19 @@ DEFAULT_VERIFICATION_THRESHOLD = 60
 DEFAULT_MAX_VERIFIED_CANDIDATES = 3
 DEFAULT_MAX_MARKDOWN_CHARS = 6000
 DOMAIN_WEB_SEARCH_SIGNAL = "web_search_llm"
+EXCLUDED_SEARCH_RESULT_DOMAINS = {
+    "1881.no",
+    "brreg.no",
+    "eniro.no",
+    "gulesider.no",
+    "kompass.com",
+    "nor47business.com",
+    "proff.no",
+    "purehelp.no",
+    "regnskapstall.no",
+    "virk.dk",
+    "yra.no",
+}
 
 
 @dataclass(frozen=True)
@@ -324,7 +337,12 @@ def search_results_from_crawl_result(*, query: str, crawl_result) -> list[Search
         href = str(link.get("href") or "")
         real_url = _extract_duckduckgo_url(href) or href
         normalized = normalize_domain(real_url)
-        if normalized is None or "duckduckgo.com" in normalized or normalized in seen:
+        if (
+            normalized is None
+            or "duckduckgo.com" in normalized
+            or _is_excluded_search_result_domain(normalized)
+            or normalized in seen
+        ):
             continue
         seen.add(normalized)
         rows.append(
@@ -577,6 +595,13 @@ def _deduplicate_candidates(candidates: list[DomainCandidate]) -> list[DomainCan
         seen.add(candidate.normalized_domain)
         unique.append(candidate)
     return unique
+
+
+def _is_excluded_search_result_domain(normalized_domain: str) -> bool:
+    return any(
+        normalized_domain == excluded or normalized_domain.endswith(f".{excluded}")
+        for excluded in EXCLUDED_SEARCH_RESULT_DOMAINS
+    )
 
 
 def _string_or_none(value: Any) -> str | None:
