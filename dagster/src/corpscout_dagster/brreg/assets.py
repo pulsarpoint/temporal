@@ -269,14 +269,13 @@ def materialize_brreg_translation_results(
                 conn.commit()
             raise
 
-    metadata = {
+    result = {
         "rows_seen": rows_seen,
         "rows_completed": rows_completed,
         "rows_failed": rows_failed,
-        "dagster_run_id": context.run_id,
     }
-    context.add_output_metadata(metadata)
-    return metadata
+    context.add_output_metadata({**result, "dagster_run_id": context.run_id})
+    return result
 
 
 def materialize_brreg_domain_candidates(
@@ -370,15 +369,14 @@ def materialize_brreg_domain_candidates(
                 conn.commit()
             raise
 
-    metadata = {
+    result = {
         "rows_seen": rows_seen,
         "rows_completed": rows_completed,
         "rows_failed": rows_failed,
         "domains_written": domains_written,
-        "dagster_run_id": context.run_id,
     }
-    context.add_output_metadata(metadata)
-    return metadata
+    context.add_output_metadata({**result, "dagster_run_id": context.run_id})
+    return result
 
 
 def _iter_working_row_batches(

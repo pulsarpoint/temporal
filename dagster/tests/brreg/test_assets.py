@@ -214,6 +214,7 @@ def test_materialize_brreg_translation_results_writes_task_cache_and_result() ->
     assert result["rows_seen"] == 1
     assert result["rows_completed"] == 1
     assert result["rows_failed"] == 0
+    assert all(isinstance(value, int) for value in result.values())
     sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
     many_sql_calls = [sql for sql, _ in connection.cursor_instance.many_calls]
     assert any("run_type" in sql and "INSERT INTO dagster_brreg.enrichment_runs" in sql for sql in sql_calls)
@@ -259,6 +260,7 @@ def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -
     sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
     assert result["rows_completed"] == 0
     assert result["rows_failed"] == 1
+    assert all(isinstance(value, int) for value in result.values())
     assert sum("INSERT INTO dagster_brreg.task_attempts" in sql for sql in sql_calls) == 1
     assert any("INSERT INTO dagster_brreg.translation_results" in sql for sql in sql_calls)
 
@@ -294,6 +296,7 @@ def test_materialize_brreg_domain_candidates_writes_independent_task_result() ->
     assert result["rows_completed"] == 1
     assert result["rows_failed"] == 0
     assert result["domains_written"] == 1
+    assert all(isinstance(value, int) for value in result.values())
     sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
     many_sql_calls = [sql for sql, _ in connection.cursor_instance.many_calls]
     assert any("INSERT INTO dagster_brreg.domain_candidates" in sql for sql in many_sql_calls)
