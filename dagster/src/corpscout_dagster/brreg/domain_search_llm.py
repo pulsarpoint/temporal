@@ -318,7 +318,7 @@ def search_results_from_crawl_result(*, query: str, crawl_result) -> list[Search
     rows: list[SearchResult] = []
     seen: set[str] = set()
     links = getattr(crawl_result, "links", None) or {}
-    for link in list(links.get("external") or []):
+    for link in [*list(links.get("external") or []), *list(links.get("internal") or [])]:
         if not isinstance(link, dict):
             continue
         href = str(link.get("href") or "")

@@ -14,6 +14,7 @@ from corpscout_dagster.brreg.domain_search_llm import (
     discover_web_search_llm_domain_candidates,
     parse_domain_verification_response,
     parse_search_triage_response,
+    search_results_from_crawl_result,
 )
 
 
@@ -164,6 +165,34 @@ def test_build_domain_search_queries_uses_org_number_and_address_fallbacks() -> 
         '"BORTIGARD AS" "810202572"',
         '"BORTIGARD AS" "Løkkeveien 18 HOLMESTRAND 3085"',
     ]
+
+
+def test_search_results_include_duckduckgo_redirects_from_internal_links() -> None:
+    crawl_result = FakeCrawlResult(
+        links={
+            "internal": [
+                {
+                    "href": "https://html.duckduckgo.com/html/",
+                    "text": "DuckDuckGo",
+                },
+                {
+                    "href": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.lasseevensentaksering.com%2F&rut=abc",
+                    "text": "LASSE EVENSEN AS - official site",
+                },
+            ],
+            "external": [],
+        }
+    )
+
+    results = search_results_from_crawl_result(
+        query='"LASSE EVENSEN AS" Norway official website',
+        crawl_result=crawl_result,
+    )
+
+    assert len(results) == 1
+    assert results[0].url == "https://www.lasseevensentaksering.com/"
+    assert results[0].normalized_domain == "lasseevensentaksering.com"
+    assert results[0].title == "LASSE EVENSEN AS - official site"
 
 
 def test_domain_crawler_browser_config_defaults_to_headless_full_chromium(monkeypatch: pytest.MonkeyPatch) -> None:
