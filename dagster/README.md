@@ -59,6 +59,31 @@ The `brreg_working_raw_records` asset downloads the BRREG bulk gzip payload from
 `https://data.brreg.no/enhetsregisteret/api/enheter/lastned` and upserts rows into
 Dagster-owned table `dagster_brreg.raw_records`.
 
+BRREG now has separate Dagster jobs for each independent stage:
+
+- `brreg_ingest_job` materializes `brreg_working_raw_records`.
+- `brreg_translate_job` materializes `brreg_translation_results`.
+- `brreg_domain_enrichment_job` materializes `brreg_domain_candidates`.
+
+Translation and domain enrichment both read current rows from
+`dagster_brreg.raw_records`; they do not depend on each other. The translation
+job uses the same OpenAI-compatible local LLM request shape as the old Temporal
+worker, writes reusable term translations to `dagster_brreg.translation_cache`,
+and records per-row task attempts in `dagster_brreg.task_attempts`.
+Default translation/domain jobs claim records that have not attempted that task
+yet; retrying failed attempts should be exposed as an explicit retry job/action.
+
+Optional environment:
+
+```bash
+BRREG_TRANSLATION_BATCH_SIZE=50
+BRREG_DOMAIN_BATCH_SIZE=500
+BRREG_TRANSLATION_MODEL=qwen3:6b
+BRREG_TRANSLATION_PROMPT_VERSION=v1
+LLM_BASE_URL=http://100.77.62.33:8888
+LLM_API_KEY=local
+```
+
 Required environment:
 
 ```bash

@@ -4,6 +4,7 @@ from pathlib import Path
 MIGRATIONS_DIR = Path(__file__).parents[2] / "db" / "migrations"
 UP_SQL = MIGRATIONS_DIR / "000001_brreg_working_store.up.sql"
 DOWN_SQL = MIGRATIONS_DIR / "000001_brreg_working_store.down.sql"
+ALL_UP_SQL = "\n".join(path.read_text() for path in sorted(MIGRATIONS_DIR.glob("*.up.sql")))
 
 
 def test_working_store_migration_creates_required_tables() -> None:
@@ -34,17 +35,26 @@ def test_working_store_migration_has_idempotency_and_queue_indexes() -> None:
 
 
 def test_working_store_migration_tracks_task_outputs() -> None:
-    sql = UP_SQL.read_text()
+    sql = ALL_UP_SQL
 
     assert "task_type IN (" in sql
     assert "'translate'" in sql
     assert "'discover_domains'" in sql
-    assert "'extract_financials'" in sql
+    assert "CREATE TABLE IF NOT EXISTS dagster_brreg.translation_cache" in sql
+    assert "UNIQUE (category, source_lang, target_lang, original_hash, model, prompt_version)" in sql
+    assert "idx_dagster_brreg_translation_cache_lookup" in sql
+    assert "idx_dagster_brreg_translation_success" in sql
+    assert "idx_dagster_brreg_domain_task_success" in sql
+
+
+def test_working_store_migration_has_independent_brreg_run_types() -> None:
+    sql = ALL_UP_SQL
+
+    assert "'bulk_ingest'" in sql
+    assert "'translate'" in sql
+    assert "'discover_domains'" in sql
     assert "'build_enhanced'" in sql
-    assert "translated_payload JSONB" in sql
-    assert "financial_payload JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
-    assert "usd_payload JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
-    assert "enhanced_payload JSONB NOT NULL" in sql
+    assert "'publish'" in sql
 
 
 def test_working_store_migration_down_drops_schema() -> None:

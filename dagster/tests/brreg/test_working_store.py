@@ -5,8 +5,14 @@ from corpscout_dagster.brreg.working_store import (
     BrregWorkingStore,
     CreateBulkSnapshot,
     CreateEnrichmentRun,
+    CreateTaskAttempt,
     FinishEnrichmentRun,
     IncrementEnrichmentRunProgress,
+    InsertDomainCandidate,
+    InsertTranslationResult,
+    RawTaskRecord,
+    TaskAttempt,
+    UpsertCachedTranslation,
     UpsertResult,
 )
 
@@ -19,6 +25,7 @@ class FakeCursor:
             ("00000000-0000-0000-0000-000000000001",),
             ("00000000-0000-0000-0000-000000000002",),
         ]
+        self.fetchall_values = []
 
     def execute(self, sql: str, params: dict) -> None:
         self.calls.append((sql, params))
@@ -28,6 +35,9 @@ class FakeCursor:
 
     def fetchone(self):
         return self.fetchone_values.pop(0)
+
+    def fetchall(self):
+        return self.fetchall_values
 
 
 def test_working_store_creates_enrichment_run_and_snapshot() -> None:
@@ -139,3 +149,144 @@ def test_working_store_updates_enrichment_run_progress_and_completion() -> None:
     finish_sql, finish_params = cursor.calls[1]
     assert "finished_at = now()" in finish_sql
     assert finish_params["status"] == "succeeded"
+
+
+def test_working_store_fetches_pending_task_records_without_coupling_tasks() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = []
+    cursor.fetchall_values = [
+        (
+            "00000000-0000-0000-0000-000000000002",
+            "810202572",
+            "BORTIGARD AS",
+            "https://bortigard.no",
+            {"organisasjonsnummer": "810202572"},
+        )
+    ]
+    store = BrregWorkingStore(cursor)
+
+    rows = store.fetch_pending_raw_task_records(task_type="translate", limit=100)
+
+    assert rows == [
+        RawTaskRecord(
+            id="00000000-0000-0000-0000-000000000002",
+            organization_number="810202572",
+            organization_name="BORTIGARD AS",
+            website="https://bortigard.no",
+            raw_payload={"organisasjonsnummer": "810202572"},
+        )
+    ]
+    sql, params = cursor.calls[0]
+    assert "FROM dagster_brreg.raw_records rr" in sql
+    assert "ta.task_type = %(task_type)s" in sql
+    assert "ta.status IN" not in sql
+    assert params == {"task_type": "translate", "limit": 100}
+
+
+def test_working_store_creates_task_attempts_with_next_attempt_number() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = [
+        (
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+            1,
+        )
+    ]
+    store = BrregWorkingStore(cursor)
+
+    attempt = store.create_task_attempt(
+        CreateTaskAttempt(
+            enrichment_run_id="00000000-0000-0000-0000-000000000001",
+            raw_record_id="00000000-0000-0000-0000-000000000002",
+            task_type="translate",
+            metadata={"source": "brreg"},
+        )
+    )
+
+    assert attempt == TaskAttempt(
+        id="00000000-0000-0000-0000-000000000001",
+        raw_record_id="00000000-0000-0000-0000-000000000002",
+        attempt=1,
+    )
+    sql, params = cursor.calls[0]
+    assert "INSERT INTO dagster_brreg.task_attempts" in sql
+    assert "coalesce(max(attempt), 0) + 1" in sql
+    assert params["task_type"] == "translate"
+
+
+def test_working_store_upserts_translation_cache_and_results() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.upsert_cached_translations(
+        [
+            UpsertCachedTranslation(
+                category="activity",
+                source_lang="no",
+                target_lang="en",
+                original_hash="hash-1",
+                original_text="Drive utleie",
+                translated_text="Rental activity",
+                model="qwen3:6b",
+                prompt_version="v1",
+                metadata={"source": "llm"},
+            )
+        ]
+    )
+    store.insert_translation_result(
+        InsertTranslationResult(
+            raw_record_id="00000000-0000-0000-0000-000000000002",
+            task_attempt_id="00000000-0000-0000-0000-000000000001",
+            status="succeeded",
+            translated_payload={"terms": []},
+            model="qwen3:6b",
+            prompt_version="v1",
+            error=None,
+            metadata={},
+        )
+    )
+
+    cache_sql, cache_params_seq = cursor.many_calls[0]
+    assert "INSERT INTO dagster_brreg.translation_cache" in cache_sql
+    assert "ON CONFLICT" in cache_sql
+    assert cache_params_seq[0]["translated_text"] == "Rental activity"
+
+    result_sql, result_params = cursor.calls[0]
+    assert "INSERT INTO dagster_brreg.translation_results" in result_sql
+    assert result_params["status"] == "succeeded"
+    assert result_params["translated_payload"] == '{"terms":[]}'
+
+
+def test_working_store_inserts_domain_candidates_and_marks_attempts() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.insert_domain_candidates(
+        [
+            InsertDomainCandidate(
+                raw_record_id="00000000-0000-0000-0000-000000000002",
+                task_attempt_id="00000000-0000-0000-0000-000000000001",
+                domain="www.example.no",
+                normalized_domain="example.no",
+                signal="website_field",
+                confidence=95,
+                evidence={"website": "https://www.example.no"},
+                metadata={"source_field": "hjemmeside"},
+            )
+        ]
+    )
+    store.finish_task_attempt(
+        task_attempt_id="00000000-0000-0000-0000-000000000001",
+        status="succeeded",
+        error=None,
+    )
+
+    domain_sql, domain_params_seq = cursor.many_calls[0]
+    assert "INSERT INTO dagster_brreg.domain_candidates" in domain_sql
+    assert "ON CONFLICT (raw_record_id, normalized_domain, signal) DO UPDATE" in domain_sql
+    assert domain_params_seq[0]["normalized_domain"] == "example.no"
+
+    attempt_sql, attempt_params = cursor.calls[0]
+    assert "UPDATE dagster_brreg.task_attempts" in attempt_sql
+    assert "finished_at = now()" in attempt_sql
+    assert attempt_params["status"] == "succeeded"
