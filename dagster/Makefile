@@ -1,7 +1,7 @@
 COMPOSE ?= docker compose
 DAGSTER_PORT ?= 3000
 
-.PHONY: sync test validate smoke-brreg-db webserver daemon build up run down logs logs-webserver logs-daemon shell
+.PHONY: sync test validate smoke-brreg-db webserver daemon build up run down migrate-up migrate-down migrate-version logs logs-webserver logs-daemon shell
 
 sync:
 	uv sync
@@ -29,6 +29,15 @@ up run:
 
 down:
 	$(COMPOSE) down
+
+migrate-up:
+	$(COMPOSE) run --rm dagster-migrate-up
+
+migrate-down:
+	$(COMPOSE) run --rm dagster-migrate-down
+
+migrate-version:
+	$(COMPOSE) run --rm dagster-migrate-version
 
 logs:
 	$(COMPOSE) logs -f

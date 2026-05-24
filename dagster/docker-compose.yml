@@ -1,3 +1,11 @@
+x-dagster-migrate-base: &dagster-migrate-base
+  image: ${MIGRATE_IMAGE:-migrate/migrate}
+  profiles:
+    - tools
+  network_mode: host
+  volumes:
+    - ./db/migrations:/migrations:ro
+
 services:
   dagster-webserver:
     build: .
@@ -34,3 +42,28 @@ services:
       sh -c 'mkdir -p "$$DAGSTER_HOME" &&
       touch "$$DAGSTER_HOME/dagster.yaml" &&
       dagster-daemon run -w /app/workspace.yaml'
+
+  dagster-migrate-up:
+    <<: *dagster-migrate-base
+    command:
+      - -path=/migrations
+      - -database
+      - ${CORPSCOUT_DATABASE_URL:?CORPSCOUT_DATABASE_URL is required}
+      - up
+
+  dagster-migrate-down:
+    <<: *dagster-migrate-base
+    command:
+      - -path=/migrations
+      - -database
+      - ${CORPSCOUT_DATABASE_URL:?CORPSCOUT_DATABASE_URL is required}
+      - down
+      - "1"
+
+  dagster-migrate-version:
+    <<: *dagster-migrate-base
+    command:
+      - -path=/migrations
+      - -database
+      - ${CORPSCOUT_DATABASE_URL:?CORPSCOUT_DATABASE_URL is required}
+      - version

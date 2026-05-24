@@ -31,6 +31,18 @@ Dagster runtime state is bind-mounted from `DAGSTER_HOME_DIR`, default
 `./.dagster_home`, so logs, run metadata, and local instance files are visible
 on the host.
 
+## Database Migrations
+
+Dagster-owned migrations live in `db/migrations` and run through Docker Compose
+using the official `migrate/migrate` image. The remote host only needs Docker
+Compose, this folder, and `CORPSCOUT_DATABASE_URL` in `.env`.
+
+```bash
+make migrate-up
+make migrate-version
+make migrate-down
+```
+
 ## BRREG Raw Inputs
 
 The `brreg_raw_inputs` asset downloads the BRREG bulk gzip payload from
