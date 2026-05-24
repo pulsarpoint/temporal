@@ -5,9 +5,12 @@ import pytest
 import corpscout_dagster.brreg.domain_enrichment as domain_enrichment
 from corpscout_dagster.brreg.domain_enrichment import (
     DomainCandidate,
+    DomainCandidateObservation,
     _candidate_domains,
+    build_domain_proposals,
     _should_back_off_external_signal,
     discover_domain_candidates,
+    discover_domain_candidates_for_signal,
     extract_domain_candidates,
     normalize_domain,
 )
@@ -112,3 +115,66 @@ async def test_discover_domain_candidates_deduplicates_website_before_external_s
     assert len(candidates) == 1
     assert candidates[0].normalized_domain == "bortigard.no"
     assert candidates[0].signal == "website_field"
+
+
+@pytest.mark.asyncio
+async def test_discover_domain_candidates_for_signal_runs_only_requested_signal(monkeypatch) -> None:
+    async def fake_wikidata(company_name: str):
+        return [("bortigard.no", "wikidata", 85)]
+
+    async def unexpected_signal(*args):
+        raise AssertionError("only wikidata should run")
+
+    monkeypatch.setattr(domain_enrichment, "_duckduckgo_signal", unexpected_signal)
+    monkeypatch.setattr(domain_enrichment, "_wikidata_signal", fake_wikidata)
+    monkeypatch.setattr(domain_enrichment, "_certsh_signal", unexpected_signal)
+    monkeypatch.setattr(domain_enrichment, "_heuristic_signal", unexpected_signal)
+
+    candidates = await discover_domain_candidates_for_signal(
+        signal="wikidata",
+        raw_payload={"organisasjonsnummer": "810202572"},
+        organization_number="810202572",
+        organization_name="BORTIGARD AS",
+        website="https://www.should-not-be-used.no",
+        country="NO",
+    )
+
+    assert [(candidate.normalized_domain, candidate.signal, candidate.confidence) for candidate in candidates] == [
+        ("bortigard.no", "wikidata", 85)
+    ]
+
+
+def test_build_domain_proposals_scores_and_merges_signal_observations() -> None:
+    proposals = build_domain_proposals(
+        [
+            DomainCandidateObservation(
+                normalized_domain="bortigard.no",
+                domain="www.bortigard.no",
+                signal="website_field",
+                confidence=95,
+                evidence={"website": "https://www.bortigard.no"},
+                metadata={},
+            ),
+            DomainCandidateObservation(
+                normalized_domain="bortigard.no",
+                domain="bortigard.no",
+                signal="wikidata",
+                confidence=85,
+                evidence={"url": "https://www.bortigard.no"},
+                metadata={},
+            ),
+            DomainCandidateObservation(
+                normalized_domain="wrong.no",
+                domain="wrong.no",
+                signal="duckduckgo",
+                confidence=70,
+                evidence={"url": "https://wrong.no"},
+                metadata={},
+            ),
+        ]
+    )
+
+    assert [proposal.normalized_domain for proposal in proposals] == ["bortigard.no", "wrong.no"]
+    assert proposals[0].score == 100
+    assert proposals[0].signals == ["website_field", "wikidata"]
+    assert proposals[1].score == 70

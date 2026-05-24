@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import os
 import asyncio
+import os
 from collections.abc import Iterable
 from itertools import groupby
 
 import psycopg
-from dagster import asset
+from dagster import AssetKey, asset
 
-from corpscout_dagster.brreg.domain_enrichment import discover_domain_candidates
+from corpscout_dagster.brreg.domain_enrichment import build_domain_proposals, discover_domain_candidates_for_signal
 from corpscout_dagster.brreg.models import BrregRawRecord, BrregWorkingRawRecordRow
 from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH, iter_brreg_bulk_records
 from corpscout_dagster.brreg.translation import (
@@ -32,6 +32,7 @@ from corpscout_dagster.brreg.working_store import (
     FinishEnrichmentRun,
     IncrementEnrichmentRunProgress,
     InsertDomainCandidate,
+    InsertDomainProposal,
     InsertTranslationResult,
     RawTaskRecord,
     TaskAttempt,
@@ -42,7 +43,21 @@ from corpscout_dagster.brreg.working_store import (
 BRREG_BULK_URL = f"{BRREG_API_BASE_URL}{BRREG_BULK_PATH}"
 DEFAULT_RAW_RECORD_BATCH_SIZE = 5000
 DEFAULT_TRANSLATION_RECORD_BATCH_SIZE = 50
-DEFAULT_DOMAIN_RECORD_BATCH_SIZE = 25
+DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE = 5000
+DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE = 10
+DEFAULT_DOMAIN_CRTSH_BATCH_SIZE = 10
+DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE = 25
+DEFAULT_DOMAIN_DNS_HEURISTIC_BATCH_SIZE = 100
+DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE = 500
+DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 20
+
+DOMAIN_SIGNAL_ASSET_KEYS = [
+    AssetKey("brreg_domain_website_field_candidates"),
+    AssetKey("brreg_domain_duckduckgo_candidates"),
+    AssetKey("brreg_domain_crtsh_candidates"),
+    AssetKey("brreg_domain_wikidata_candidates"),
+    AssetKey("brreg_domain_dns_heuristic_candidates"),
+]
 
 
 def build_brreg_working_raw_record_rows(
@@ -76,13 +91,79 @@ def brreg_translation_results(context) -> dict[str, int]:
     )
 
 
-@asset(name="brreg_domain_candidates")
-def brreg_domain_candidates(context) -> dict[str, int]:
-    return materialize_brreg_domain_candidates(
+@asset(name="brreg_domain_website_field_candidates")
+def brreg_domain_website_field_candidates(context) -> dict[str, int]:
+    return materialize_brreg_domain_signal_candidates(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
-        batch_size=_env_int("BRREG_DOMAIN_BATCH_SIZE", DEFAULT_DOMAIN_RECORD_BATCH_SIZE),
+        signal="website_field",
+        task_type="domain_website_field",
+        batch_size=_env_int("BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE", DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE),
+        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    )
+
+
+@asset(name="brreg_domain_duckduckgo_candidates")
+def brreg_domain_duckduckgo_candidates(context) -> dict[str, int]:
+    return materialize_brreg_domain_signal_candidates(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        signal="duckduckgo",
+        task_type="domain_duckduckgo",
+        batch_size=_env_int("BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE", DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE),
+        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    )
+
+
+@asset(name="brreg_domain_crtsh_candidates")
+def brreg_domain_crtsh_candidates(context) -> dict[str, int]:
+    return materialize_brreg_domain_signal_candidates(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        signal="crtsh",
+        task_type="domain_crtsh",
+        batch_size=_env_int("BRREG_DOMAIN_CRTSH_BATCH_SIZE", DEFAULT_DOMAIN_CRTSH_BATCH_SIZE),
+        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    )
+
+
+@asset(name="brreg_domain_wikidata_candidates")
+def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
+    return materialize_brreg_domain_signal_candidates(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        signal="wikidata",
+        task_type="domain_wikidata",
+        batch_size=_env_int("BRREG_DOMAIN_WIKIDATA_BATCH_SIZE", DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE),
+        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    )
+
+
+@asset(name="brreg_domain_dns_heuristic_candidates")
+def brreg_domain_dns_heuristic_candidates(context) -> dict[str, int]:
+    return materialize_brreg_domain_signal_candidates(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        signal="heuristic",
+        task_type="domain_dns_heuristic",
+        batch_size=_env_int("BRREG_DOMAIN_DNS_HEURISTIC_BATCH_SIZE", DEFAULT_DOMAIN_DNS_HEURISTIC_BATCH_SIZE),
+        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    )
+
+
+@asset(name="brreg_domain_proposals", deps=DOMAIN_SIGNAL_ASSET_KEYS)
+def brreg_domain_proposals(context) -> dict[str, int]:
+    return materialize_brreg_domain_proposals(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        batch_size=_env_int("BRREG_DOMAIN_PROPOSAL_BATCH_SIZE", DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE),
+        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
     )
 
 
@@ -102,9 +183,9 @@ def materialize_brreg_working_raw_records(
             store = BrregWorkingStore(cursor)
             enrichment_run_id = store.create_enrichment_run(
                 CreateEnrichmentRun(
-                    dagster_run_id=context.run_id,
+                    dagster_run_id=_enrichment_run_key(context, "bulk_ingest"),
                     run_type="bulk_ingest",
-                    metadata={"source": "brreg"},
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id},
                 )
             )
             bulk_snapshot_id = store.create_bulk_snapshot(
@@ -194,9 +275,14 @@ def materialize_brreg_translation_results(
         with conn.cursor() as cursor:
             enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
                 CreateEnrichmentRun(
-                    dagster_run_id=context.run_id,
+                    dagster_run_id=_enrichment_run_key(context, "translate"),
                     run_type="translate",
-                    metadata={"source": "brreg", "model": model, "prompt_version": prompt_version},
+                    metadata={
+                        "source": "brreg",
+                        "dagster_run_id": context.run_id,
+                        "model": model,
+                        "prompt_version": prompt_version,
+                    },
                 )
             )
         conn.commit()
@@ -278,72 +364,89 @@ def materialize_brreg_translation_results(
     return result
 
 
-def materialize_brreg_domain_candidates(
+def materialize_brreg_domain_signal_candidates(
     context,
     *,
     connection_factory,
     database_url: str,
+    signal: str,
+    task_type: str,
     batch_size: int,
+    max_batches_per_run: int = 1,
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    if max_batches_per_run <= 0:
+        raise ValueError("max_batches_per_run must be positive")
     rows_seen = 0
     rows_completed = 0
     rows_failed = 0
     domains_written = 0
+    batches_processed = 0
+    stopped_reason = "max_batches_reached"
     enrichment_run_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
             enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
                 CreateEnrichmentRun(
-                    dagster_run_id=context.run_id,
-                    run_type="discover_domains",
-                    metadata={"source": "brreg"},
+                    dagster_run_id=_enrichment_run_key(context, task_type),
+                    run_type=task_type,
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id, "signal": signal},
                 )
             )
         conn.commit()
 
         try:
-            with conn.cursor() as cursor:
-                records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
-                    task_type="discover_domains",
-                    limit=batch_size,
-                )
+            while batches_processed < max_batches_per_run:
+                with conn.cursor() as cursor:
+                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
+                        task_type=task_type,
+                        limit=batch_size,
+                    )
+                if not records:
+                    stopped_reason = "no_pending_records"
+                    break
 
-            for record in records:
-                rows_seen += 1
-                attempt = _create_task_attempt(
-                    conn=conn,
-                    enrichment_run_id=enrichment_run_id,
-                    record=record,
-                    task_type="discover_domains",
-                )
-                try:
-                    domains_written += _discover_record_domains(
+                batches_processed += 1
+                for record in records:
+                    rows_seen += 1
+                    attempt = _create_task_attempt(
                         conn=conn,
                         enrichment_run_id=enrichment_run_id,
-                        attempt=attempt,
                         record=record,
+                        task_type=task_type,
                     )
-                    rows_completed += 1
-                except Exception as exc:
-                    conn.rollback()
-                    _mark_record_task_failed(
-                        conn=conn,
-                        enrichment_run_id=enrichment_run_id,
-                        attempt=attempt,
-                        record=record,
-                        task_type="discover_domains",
-                        error=str(exc),
-                    )
-                    rows_failed += 1
+                    try:
+                        domains_written += _discover_record_domain_signal(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            signal=signal,
+                        )
+                        rows_completed += 1
+                    except Exception as exc:
+                        conn.rollback()
+                        _mark_record_task_failed(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            task_type=task_type,
+                            error=str(exc),
+                        )
+                        rows_failed += 1
 
             context.log.info(
-                "BRREG domain enrichment batch committed rows_seen=%s rows_completed=%s rows_failed=%s domains_written=%s",
+                "BRREG domain signal batches committed signal=%s rows_seen=%s rows_completed=%s rows_failed=%s domains_written=%s batches_processed=%s max_batches_per_run=%s stopped_reason=%s",
+                signal,
                 rows_seen,
                 rows_completed,
                 rows_failed,
                 domains_written,
+                batches_processed,
+                max_batches_per_run,
+                stopped_reason,
             )
 
             with conn.cursor() as cursor:
@@ -374,8 +477,142 @@ def materialize_brreg_domain_candidates(
         "rows_completed": rows_completed,
         "rows_failed": rows_failed,
         "domains_written": domains_written,
+        "batches_processed": batches_processed,
     }
-    context.add_output_metadata({**result, "dagster_run_id": context.run_id})
+    context.add_output_metadata(
+        {
+            **result,
+            "dagster_run_id": context.run_id,
+            "signal": signal,
+            "task_type": task_type,
+            "max_batches_per_run": max_batches_per_run,
+            "stopped_reason": stopped_reason,
+        }
+    )
+    return result
+
+
+def materialize_brreg_domain_proposals(
+    context,
+    *,
+    connection_factory,
+    database_url: str,
+    batch_size: int,
+    max_batches_per_run: int = 1,
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if max_batches_per_run <= 0:
+        raise ValueError("max_batches_per_run must be positive")
+    rows_seen = 0
+    rows_completed = 0
+    rows_failed = 0
+    proposals_written = 0
+    batches_processed = 0
+    stopped_reason = "max_batches_reached"
+    enrichment_run_id: str | None = None
+    task_type = "merge_domain_proposals"
+    with connection_factory(database_url) as conn:
+        with conn.cursor() as cursor:
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=_enrichment_run_key(context, task_type),
+                    run_type=task_type,
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id},
+                )
+            )
+        conn.commit()
+
+        try:
+            while batches_processed < max_batches_per_run:
+                with conn.cursor() as cursor:
+                    records = BrregWorkingStore(cursor).fetch_pending_domain_proposal_records(
+                        task_type=task_type,
+                        limit=batch_size,
+                    )
+                if not records:
+                    stopped_reason = "no_pending_records"
+                    break
+
+                batches_processed += 1
+                for record in records:
+                    rows_seen += 1
+                    attempt = _create_task_attempt(
+                        conn=conn,
+                        enrichment_run_id=enrichment_run_id,
+                        record=record,
+                        task_type=task_type,
+                    )
+                    try:
+                        proposals_written += _merge_record_domain_proposals(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                        )
+                        rows_completed += 1
+                    except Exception as exc:
+                        conn.rollback()
+                        _mark_record_task_failed(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            task_type=task_type,
+                            error=str(exc),
+                        )
+                        rows_failed += 1
+
+            context.log.info(
+                "BRREG domain proposal batches committed rows_seen=%s rows_completed=%s rows_failed=%s proposals_written=%s batches_processed=%s max_batches_per_run=%s stopped_reason=%s",
+                rows_seen,
+                rows_completed,
+                rows_failed,
+                proposals_written,
+                batches_processed,
+                max_batches_per_run,
+                stopped_reason,
+            )
+
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(
+                        enrichment_run_id=enrichment_run_id,
+                        status="succeeded" if rows_failed == 0 else "failed",
+                        error=None if rows_failed == 0 else f"{rows_failed} domain proposal rows failed",
+                    )
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if enrichment_run_id is not None:
+                with conn.cursor() as cursor:
+                    BrregWorkingStore(cursor).finish_enrichment_run(
+                        FinishEnrichmentRun(
+                            enrichment_run_id=enrichment_run_id,
+                            status="failed",
+                            error=str(exc),
+                        )
+                    )
+                conn.commit()
+            raise
+
+    result = {
+        "rows_seen": rows_seen,
+        "rows_completed": rows_completed,
+        "rows_failed": rows_failed,
+        "proposals_written": proposals_written,
+        "batches_processed": batches_processed,
+    }
+    context.add_output_metadata(
+        {
+            **result,
+            "dagster_run_id": context.run_id,
+            "task_type": task_type,
+            "max_batches_per_run": max_batches_per_run,
+            "stopped_reason": stopped_reason,
+        }
+    )
     return result
 
 
@@ -555,9 +792,17 @@ def _translate_missing_terms(
     return rows
 
 
-def _discover_record_domains(*, conn, enrichment_run_id: str, attempt: TaskAttempt, record: RawTaskRecord) -> int:
+def _discover_record_domain_signal(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: RawTaskRecord,
+    signal: str,
+) -> int:
     candidates = asyncio.run(
-        discover_domain_candidates(
+        discover_domain_candidates_for_signal(
+            signal=signal,
             raw_payload=record.raw_payload,
             organization_number=record.organization_number,
             organization_name=record.organization_name,
@@ -588,6 +833,38 @@ def _discover_record_domains(*, conn, enrichment_run_id: str, attempt: TaskAttem
         )
     conn.commit()
     return len(candidates)
+
+
+def _merge_record_domain_proposals(*, conn, enrichment_run_id: str, attempt: TaskAttempt, record: RawTaskRecord) -> int:
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        candidates = store.fetch_domain_candidates_for_raw_record(raw_record_id=record.id)
+        proposals = build_domain_proposals(candidates)
+        store.upsert_domain_proposals(
+            [
+                InsertDomainProposal(
+                    raw_record_id=record.id,
+                    task_attempt_id=attempt.id,
+                    domain=proposal.domain,
+                    normalized_domain=proposal.normalized_domain,
+                    score=proposal.score,
+                    signals=proposal.signals,
+                    evidence=proposal.evidence,
+                    metadata=proposal.metadata,
+                )
+                for proposal in proposals
+            ]
+        )
+        store.finish_task_attempt(
+            task_attempt_id=attempt.id,
+            status="succeeded" if proposals else "skipped",
+            error=None,
+        )
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
+        )
+    conn.commit()
+    return len(proposals)
 
 
 def _mark_record_task_failed(
@@ -636,3 +913,7 @@ def _corpscout_database_url() -> str:
 def _env_int(name: str, default: int) -> int:
     value = os.environ.get(name)
     return int(value) if value else default
+
+
+def _enrichment_run_key(context, run_type: str) -> str:
+    return f"{context.run_id}:{run_type}"

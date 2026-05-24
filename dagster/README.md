@@ -63,16 +63,26 @@ BRREG now has separate Dagster jobs for each independent stage:
 
 - `brreg_ingest_job` materializes `brreg_working_raw_records`.
 - `brreg_translate_job` materializes `brreg_translation_results`.
-- `brreg_domain_enrichment_job` materializes `brreg_domain_candidates`.
+- `brreg_domain_website_field_job` materializes the fast BRREG website signal.
+- `brreg_domain_duckduckgo_job` materializes DuckDuckGo/crawler signal rows.
+- `brreg_domain_crtsh_job` materializes crt.sh certificate signal rows.
+- `brreg_domain_wikidata_job` materializes Wikidata signal rows.
+- `brreg_domain_dns_heuristic_job` materializes DNS heuristic signal rows.
+- `brreg_domain_proposals_job` scores signal rows into proposed domains.
+- `brreg_domain_enrichment_job` materializes all domain signal jobs and proposals.
 
 Translation and domain enrichment both read current rows from
 `dagster_brreg.raw_records`; they do not depend on each other. The translation
 job uses the same OpenAI-compatible local LLM request shape as the old Temporal
 worker, writes reusable term translations to `dagster_brreg.translation_cache`,
-and records per-row task attempts in `dagster_brreg.task_attempts`. The domain
-job ports the old Temporal Python activity signals into Dagster: BRREG website
-field, DuckDuckGo when `crawl4ai` is installed, Wikidata, crt.sh, and heuristic
-DNS.
+and records per-row task attempts in `dagster_brreg.task_attempts`. Domain
+signals are stored independently in `dagster_brreg.domain_candidates`; the
+proposal job merges those observations into `dagster_brreg.domain_proposals`
+with a score, source signals, and evidence. Each signal keeps its own batch size
+because DuckDuckGo/crawler, crt.sh, Wikidata, website-field parsing, and DNS
+heuristics have different speed and rate-limit profiles. Each run continues
+claiming pending batches until `BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or
+there are no pending records left for that signal.
 Default translation/domain jobs claim records that have not attempted that task
 yet; retrying failed attempts should be exposed as an explicit retry job/action.
 
@@ -80,7 +90,13 @@ Optional environment:
 
 ```bash
 BRREG_TRANSLATION_BATCH_SIZE=50
-BRREG_DOMAIN_BATCH_SIZE=25
+BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE=5000
+BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE=10
+BRREG_DOMAIN_CRTSH_BATCH_SIZE=10
+BRREG_DOMAIN_WIKIDATA_BATCH_SIZE=25
+BRREG_DOMAIN_DNS_HEURISTIC_BATCH_SIZE=100
+BRREG_DOMAIN_PROPOSAL_BATCH_SIZE=500
+BRREG_DOMAIN_MAX_BATCHES_PER_RUN=20
 BRREG_TRANSLATION_MODEL=qwen3:6b
 BRREG_TRANSLATION_PROMPT_VERSION=v1
 LLM_BASE_URL=http://100.77.62.33:8888

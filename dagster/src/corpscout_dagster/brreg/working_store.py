@@ -121,6 +121,28 @@ class InsertDomainCandidate:
     metadata: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class DomainCandidateRow:
+    normalized_domain: str
+    domain: str
+    signal: str
+    confidence: int
+    evidence: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class InsertDomainProposal:
+    raw_record_id: str
+    task_attempt_id: str
+    domain: str
+    normalized_domain: str
+    score: int
+    signals: list[str]
+    evidence: dict[str, Any]
+    metadata: dict[str, Any]
+
+
 class BrregWorkingStore:
     def __init__(self, cursor: Cursor) -> None:
         self._cursor = cursor
@@ -200,6 +222,16 @@ class BrregWorkingStore:
     def fetch_pending_raw_task_records(self, *, task_type: str, limit: int) -> list[RawTaskRecord]:
         self._cursor.execute(
             FETCH_PENDING_RAW_TASK_RECORDS_SQL,
+            {
+                "task_type": task_type,
+                "limit": limit,
+            },
+        )
+        return [_raw_task_record_from_row(row) for row in self._cursor.fetchall()]
+
+    def fetch_pending_domain_proposal_records(self, *, task_type: str, limit: int) -> list[RawTaskRecord]:
+        self._cursor.execute(
+            FETCH_PENDING_DOMAIN_PROPOSAL_RECORDS_SQL,
             {
                 "task_type": task_type,
                 "limit": limit,
@@ -331,6 +363,30 @@ class BrregWorkingStore:
         if params_seq:
             self._cursor.executemany(INSERT_DOMAIN_CANDIDATE_SQL, params_seq)
 
+    def fetch_domain_candidates_for_raw_record(self, *, raw_record_id: str) -> list[DomainCandidateRow]:
+        self._cursor.execute(
+            FETCH_DOMAIN_CANDIDATES_FOR_RAW_RECORD_SQL,
+            {"raw_record_id": raw_record_id},
+        )
+        return [_domain_candidate_row_from_row(row) for row in self._cursor.fetchall()]
+
+    def upsert_domain_proposals(self, rows: list[InsertDomainProposal]) -> None:
+        params_seq = [
+            {
+                "raw_record_id": row.raw_record_id,
+                "task_attempt_id": row.task_attempt_id,
+                "domain": row.domain,
+                "normalized_domain": row.normalized_domain,
+                "score": row.score,
+                "signals": row.signals,
+                "evidence": _json(row.evidence),
+                "metadata": _json(row.metadata),
+            }
+            for row in rows
+        ]
+        if params_seq:
+            self._cursor.executemany(UPSERT_DOMAIN_PROPOSAL_SQL, params_seq)
+
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -352,6 +408,23 @@ def _raw_task_record_from_row(row) -> RawTaskRecord:
         organization_name=str(row[2]) if row[2] is not None else None,
         website=str(row[3]) if row[3] is not None else None,
         raw_payload=raw_payload,
+    )
+
+
+def _domain_candidate_row_from_row(row) -> DomainCandidateRow:
+    evidence = row[4]
+    metadata = row[5]
+    if isinstance(evidence, str):
+        evidence = json.loads(evidence)
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    return DomainCandidateRow(
+        normalized_domain=str(row[0]),
+        domain=str(row[1]),
+        signal=str(row[2]),
+        confidence=int(row[3]),
+        evidence=evidence,
+        metadata=metadata,
     )
 
 
@@ -491,6 +564,31 @@ ORDER BY rr.last_seen_at ASC, rr.id ASC
 LIMIT %(limit)s
 """
 
+FETCH_PENDING_DOMAIN_PROPOSAL_RECORDS_SQL = """
+SELECT
+    rr.id,
+    rr.organization_number,
+    rr.organization_name,
+    rr.website,
+    rr.raw_payload
+FROM dagster_brreg.raw_records rr
+WHERE rr.is_current = true
+  AND EXISTS (
+      SELECT 1
+      FROM dagster_brreg.domain_candidates dc
+      WHERE dc.raw_record_id = rr.id
+        AND dc.status IN ('candidate', 'accepted')
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM dagster_brreg.task_attempts ta
+      WHERE ta.raw_record_id = rr.id
+        AND ta.task_type = %(task_type)s
+  )
+ORDER BY rr.last_seen_at ASC, rr.id ASC
+LIMIT %(limit)s
+"""
+
 CREATE_TASK_ATTEMPT_SQL = """
 INSERT INTO dagster_brreg.task_attempts (
     enrichment_run_id,
@@ -619,4 +717,49 @@ SET
     confidence = GREATEST(dagster_brreg.domain_candidates.confidence, EXCLUDED.confidence),
     evidence = dagster_brreg.domain_candidates.evidence || EXCLUDED.evidence,
     metadata = dagster_brreg.domain_candidates.metadata || EXCLUDED.metadata
+"""
+
+FETCH_DOMAIN_CANDIDATES_FOR_RAW_RECORD_SQL = """
+SELECT
+    normalized_domain,
+    domain,
+    signal,
+    confidence,
+    evidence,
+    metadata
+FROM dagster_brreg.domain_candidates
+WHERE raw_record_id = %(raw_record_id)s
+  AND status IN ('candidate', 'accepted')
+ORDER BY normalized_domain ASC, confidence DESC, signal ASC
+"""
+
+UPSERT_DOMAIN_PROPOSAL_SQL = """
+INSERT INTO dagster_brreg.domain_proposals (
+    raw_record_id,
+    task_attempt_id,
+    domain,
+    normalized_domain,
+    score,
+    signals,
+    evidence,
+    metadata
+) VALUES (
+    %(raw_record_id)s,
+    %(task_attempt_id)s,
+    %(domain)s,
+    %(normalized_domain)s,
+    %(score)s,
+    %(signals)s,
+    %(evidence)s::jsonb,
+    %(metadata)s::jsonb
+)
+ON CONFLICT (raw_record_id, normalized_domain) DO UPDATE
+SET
+    task_attempt_id = EXCLUDED.task_attempt_id,
+    domain = EXCLUDED.domain,
+    score = EXCLUDED.score,
+    signals = EXCLUDED.signals,
+    evidence = EXCLUDED.evidence,
+    metadata = dagster_brreg.domain_proposals.metadata || EXCLUDED.metadata,
+    updated_at = now()
 """

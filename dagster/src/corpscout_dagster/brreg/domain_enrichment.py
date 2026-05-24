@@ -8,6 +8,7 @@ import socket
 import time
 import urllib.parse
 from dataclasses import dataclass
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -77,6 +78,15 @@ _COUNTRY_TLD_EXCEPTIONS: dict[str, str] = {
     "IN": ".co.in",
 }
 
+_DOMAIN_SIGNAL_PRIORITY = {
+    "website_field": 0,
+    "wikidata": 1,
+    "duckduckgo": 2,
+    "crtsh": 3,
+    "certsh": 3,
+    "heuristic": 4,
+}
+
 
 @dataclass(frozen=True)
 class DomainCandidate:
@@ -84,6 +94,26 @@ class DomainCandidate:
     normalized_domain: str
     signal: str
     confidence: int
+    evidence: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class DomainCandidateObservation:
+    normalized_domain: str
+    domain: str
+    signal: str
+    confidence: int
+    evidence: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class DomainProposal:
+    normalized_domain: str
+    domain: str
+    score: int
+    signals: list[str]
     evidence: dict[str, Any]
     metadata: dict[str, Any]
 
@@ -124,6 +154,81 @@ async def discover_domain_candidates(
                 for domain, signal, confidence in batch
             )
     return _deduplicate_candidates(candidates)
+
+
+async def discover_domain_candidates_for_signal(
+    *,
+    signal: str,
+    raw_payload: dict[str, Any],
+    organization_number: str,
+    organization_name: str | None,
+    website: str | None,
+    country: str = "NO",
+) -> list[DomainCandidate]:
+    if signal == "website_field":
+        return _deduplicate_candidates(extract_domain_candidates(raw_payload=raw_payload, website=website))
+
+    name = _company_name(raw_payload=raw_payload, organization_name=organization_name)
+    if not name:
+        return []
+
+    if signal == "duckduckgo":
+        signal_rows = await _duckduckgo_signal(name, country)
+    elif signal == "wikidata":
+        signal_rows = await _wikidata_signal(name)
+    elif signal in ("crtsh", "certsh"):
+        signal_rows = await _certsh_signal(name)
+    elif signal == "heuristic":
+        signal_rows = await _heuristic_signal(name, country)
+    else:
+        raise ValueError(f"unknown domain signal {signal!r}")
+
+    candidates = [
+        _candidate_from_signal(
+            domain=domain,
+            signal=row_signal,
+            confidence=confidence,
+            organization_number=organization_number,
+            organization_name=name,
+            country=country,
+        )
+        for domain, row_signal, confidence in signal_rows
+    ]
+    return _deduplicate_candidates(candidates)
+
+
+def build_domain_proposals(candidates: Iterable[DomainCandidateObservation]) -> list[DomainProposal]:
+    grouped: dict[str, list[DomainCandidateObservation]] = {}
+    for candidate in candidates:
+        grouped.setdefault(candidate.normalized_domain, []).append(candidate)
+
+    proposals: list[DomainProposal] = []
+    for normalized_domain, rows in grouped.items():
+        best = max(rows, key=lambda row: (row.confidence, -_signal_rank(row.signal)))
+        signals = sorted({row.signal for row in rows}, key=_signal_rank)
+        score = min(100, best.confidence + max(0, len(signals) - 1) * 5)
+        proposals.append(
+            DomainProposal(
+                normalized_domain=normalized_domain,
+                domain=best.domain,
+                score=score,
+                signals=signals,
+                evidence={
+                    "observations": [
+                        {
+                            "domain": row.domain,
+                            "normalized_domain": row.normalized_domain,
+                            "signal": row.signal,
+                            "confidence": row.confidence,
+                            "evidence": row.evidence,
+                        }
+                        for row in sorted(rows, key=lambda row: (_signal_rank(row.signal), row.normalized_domain))
+                    ]
+                },
+                metadata={"scoring_version": "v1"},
+            )
+        )
+    return sorted(proposals, key=lambda proposal: (-proposal.score, proposal.normalized_domain))
 
 
 def extract_domain_candidates(*, raw_payload: dict[str, Any], website: str | None) -> list[DomainCandidate]:
@@ -365,7 +470,7 @@ async def _certsh_signal(company_name: str) -> list[tuple[str, str, int]]:
                     domain = _safe_domain(raw.strip())
                     if domain and domain not in seen:
                         seen.add(domain)
-                        results.append((domain, "certsh", 60))
+                        results.append((domain, "crtsh", 60))
 
     await asyncio.sleep(0.5)
     return results
@@ -389,6 +494,10 @@ async def _heuristic_signal(company_name: str, country: str) -> list[tuple[str, 
 
 def _should_back_off_external_signal(status_code: int) -> bool:
     return status_code in (403, 429) or status_code >= 500
+
+
+def _signal_rank(signal: str) -> int:
+    return _DOMAIN_SIGNAL_PRIORITY.get(signal, 100)
 
 
 def _retry_after_seconds(response: httpx.Response, *, default_seconds: int) -> int:

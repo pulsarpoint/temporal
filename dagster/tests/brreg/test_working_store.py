@@ -8,8 +8,10 @@ from corpscout_dagster.brreg.working_store import (
     CreateTaskAttempt,
     FinishEnrichmentRun,
     IncrementEnrichmentRunProgress,
+    InsertDomainProposal,
     InsertDomainCandidate,
     InsertTranslationResult,
+    DomainCandidateRow,
     RawTaskRecord,
     TaskAttempt,
     UpsertCachedTranslation,
@@ -290,3 +292,55 @@ def test_working_store_inserts_domain_candidates_and_marks_attempts() -> None:
     assert "UPDATE dagster_brreg.task_attempts" in attempt_sql
     assert "finished_at = now()" in attempt_sql
     assert attempt_params["status"] == "succeeded"
+
+
+def test_working_store_fetches_domain_candidates_and_upserts_proposals() -> None:
+    cursor = FakeCursor()
+    cursor.fetchall_values = [
+        ("example.no", "www.example.no", "website_field", 95, {"website": "https://www.example.no"}, {}),
+        ("example.no", "example.no", "wikidata", 85, {"url": "https://www.example.no"}, {}),
+    ]
+    store = BrregWorkingStore(cursor)
+
+    rows = store.fetch_domain_candidates_for_raw_record(raw_record_id="00000000-0000-0000-0000-000000000002")
+    store.upsert_domain_proposals(
+        [
+            InsertDomainProposal(
+                raw_record_id="00000000-0000-0000-0000-000000000002",
+                task_attempt_id="00000000-0000-0000-0000-000000000001",
+                domain="www.example.no",
+                normalized_domain="example.no",
+                score=100,
+                signals=["website_field", "wikidata"],
+                evidence={"signals": ["website_field", "wikidata"]},
+                metadata={"source": "dagster"},
+            )
+        ]
+    )
+
+    assert rows == [
+        DomainCandidateRow(
+            normalized_domain="example.no",
+            domain="www.example.no",
+            signal="website_field",
+            confidence=95,
+            evidence={"website": "https://www.example.no"},
+            metadata={},
+        ),
+        DomainCandidateRow(
+            normalized_domain="example.no",
+            domain="example.no",
+            signal="wikidata",
+            confidence=85,
+            evidence={"url": "https://www.example.no"},
+            metadata={},
+        ),
+    ]
+    fetch_sql, fetch_params = cursor.calls[0]
+    assert "FROM dagster_brreg.domain_candidates" in fetch_sql
+    assert fetch_params["raw_record_id"] == "00000000-0000-0000-0000-000000000002"
+
+    proposal_sql, proposal_params_seq = cursor.many_calls[0]
+    assert "INSERT INTO dagster_brreg.domain_proposals" in proposal_sql
+    assert "ON CONFLICT (raw_record_id, normalized_domain) DO UPDATE" in proposal_sql
+    assert proposal_params_seq[0]["score"] == 100
