@@ -1,6 +1,4 @@
-from dagster import Definitions
-
-defs = Definitions()
+from corpscout_dagster.definitions import defs
 
 
 def main() -> None:

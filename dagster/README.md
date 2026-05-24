@@ -31,5 +31,17 @@ Dagster runtime state is bind-mounted from `DAGSTER_HOME_DIR`, default
 `./.dagster_home`, so logs, run metadata, and local instance files are visible
 on the host.
 
+## BRREG Raw Inputs
+
+The `brreg_raw_inputs` asset downloads the BRREG bulk gzip payload from
+`https://data.brreg.no/enhetsregisteret/api/enheter/lastned` and upserts rows
+directly into Corpscout table `brreg_company_raw_inputs`.
+
+Required environment:
+
+```bash
+CORPSCOUT_DATABASE_URL=postgresql://user:password@127.0.0.1:5432/corpscout
+```
+
 The container image is built by `.github/workflows/dagster-image.yml` and pushed
 to `ghcr.io/pulsarpoint/corpscout-dagster`.
