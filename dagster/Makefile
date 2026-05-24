@@ -1,7 +1,8 @@
 COMPOSE ?= docker compose
 DAGSTER_PORT ?= 3000
+DAGSTER_IMAGE ?= ghcr.io/pulsarpoint/corpscout-dagster:latest
 
-.PHONY: sync test validate smoke-brreg-db webserver daemon build up run down migrate-up migrate-down migrate-version logs logs-webserver logs-daemon shell
+.PHONY: sync test validate smoke-brreg-db webserver daemon build pull up run down migrate-up migrate-down migrate-version logs logs-webserver logs-daemon shell
 
 sync:
 	uv sync
@@ -22,10 +23,14 @@ daemon:
 	tmp=$$(mktemp -d); touch "$$tmp/dagster.yaml"; DAGSTER_HOME="$$tmp" uv run dagster-daemon run -w workspace.yaml
 
 build:
-	$(COMPOSE) build
+	docker build -t $(DAGSTER_IMAGE) .
+
+pull:
+	$(COMPOSE) pull dagster-webserver dagster-daemon
 
 up run:
-	$(COMPOSE) up -d --build
+	$(COMPOSE) pull dagster-webserver dagster-daemon
+	$(COMPOSE) up -d
 
 down:
 	$(COMPOSE) down

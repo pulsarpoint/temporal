@@ -52,5 +52,16 @@ def test_compose_exposes_dagster_webserver_port() -> None:
     assert "network_mode: host" not in compose
 
 
+def test_compose_uses_published_dagster_image_without_remote_build() -> None:
+    compose = read_project_file("docker-compose.yml")
+    makefile = read_project_file("Makefile")
+
+    assert "build: ." not in compose
+    assert "image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}" in compose
+    assert "$(COMPOSE) pull dagster-webserver dagster-daemon" in makefile
+    assert "$(COMPOSE) up -d" in makefile
+    assert "--build" not in makefile
+
+
 def test_migrations_directory_is_committed() -> None:
     assert (PROJECT_ROOT / "db" / "migrations").is_dir()

@@ -9,7 +9,6 @@ x-dagster-migrate-base: &dagster-migrate-base
 
 services:
   dagster-webserver:
-    build: .
     image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
     restart: always
     env_file:
@@ -32,7 +31,6 @@ services:
 
   dagster-daemon:
     image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
-    build: .
     restart: always
     env_file:
       - path: .env

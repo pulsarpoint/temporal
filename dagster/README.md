@@ -25,6 +25,10 @@ make up
 make logs
 ```
 
+`make up` pulls `DAGSTER_IMAGE` and starts the stack. It does not build the
+image on the remote machine; the image is produced by GitHub Actions and pushed
+to GHCR. Use `make build` only for local developer checks.
+
 The compose stack runs:
 
 - `dagster-webserver` on `DAGSTER_PORT`, default `3000`.
