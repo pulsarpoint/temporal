@@ -9,6 +9,11 @@ import psycopg
 from dagster import AssetKey, asset
 
 from corpscout_dagster.brreg.domain_enrichment import build_domain_proposals, discover_domain_candidates_for_signal
+from corpscout_dagster.brreg.enhanced_payload import (
+    BRREG_ENHANCED_SCHEMA_VERSION,
+    build_brreg_enhanced_payload,
+    enhanced_payload_hash,
+)
 from corpscout_dagster.brreg.models import BrregRawRecord, BrregWorkingRawRecordRow
 from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH, iter_brreg_bulk_records
 from corpscout_dagster.brreg.translation import (
@@ -30,9 +35,11 @@ from corpscout_dagster.brreg.working_store import (
     CreateEnrichmentRun,
     CreateTaskAttempt,
     FinishEnrichmentRun,
+    EnhancedPublishRecord,
     IncrementEnrichmentRunProgress,
     InsertDomainCandidate,
     InsertDomainProposal,
+    InsertEnhancedRecord,
     InsertTranslationResult,
     RawTaskRecord,
     TaskAttempt,
@@ -50,6 +57,8 @@ DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE = 25
 DEFAULT_DOMAIN_DNS_HEURISTIC_BATCH_SIZE = 100
 DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE = 500
 DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 20
+DEFAULT_ENHANCED_RECORD_BATCH_SIZE = 500
+DEFAULT_PUBLISH_ENHANCED_RECORD_BATCH_SIZE = 250
 
 DOMAIN_SIGNAL_ASSET_KEYS = [
     AssetKey("brreg_domain_website_field_candidates"),
@@ -164,6 +173,26 @@ def brreg_domain_proposals(context) -> dict[str, int]:
         database_url=_corpscout_database_url(),
         batch_size=_env_int("BRREG_DOMAIN_PROPOSAL_BATCH_SIZE", DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE),
         max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+    )
+
+
+@asset(name="brreg_enhanced_records", deps=[AssetKey("brreg_translation_results"), AssetKey("brreg_domain_proposals")])
+def brreg_enhanced_records(context) -> dict[str, int]:
+    return materialize_brreg_enhanced_records(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        batch_size=_env_int("BRREG_ENHANCED_RECORD_BATCH_SIZE", DEFAULT_ENHANCED_RECORD_BATCH_SIZE),
+    )
+
+
+@asset(name="brreg_publish_enhanced_records", deps=[AssetKey("brreg_enhanced_records")])
+def brreg_publish_enhanced_records(context) -> dict[str, int]:
+    return materialize_brreg_publish_enhanced_records(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        batch_size=_env_int("BRREG_PUBLISH_ENHANCED_RECORD_BATCH_SIZE", DEFAULT_PUBLISH_ENHANCED_RECORD_BATCH_SIZE),
     )
 
 
@@ -616,6 +645,211 @@ def materialize_brreg_domain_proposals(
     return result
 
 
+def materialize_brreg_enhanced_records(
+    context,
+    *,
+    connection_factory,
+    database_url: str,
+    batch_size: int,
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    rows_seen = 0
+    rows_completed = 0
+    rows_failed = 0
+    enhanced_records_built = 0
+    enrichment_run_id: str | None = None
+    task_type = "build_enhanced"
+    with connection_factory(database_url) as conn:
+        with conn.cursor() as cursor:
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=_enrichment_run_key(context, task_type),
+                    run_type=task_type,
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id},
+                )
+            )
+        conn.commit()
+
+        try:
+            with conn.cursor() as cursor:
+                records = BrregWorkingStore(cursor).fetch_pending_enhanced_build_records(limit=batch_size)
+
+            for build_record in records:
+                rows_seen += 1
+                attempt = _create_task_attempt(
+                    conn=conn,
+                    enrichment_run_id=enrichment_run_id,
+                    record=build_record.record,
+                    task_type=task_type,
+                )
+                try:
+                    _build_record_enhanced_payload(
+                        conn=conn,
+                        enrichment_run_id=enrichment_run_id,
+                        attempt=attempt,
+                        build_record=build_record,
+                        dagster_run_id=context.run_id,
+                    )
+                    rows_completed += 1
+                    enhanced_records_built += 1
+                except Exception as exc:
+                    conn.rollback()
+                    _mark_record_task_failed(
+                        conn=conn,
+                        enrichment_run_id=enrichment_run_id,
+                        attempt=attempt,
+                        record=build_record.record,
+                        task_type=task_type,
+                        error=str(exc),
+                    )
+                    rows_failed += 1
+
+            context.log.info(
+                "BRREG enhanced record batch committed rows_seen=%s rows_completed=%s rows_failed=%s enhanced_records_built=%s",
+                rows_seen,
+                rows_completed,
+                rows_failed,
+                enhanced_records_built,
+            )
+
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(
+                        enrichment_run_id=enrichment_run_id,
+                        status="succeeded" if rows_failed == 0 else "failed",
+                        error=None if rows_failed == 0 else f"{rows_failed} enhanced record rows failed",
+                    )
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if enrichment_run_id is not None:
+                with conn.cursor() as cursor:
+                    BrregWorkingStore(cursor).finish_enrichment_run(
+                        FinishEnrichmentRun(
+                            enrichment_run_id=enrichment_run_id,
+                            status="failed",
+                            error=str(exc),
+                        )
+                    )
+                conn.commit()
+            raise
+
+    result = {
+        "rows_seen": rows_seen,
+        "rows_completed": rows_completed,
+        "rows_failed": rows_failed,
+        "enhanced_records_built": enhanced_records_built,
+    }
+    context.add_output_metadata({**result, "dagster_run_id": context.run_id, "task_type": task_type})
+    return result
+
+
+def materialize_brreg_publish_enhanced_records(
+    context,
+    *,
+    connection_factory,
+    database_url: str,
+    batch_size: int,
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    rows_seen = 0
+    rows_completed = 0
+    rows_failed = 0
+    enrichment_run_id: str | None = None
+    task_type = "publish"
+    with connection_factory(database_url) as conn:
+        with conn.cursor() as cursor:
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=_enrichment_run_key(context, task_type),
+                    run_type=task_type,
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id},
+                )
+            )
+        conn.commit()
+
+        try:
+            with conn.cursor() as cursor:
+                records = BrregWorkingStore(cursor).fetch_pending_enhanced_publish_records(limit=batch_size)
+
+            for publish_record in records:
+                rows_seen += 1
+                raw_record = _raw_task_record_from_publish_record(publish_record)
+                attempt = _create_task_attempt(
+                    conn=conn,
+                    enrichment_run_id=enrichment_run_id,
+                    record=raw_record,
+                    task_type=task_type,
+                )
+                try:
+                    _publish_record_to_corpscout(
+                        conn=conn,
+                        enrichment_run_id=enrichment_run_id,
+                        attempt=attempt,
+                        record=publish_record,
+                        dagster_run_id=context.run_id,
+                    )
+                    rows_completed += 1
+                except Exception as exc:
+                    conn.rollback()
+                    _mark_record_task_failed(
+                        conn=conn,
+                        enrichment_run_id=enrichment_run_id,
+                        attempt=attempt,
+                        record=raw_record,
+                        task_type=task_type,
+                        error=str(exc),
+                    )
+                    with conn.cursor() as cursor:
+                        BrregWorkingStore(cursor).mark_enhanced_record_publish_failed(
+                            enhanced_record_id=publish_record.enhanced_record_id,
+                            error=str(exc),
+                        )
+                    conn.commit()
+                    rows_failed += 1
+
+            context.log.info(
+                "BRREG enhanced publish batch committed rows_seen=%s rows_completed=%s rows_failed=%s",
+                rows_seen,
+                rows_completed,
+                rows_failed,
+            )
+
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(
+                        enrichment_run_id=enrichment_run_id,
+                        status="succeeded" if rows_failed == 0 else "failed",
+                        error=None if rows_failed == 0 else f"{rows_failed} enhanced publish rows failed",
+                    )
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if enrichment_run_id is not None:
+                with conn.cursor() as cursor:
+                    BrregWorkingStore(cursor).finish_enrichment_run(
+                        FinishEnrichmentRun(
+                            enrichment_run_id=enrichment_run_id,
+                            status="failed",
+                            error=str(exc),
+                        )
+                    )
+                conn.commit()
+            raise
+
+    result = {
+        "rows_seen": rows_seen,
+        "rows_completed": rows_completed,
+        "rows_failed": rows_failed,
+    }
+    context.add_output_metadata({**result, "dagster_run_id": context.run_id, "task_type": task_type})
+    return result
+
+
 def _iter_working_row_batches(
     records: Iterable[BrregRawRecord | None],
     *,
@@ -865,6 +1099,86 @@ def _merge_record_domain_proposals(*, conn, enrichment_run_id: str, attempt: Tas
         )
     conn.commit()
     return len(proposals)
+
+
+def _build_record_enhanced_payload(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    build_record,
+    dagster_run_id: str,
+) -> None:
+    payload = build_brreg_enhanced_payload(
+        record=build_record.record,
+        payload_hash=build_record.payload_hash,
+        translation_status=build_record.translation_status,
+        translation_payload=build_record.translation_payload,
+        domain_status=build_record.domain_status,
+        domain_proposals=build_record.domain_proposals,
+        task_statuses=build_record.task_statuses,
+        dagster_run_id=dagster_run_id,
+    )
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        store.upsert_enhanced_record(
+            InsertEnhancedRecord(
+                raw_record_id=build_record.record.id,
+                task_attempt_id=attempt.id,
+                schema_version=BRREG_ENHANCED_SCHEMA_VERSION,
+                enhanced_payload=payload,
+                enhanced_payload_hash=enhanced_payload_hash(payload),
+                metadata={
+                    "source": "dagster",
+                    "task_statuses": build_record.task_statuses,
+                    "raw_payload_hash": build_record.payload_hash,
+                },
+            )
+        )
+        store.finish_task_attempt(task_attempt_id=attempt.id, status="succeeded", error=None)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
+        )
+    conn.commit()
+
+
+def _publish_record_to_corpscout(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: EnhancedPublishRecord,
+    dagster_run_id: str,
+) -> None:
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        raw_input_id = store.upsert_corpscout_raw_input(record=record, run_id=dagster_run_id)
+        enhanced_input_id = store.upsert_corpscout_enhanced_raw_input(
+            record=record,
+            raw_input_id=raw_input_id,
+            dagster_run_id=dagster_run_id,
+            dagster_asset_key="brreg_publish_enhanced_records",
+        )
+        store.mark_enhanced_record_published(
+            enhanced_record_id=record.enhanced_record_id,
+            corpscout_raw_input_id=raw_input_id,
+            corpscout_enhanced_raw_input_id=enhanced_input_id,
+        )
+        store.finish_task_attempt(task_attempt_id=attempt.id, status="succeeded", error=None)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
+        )
+    conn.commit()
+
+
+def _raw_task_record_from_publish_record(record: EnhancedPublishRecord) -> RawTaskRecord:
+    return RawTaskRecord(
+        id=record.raw_record_id,
+        organization_number=record.organization_number,
+        organization_name=record.organization_name,
+        website=record.website,
+        raw_payload=record.raw_payload,
+    )
 
 
 def _mark_record_task_failed(

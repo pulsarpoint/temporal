@@ -9,6 +9,8 @@ from corpscout_dagster.brreg.assets import (
     brreg_domain_proposals,
     brreg_domain_website_field_candidates,
     brreg_domain_wikidata_candidates,
+    brreg_enhanced_records,
+    brreg_publish_enhanced_records,
     brreg_translation_results,
     brreg_working_raw_records,
 )
@@ -27,6 +29,8 @@ defs = Definitions(
         brreg_working_raw_records,
         brreg_translation_results,
         *BRREG_DOMAIN_ASSETS,
+        brreg_enhanced_records,
+        brreg_publish_enhanced_records,
     ],
     jobs=[
         define_asset_job("brreg_ingest_job", selection=AssetSelection.assets(brreg_working_raw_records)),
@@ -44,5 +48,7 @@ defs = Definitions(
         ),
         define_asset_job("brreg_domain_proposals_job", selection=AssetSelection.assets(brreg_domain_proposals)),
         define_asset_job("brreg_domain_enrichment_job", selection=AssetSelection.assets(*BRREG_DOMAIN_ASSETS)),
+        define_asset_job("brreg_enhanced_records_job", selection=AssetSelection.assets(brreg_enhanced_records)),
+        define_asset_job("brreg_publish_enhanced_records_job", selection=AssetSelection.assets(brreg_publish_enhanced_records)),
     ],
 )

@@ -70,6 +70,10 @@ BRREG now has separate Dagster jobs for each independent stage:
 - `brreg_domain_dns_heuristic_job` materializes DNS heuristic signal rows.
 - `brreg_domain_proposals_job` scores signal rows into proposed domains.
 - `brreg_domain_enrichment_job` materializes all domain signal jobs and proposals.
+- `brreg_enhanced_records_job` builds Corpscout-compatible `brreg.enhanced.v1`
+  JSON into `dagster_brreg.enhanced_records`.
+- `brreg_publish_enhanced_records_job` upserts original raw inputs and enhanced
+  JSON artifacts into Corpscout handoff tables.
 
 Translation and domain enrichment both read current rows from
 `dagster_brreg.raw_records`; they do not depend on each other. The translation
@@ -85,6 +89,21 @@ claiming pending batches until `BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or
 there are no pending records left for that signal.
 Default translation/domain jobs claim records that have not attempted that task
 yet; retrying failed attempts should be exposed as an explicit retry job/action.
+
+The enhanced-record job requires a successful or skipped translation task. It
+uses domain proposals when they exist; domain signal work remains best-effort
+and each signal status is preserved in Dagster task-state views. Financials are
+currently emitted as `not_available` until the BRREG financial extraction job is
+implemented. Publishing writes directly to Postgres:
+
+```text
+dagster_brreg.enhanced_records
+  -> brreg_company_raw_inputs
+  -> brreg_enhanced_raw_inputs
+```
+
+Corpscout remains responsible for unpacking `brreg_enhanced_raw_inputs` into
+normalized `brreg_source_*` tables and creating suggestions.
 
 ## BRREG Observability Views
 
@@ -131,6 +150,8 @@ BRREG_DOMAIN_WIKIDATA_BATCH_SIZE=25
 BRREG_DOMAIN_DNS_HEURISTIC_BATCH_SIZE=100
 BRREG_DOMAIN_PROPOSAL_BATCH_SIZE=500
 BRREG_DOMAIN_MAX_BATCHES_PER_RUN=20
+BRREG_ENHANCED_RECORD_BATCH_SIZE=500
+BRREG_PUBLISH_ENHANCED_RECORD_BATCH_SIZE=250
 BRREG_TRANSLATION_MODEL=qwen3:6b
 BRREG_TRANSLATION_PROMPT_VERSION=v1
 LLM_BASE_URL=http://100.77.62.33:8888

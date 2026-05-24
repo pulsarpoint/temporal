@@ -132,6 +132,17 @@ class DomainCandidateRow:
 
 
 @dataclass(frozen=True)
+class DomainProposalRow:
+    domain: str
+    normalized_domain: str
+    score: int
+    signals: list[str]
+    status: str
+    evidence: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class InsertDomainProposal:
     raw_record_id: str
     task_attempt_id: str
@@ -141,6 +152,45 @@ class InsertDomainProposal:
     signals: list[str]
     evidence: dict[str, Any]
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class EnhancedBuildRecord:
+    record: RawTaskRecord
+    registration_status: str | None
+    country_iso2: str
+    payload_hash: str
+    translation_status: str
+    translation_payload: dict[str, Any]
+    domain_status: str
+    domain_proposals: list[DomainProposalRow]
+    task_statuses: dict[str, str]
+
+
+@dataclass(frozen=True)
+class InsertEnhancedRecord:
+    raw_record_id: str
+    task_attempt_id: str
+    schema_version: str
+    enhanced_payload: dict[str, Any]
+    enhanced_payload_hash: str
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class EnhancedPublishRecord:
+    enhanced_record_id: str
+    raw_record_id: str
+    organization_number: str
+    organization_name: str | None
+    registration_status: str | None
+    website: str | None
+    country_iso2: str
+    raw_payload: dict[str, Any]
+    payload_hash: str
+    schema_version: str
+    enhanced_payload: dict[str, Any]
+    enhanced_payload_hash: str
 
 
 class BrregWorkingStore:
@@ -406,6 +456,100 @@ class BrregWorkingStore:
         if params_seq:
             self._cursor.executemany(UPSERT_DOMAIN_PROPOSAL_SQL, params_seq)
 
+    def fetch_pending_enhanced_build_records(self, *, limit: int) -> list[EnhancedBuildRecord]:
+        self._cursor.execute(FETCH_PENDING_ENHANCED_BUILD_RECORDS_SQL, {"limit": limit})
+        return [_enhanced_build_record_from_row(row) for row in self._cursor.fetchall()]
+
+    def upsert_enhanced_record(self, command: InsertEnhancedRecord) -> str:
+        self._cursor.execute(
+            UPSERT_ENHANCED_RECORD_SQL,
+            {
+                "raw_record_id": command.raw_record_id,
+                "task_attempt_id": command.task_attempt_id,
+                "schema_version": command.schema_version,
+                "enhanced_payload": _json(command.enhanced_payload),
+                "enhanced_payload_hash": command.enhanced_payload_hash,
+                "metadata": _json(command.metadata),
+            },
+        )
+        return _single_value(self._cursor.fetchone())
+
+    def fetch_pending_enhanced_publish_records(self, *, limit: int) -> list[EnhancedPublishRecord]:
+        self._cursor.execute(FETCH_PENDING_ENHANCED_PUBLISH_RECORDS_SQL, {"limit": limit})
+        return [_enhanced_publish_record_from_row(row) for row in self._cursor.fetchall()]
+
+    def upsert_corpscout_raw_input(self, *, record: EnhancedPublishRecord, run_id: str) -> str:
+        self._cursor.execute(
+            UPSERT_CORPSCOUT_RAW_INPUT_SQL,
+            {
+                "source_native_id": record.organization_number,
+                "organization_number": record.organization_number,
+                "organization_name": record.organization_name,
+                "registration_status": record.registration_status,
+                "website": record.website,
+                "country_iso2": record.country_iso2,
+                "raw_payload": _json(record.raw_payload),
+                "payload_hash": record.payload_hash,
+                "run_id": run_id,
+            },
+        )
+        return _single_value(self._cursor.fetchone())
+
+    def upsert_corpscout_enhanced_raw_input(
+        self,
+        *,
+        record: EnhancedPublishRecord,
+        raw_input_id: str,
+        dagster_run_id: str,
+        dagster_asset_key: str,
+    ) -> str:
+        enhancement = _dict(record.enhanced_payload.get("enhancement"))
+        self._cursor.execute(
+            UPSERT_CORPSCOUT_ENHANCED_RAW_INPUT_SQL,
+            {
+                "raw_input_id": raw_input_id,
+                "organization_number": record.organization_number,
+                "payload_hash": record.payload_hash,
+                "enhancement_version": record.schema_version,
+                "attempt": 1,
+                "dagster_run_id": dagster_run_id,
+                "dagster_asset_key": dagster_asset_key,
+                "status": str(enhancement.get("status") or "partial"),
+                "section_statuses": _json(_dict(enhancement.get("section_statuses"))),
+                "enhanced_payload": _json(record.enhanced_payload),
+                "error": None,
+                "metadata": _json({"enhanced_payload_hash": record.enhanced_payload_hash}),
+                "started_at": enhancement.get("started_at"),
+                "enhanced_at": enhancement.get("finished_at"),
+            },
+        )
+        return _single_value(self._cursor.fetchone())
+
+    def mark_enhanced_record_published(
+        self,
+        *,
+        enhanced_record_id: str,
+        corpscout_raw_input_id: str,
+        corpscout_enhanced_raw_input_id: str,
+    ) -> None:
+        self._cursor.execute(
+            MARK_ENHANCED_RECORD_PUBLISHED_SQL,
+            {
+                "enhanced_record_id": enhanced_record_id,
+                "corpscout_raw_input_id": corpscout_raw_input_id,
+                "corpscout_enhanced_raw_input_id": corpscout_enhanced_raw_input_id,
+            },
+        )
+
+    def mark_enhanced_record_publish_failed(self, *, enhanced_record_id: str, error: str) -> None:
+        self._cursor.execute(
+            MARK_ENHANCED_RECORD_PUBLISH_FAILED_SQL,
+            {
+                "enhanced_record_id": enhanced_record_id,
+                "error": error,
+            },
+        )
+
 
 def _json(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
@@ -445,6 +589,71 @@ def _domain_candidate_row_from_row(row) -> DomainCandidateRow:
         evidence=evidence,
         metadata=metadata,
     )
+
+
+def _enhanced_build_record_from_row(row) -> EnhancedBuildRecord:
+    raw_payload = _json_value(row[6], {})
+    translation_payload = _json_value(row[9], {})
+    domain_proposals = _json_value(row[11], [])
+    task_statuses = _json_value(row[12], {})
+    return EnhancedBuildRecord(
+        record=RawTaskRecord(
+            id=str(row[0]),
+            organization_number=str(row[1]),
+            organization_name=str(row[2]) if row[2] is not None else None,
+            website=str(row[4]) if row[4] is not None else None,
+            raw_payload=raw_payload,
+        ),
+        registration_status=str(row[3]) if row[3] is not None else None,
+        country_iso2=str(row[5]),
+        payload_hash=str(row[7]),
+        translation_status=str(row[8]),
+        translation_payload=translation_payload,
+        domain_status=str(row[10]) if row[10] is not None else "skipped",
+        domain_proposals=[_domain_proposal_row_from_mapping(item) for item in domain_proposals],
+        task_statuses={str(key): str(value) for key, value in task_statuses.items()},
+    )
+
+
+def _enhanced_publish_record_from_row(row) -> EnhancedPublishRecord:
+    return EnhancedPublishRecord(
+        enhanced_record_id=str(row[0]),
+        raw_record_id=str(row[1]),
+        organization_number=str(row[2]),
+        organization_name=str(row[3]) if row[3] is not None else None,
+        registration_status=str(row[4]) if row[4] is not None else None,
+        website=str(row[5]) if row[5] is not None else None,
+        country_iso2=str(row[6]),
+        raw_payload=_json_value(row[7], {}),
+        payload_hash=str(row[8]),
+        schema_version=str(row[9]),
+        enhanced_payload=_json_value(row[10], {}),
+        enhanced_payload_hash=str(row[11]),
+    )
+
+
+def _domain_proposal_row_from_mapping(value: dict[str, Any]) -> DomainProposalRow:
+    return DomainProposalRow(
+        domain=str(value.get("domain") or ""),
+        normalized_domain=str(value.get("normalized_domain") or ""),
+        score=int(value.get("score") or 0),
+        signals=[str(signal) for signal in value.get("signals") or []],
+        status=str(value.get("status") or "proposed"),
+        evidence=_dict(value.get("evidence")),
+        metadata=_dict(value.get("metadata")),
+    )
+
+
+def _json_value(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
 
 
 def _unique_translation_keys(keys: list[TranslationCacheKey]) -> list[TranslationCacheKey]:
@@ -863,4 +1072,248 @@ SET
     evidence = EXCLUDED.evidence,
     metadata = dagster_brreg.domain_proposals.metadata || EXCLUDED.metadata,
     updated_at = now()
+"""
+
+FETCH_PENDING_ENHANCED_BUILD_RECORDS_SQL = """
+WITH latest_translation AS (
+    SELECT DISTINCT ON (raw_record_id)
+        raw_record_id,
+        status,
+        translated_payload,
+        created_at
+    FROM dagster_brreg.translation_results
+    WHERE status IN ('succeeded', 'skipped')
+    ORDER BY raw_record_id, created_at DESC
+),
+proposal_rows AS (
+    SELECT
+        raw_record_id,
+        jsonb_agg(
+            jsonb_build_object(
+                'domain', domain,
+                'normalized_domain', normalized_domain,
+                'score', score,
+                'signals', signals,
+                'status', status,
+                'evidence', evidence,
+                'metadata', metadata
+            )
+            ORDER BY score DESC, normalized_domain ASC
+        ) AS proposals
+    FROM dagster_brreg.domain_proposals
+    WHERE status IN ('proposed', 'accepted')
+    GROUP BY raw_record_id
+),
+task_status_rows AS (
+    SELECT
+        raw_record_id,
+        jsonb_object_agg(task_type, status ORDER BY task_type) AS task_statuses
+    FROM dagster_brreg.raw_record_task_states
+    GROUP BY raw_record_id
+)
+SELECT
+    rr.id,
+    rr.organization_number,
+    rr.organization_name,
+    rr.registration_status,
+    rr.website,
+    rr.country_iso2,
+    rr.raw_payload,
+    rr.payload_hash,
+    lt.status AS translation_status,
+    coalesce(lt.translated_payload, '{}'::jsonb) AS translation_payload,
+    coalesce(mts.status, 'skipped') AS domain_status,
+    coalesce(pr.proposals, '[]'::jsonb) AS domain_proposals,
+    coalesce(tsr.task_statuses, '{}'::jsonb) AS task_statuses
+FROM dagster_brreg.raw_records rr
+JOIN latest_translation lt ON lt.raw_record_id = rr.id
+JOIN dagster_brreg.raw_record_task_states tts
+  ON tts.raw_record_id = rr.id
+ AND tts.task_type = 'translate'
+ AND tts.status IN ('succeeded', 'skipped')
+LEFT JOIN dagster_brreg.raw_record_task_states mts
+  ON mts.raw_record_id = rr.id
+ AND mts.task_type = 'merge_domain_proposals'
+LEFT JOIN proposal_rows pr ON pr.raw_record_id = rr.id
+LEFT JOIN task_status_rows tsr ON tsr.raw_record_id = rr.id
+WHERE rr.is_current = true
+  AND (
+      mts.status IN ('succeeded', 'skipped')
+      OR NOT EXISTS (
+          SELECT 1
+          FROM dagster_brreg.domain_candidates dc
+          WHERE dc.raw_record_id = rr.id
+            AND dc.status IN ('candidate', 'accepted')
+      )
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM dagster_brreg.enhanced_records er
+      WHERE er.raw_record_id = rr.id
+        AND er.schema_version = 'brreg.enhanced.v1'
+        AND er.status IN ('built', 'published')
+        AND er.built_at >= greatest(
+            coalesce(tts.last_finished_at, '-infinity'::timestamptz),
+            coalesce(mts.last_finished_at, '-infinity'::timestamptz),
+            lt.created_at
+        )
+  )
+ORDER BY rr.last_seen_at ASC, rr.id ASC
+LIMIT %(limit)s
+"""
+
+UPSERT_ENHANCED_RECORD_SQL = """
+INSERT INTO dagster_brreg.enhanced_records (
+    raw_record_id,
+    task_attempt_id,
+    schema_version,
+    status,
+    enhanced_payload,
+    enhanced_payload_hash,
+    metadata
+) VALUES (
+    %(raw_record_id)s,
+    %(task_attempt_id)s,
+    %(schema_version)s,
+    'built',
+    %(enhanced_payload)s::jsonb,
+    %(enhanced_payload_hash)s,
+    %(metadata)s::jsonb
+)
+ON CONFLICT (raw_record_id, schema_version, enhanced_payload_hash) DO UPDATE
+SET
+    task_attempt_id = EXCLUDED.task_attempt_id,
+    status = CASE
+        WHEN dagster_brreg.enhanced_records.status = 'published' THEN 'published'
+        ELSE 'built'
+    END,
+    enhanced_payload = EXCLUDED.enhanced_payload,
+    metadata = dagster_brreg.enhanced_records.metadata || EXCLUDED.metadata,
+    built_at = now(),
+    error = NULL
+RETURNING id
+"""
+
+FETCH_PENDING_ENHANCED_PUBLISH_RECORDS_SQL = """
+SELECT
+    er.id,
+    rr.id AS raw_record_id,
+    rr.organization_number,
+    rr.organization_name,
+    rr.registration_status,
+    rr.website,
+    rr.country_iso2,
+    rr.raw_payload,
+    rr.payload_hash,
+    er.schema_version,
+    er.enhanced_payload,
+    er.enhanced_payload_hash
+FROM dagster_brreg.enhanced_records er
+JOIN dagster_brreg.raw_records rr ON rr.id = er.raw_record_id
+WHERE er.status IN ('built', 'publish_failed')
+  AND rr.is_current = true
+ORDER BY er.built_at ASC, er.id ASC
+LIMIT %(limit)s
+"""
+
+UPSERT_CORPSCOUT_RAW_INPUT_SQL = """
+INSERT INTO brreg_company_raw_inputs (
+    source_native_id,
+    organization_number,
+    organization_name,
+    registration_status,
+    website,
+    country_iso2,
+    raw_payload,
+    payload_hash,
+    run_id
+) VALUES (
+    %(source_native_id)s,
+    %(organization_number)s,
+    %(organization_name)s,
+    %(registration_status)s,
+    %(website)s,
+    %(country_iso2)s,
+    %(raw_payload)s::jsonb,
+    %(payload_hash)s,
+    %(run_id)s
+)
+ON CONFLICT (organization_number, payload_hash) DO UPDATE
+SET
+    last_seen_at = now(),
+    organization_name = EXCLUDED.organization_name,
+    registration_status = EXCLUDED.registration_status,
+    website = EXCLUDED.website,
+    country_iso2 = EXCLUDED.country_iso2,
+    raw_payload = EXCLUDED.raw_payload,
+    run_id = EXCLUDED.run_id,
+    updated_at = now()
+RETURNING id
+"""
+
+UPSERT_CORPSCOUT_ENHANCED_RAW_INPUT_SQL = """
+INSERT INTO brreg_enhanced_raw_inputs (
+    raw_input_id,
+    organization_number,
+    payload_hash,
+    enhancement_version,
+    attempt,
+    dagster_run_id,
+    dagster_asset_key,
+    status,
+    section_statuses,
+    enhanced_payload,
+    error,
+    metadata,
+    started_at,
+    enhanced_at
+) VALUES (
+    %(raw_input_id)s,
+    %(organization_number)s,
+    %(payload_hash)s,
+    %(enhancement_version)s,
+    %(attempt)s,
+    %(dagster_run_id)s,
+    %(dagster_asset_key)s,
+    %(status)s,
+    %(section_statuses)s::jsonb,
+    %(enhanced_payload)s::jsonb,
+    %(error)s,
+    %(metadata)s::jsonb,
+    %(started_at)s::timestamptz,
+    %(enhanced_at)s::timestamptz
+)
+ON CONFLICT (raw_input_id, payload_hash, enhancement_version, attempt) DO UPDATE
+SET
+    organization_number = EXCLUDED.organization_number,
+    dagster_run_id = EXCLUDED.dagster_run_id,
+    dagster_asset_key = EXCLUDED.dagster_asset_key,
+    status = EXCLUDED.status,
+    section_statuses = EXCLUDED.section_statuses,
+    enhanced_payload = EXCLUDED.enhanced_payload,
+    error = EXCLUDED.error,
+    metadata = brreg_enhanced_raw_inputs.metadata || EXCLUDED.metadata,
+    started_at = EXCLUDED.started_at,
+    enhanced_at = EXCLUDED.enhanced_at,
+    updated_at = now()
+RETURNING id
+"""
+
+MARK_ENHANCED_RECORD_PUBLISHED_SQL = """
+UPDATE dagster_brreg.enhanced_records
+SET
+    status = 'published',
+    corpscout_raw_input_id = %(corpscout_raw_input_id)s,
+    corpscout_enhanced_raw_input_id = %(corpscout_enhanced_raw_input_id)s,
+    published_at = now(),
+    error = NULL
+WHERE id = %(enhanced_record_id)s
+"""
+
+MARK_ENHANCED_RECORD_PUBLISH_FAILED_SQL = """
+UPDATE dagster_brreg.enhanced_records
+SET
+    status = 'publish_failed',
+    error = %(error)s
+WHERE id = %(enhanced_record_id)s
 """

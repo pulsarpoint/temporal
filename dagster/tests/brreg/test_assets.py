@@ -8,7 +8,11 @@ from corpscout_dagster.brreg.assets import (
     brreg_domain_proposals,
     brreg_domain_website_field_candidates,
     brreg_domain_wikidata_candidates,
+    brreg_enhanced_records,
+    brreg_publish_enhanced_records,
     brreg_translation_results,
+    materialize_brreg_enhanced_records,
+    materialize_brreg_publish_enhanced_records,
     materialize_brreg_domain_proposals,
     materialize_brreg_domain_signal_candidates,
     materialize_brreg_translation_results,
@@ -148,6 +152,8 @@ def test_definitions_include_brreg_working_raw_records_asset() -> None:
     assert "brreg_domain_wikidata_candidates" in asset_keys
     assert "brreg_domain_dns_heuristic_candidates" in asset_keys
     assert "brreg_domain_proposals" in asset_keys
+    assert "brreg_enhanced_records" in asset_keys
+    assert "brreg_publish_enhanced_records" in asset_keys
 
 
 def test_definitions_include_independent_brreg_jobs() -> None:
@@ -166,6 +172,9 @@ def test_definitions_include_independent_brreg_jobs() -> None:
     assert brreg_domain_proposals is not brreg_domain_duckduckgo_candidates
     assert brreg_domain_crtsh_candidates is not brreg_domain_wikidata_candidates
     assert brreg_domain_dns_heuristic_candidates is not brreg_domain_crtsh_candidates
+    assert "brreg_enhanced_records_job" in job_names
+    assert "brreg_publish_enhanced_records_job" in job_names
+    assert brreg_enhanced_records is not brreg_publish_enhanced_records
 
 
 def test_materialize_brreg_working_raw_records_writes_batches_and_progress() -> None:
@@ -439,3 +448,117 @@ def test_materialize_brreg_domain_proposals_scores_candidates_for_pending_record
     assert proposal_params[0]["normalized_domain"] == "bortigard.no"
     assert proposal_params[0]["score"] == 100
     assert proposal_params[0]["signals"] == ["website_field", "wikidata"]
+
+
+def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    raw_record_id = "00000000-0000-0000-0000-000000000010"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", raw_record_id, 1),
+        ("00000000-0000-0000-0000-000000000101",),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                "active",
+                None,
+                "NO",
+                {
+                    "organisasjonsnummer": "810202572",
+                    "navn": "BORTIGARD AS",
+                    "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
+                },
+                "payload-hash",
+                "succeeded",
+                {
+                    "terms": [
+                        {
+                            "category": "org_form",
+                            "original_text": "Aksjeselskap",
+                            "translated_text": "Limited Liability Company",
+                        }
+                    ]
+                },
+                "skipped",
+                [],
+                {"translate": "succeeded", "merge_domain_proposals": "skipped"},
+            )
+        ],
+    ]
+
+    result = materialize_brreg_enhanced_records(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        batch_size=50,
+    )
+
+    assert result["rows_seen"] == 1
+    assert result["rows_completed"] == 1
+    assert result["rows_failed"] == 0
+    sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
+    assert any("INSERT INTO dagster_brreg.enhanced_records" in sql for sql in sql_calls)
+    insert_params = next(
+        params
+        for sql, params in connection.cursor_instance.calls
+        if "INSERT INTO dagster_brreg.enhanced_records" in sql
+    )
+    assert '"schema_version":"brreg.enhanced.v1"' in insert_params["enhanced_payload"]
+    assert context.metadata[-1]["rows_completed"] == 1
+
+
+def test_materialize_brreg_publish_enhanced_records_writes_handoff_tables() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    raw_record_id = "00000000-0000-0000-0000-000000000010"
+    enhanced_record_id = "00000000-0000-0000-0000-000000000020"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", raw_record_id, 1),
+        ("00000000-0000-0000-0000-000000000101",),
+        ("00000000-0000-0000-0000-000000000201",),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                enhanced_record_id,
+                raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                "active",
+                None,
+                "NO",
+                {"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"},
+                "raw-payload-hash",
+                "brreg.enhanced.v1",
+                {
+                    "schema_version": "brreg.enhanced.v1",
+                    "enhancement": {
+                        "status": "partial",
+                        "section_statuses": {"financials": "not_available"},
+                    },
+                },
+                "enhanced-hash",
+            )
+        ],
+    ]
+
+    result = materialize_brreg_publish_enhanced_records(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        batch_size=50,
+    )
+
+    assert result["rows_seen"] == 1
+    assert result["rows_completed"] == 1
+    assert result["rows_failed"] == 0
+    sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
+    assert any("INSERT INTO brreg_company_raw_inputs" in sql for sql in sql_calls)
+    assert any("INSERT INTO brreg_enhanced_raw_inputs" in sql for sql in sql_calls)
+    assert any("status = 'published'" in sql for sql in sql_calls)
