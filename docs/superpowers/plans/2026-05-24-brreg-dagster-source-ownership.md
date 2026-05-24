@@ -385,9 +385,9 @@ def test_iter_brreg_bulk_records_sync_wrapper_yields_records() -> None:
                 BrregRawRecord.from_payload({"organisasjonsnummer": "910202572", "navn": "NEXT AS"}),
             ]
 
-    records = list(iter_brreg_bulk_records(client=FakeClient(), max_records=1))
+    records = list(iter_brreg_bulk_records(client=FakeClient()))
 
-    assert [record.organization_number for record in records] == ["810202572"]
+    assert [record.organization_number for record in records] == ["810202572", "910202572"]
 ```
 
 - [ ] **Step 2: Run tests to verify failure**
@@ -470,27 +470,22 @@ def parse_brreg_bulk_payload(content: bytes) -> list[BrregRawRecord]:
 def iter_brreg_bulk_records(
     *,
     client: BrregBulkRecordClient | None = None,
-    max_records: int | None = None,
 ) -> Iterator[BrregRawRecord]:
-    records = _run_async(_collect_records(client=client or BrregBulkClient(), max_records=max_records))
+    records = _run_async(_collect_records(client=client or BrregBulkClient()))
     yield from records
 
 
 @dlt.resource(name="brreg_raw_records", write_disposition="append")
-def brreg_raw_records(max_records: int | None = None) -> Iterator[dict]:
-    for record in iter_brreg_bulk_records(max_records=max_records):
+def brreg_raw_records() -> Iterator[dict]:
+    for record in iter_brreg_bulk_records():
         yield record.payload
 
 
 async def _collect_records(
     *,
     client: BrregBulkRecordClient,
-    max_records: int | None,
 ) -> list[BrregRawRecord]:
-    records = [record for record in await client.fetch_records() if record is not None]
-    if max_records is None:
-        return records
-    return records[:max_records]
+    return [record for record in await client.fetch_records() if record is not None]
 
 
 def _run_async(awaitable) -> list[BrregRawRecord]:
@@ -799,9 +794,8 @@ def build_brreg_raw_input_rows(
 def brreg_raw_inputs(context: AssetExecutionContext) -> dict[str, int]:
     connection_url = _corpscout_database_url()
     run_id = context.run_id
-    max_records = _optional_int_env("BRREG_MAX_RECORDS")
     rows = build_brreg_raw_input_rows(
-        records=iter_brreg_bulk_records(max_records=max_records),
+        records=iter_brreg_bulk_records(),
         run_id=run_id,
     )
     with psycopg.connect(connection_url) as conn:
@@ -825,11 +819,6 @@ def _corpscout_database_url() -> str:
     return value
 
 
-def _optional_int_env(name: str) -> int | None:
-    value = os.environ.get(name)
-    if value is None or value == "":
-        return None
-    return int(value)
 ```
 
 - [ ] **Step 4: Run asset tests**
@@ -873,12 +862,6 @@ Required environment:
 
 ```bash
 export CORPSCOUT_DATABASE_URL='postgresql://user:password@localhost:5432/corpscout'
-```
-
-Optional local limiter:
-
-```bash
-export BRREG_MAX_RECORDS=1000
 ```
 
 Run tests:
