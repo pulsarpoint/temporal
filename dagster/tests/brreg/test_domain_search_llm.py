@@ -10,6 +10,8 @@ from corpscout_dagster.brreg.domain_search_llm import (
     TriageDecision,
     VerificationDecision,
     build_domain_search_queries,
+    build_domain_verification_messages,
+    build_search_triage_messages,
     domain_crawler_browser_config_from_env,
     discover_web_search_llm_domain_candidates,
     parse_domain_verification_response,
@@ -208,6 +210,18 @@ def test_search_results_exclude_registry_and_directory_domains() -> None:
                     "text": "Lasse Evensen AS - Proff",
                 },
                 {
+                    "href": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.norsktakst.no%2Fmedlemsbedrift%2Flasse-evensen-as%2F&rut=abc",
+                    "text": "Lasse Evensen AS - Norsk takst",
+                },
+                {
+                    "href": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.takserer.no%2Ftakserer%2Flasse-evensen-as%2F&rut=abc",
+                    "text": "LASSE EVENSEN AS - takserer.no",
+                },
+                {
+                    "href": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fbedriftssok.webagent.no%2Ffirma%2Flasse-evensen-as-812157922&rut=abc",
+                    "text": "LASSE EVENSEN AS (812157922) | Bedriftssøk",
+                },
+                {
                     "href": "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.dansesonen.no%2F&rut=abc",
                     "text": "Dansesonen - Hjem",
                 },
@@ -222,6 +236,35 @@ def test_search_results_exclude_registry_and_directory_domains() -> None:
     )
 
     assert [result.normalized_domain for result in results] == ["dansesonen.no"]
+
+
+def test_llm_prompts_reject_third_party_profile_pages() -> None:
+    company = DomainSearchCompanyFacts(
+        organization_number="812157922",
+        organization_name="LASSE EVENSEN AS",
+        country="NO",
+        address="Ringstabekkveien 114 BEKKESTUA",
+    )
+    result = SearchResult(
+        query='"LASSE EVENSEN AS" Norway official website',
+        rank=1,
+        url="https://www.norsktakst.no/medlemsbedrift/lasse-evensen-as/",
+        domain="www.norsktakst.no",
+        normalized_domain="norsktakst.no",
+        title="Lasse Evensen AS - Norsk takst",
+        description="Member profile with organization number.",
+    )
+
+    triage_messages = build_search_triage_messages(company=company, results=[result], prompt_version="v1")
+    verification_messages = build_domain_verification_messages(
+        company=company,
+        result=result,
+        markdown="LASSE EVENSEN AS\nOrg nr 812157922\nMember profile",
+        prompt_version="v1",
+    )
+
+    assert "Reject third-party registry, directory, marketplace, association profile" in triage_messages[0]["content"]
+    assert "Reject third-party registry, directory, marketplace, association profile" in verification_messages[0]["content"]
 
 
 def test_domain_crawler_browser_config_defaults_to_headless_full_chromium(monkeypatch: pytest.MonkeyPatch) -> None:

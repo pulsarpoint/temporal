@@ -31,10 +31,13 @@ EXCLUDED_SEARCH_RESULT_DOMAINS = {
     "gulesider.no",
     "kompass.com",
     "nor47business.com",
+    "norsktakst.no",
     "proff.no",
     "purehelp.no",
     "regnskapstall.no",
+    "takserer.no",
     "virk.dk",
+    "webagent.no",
     "yra.no",
 }
 
@@ -377,7 +380,9 @@ def build_search_triage_messages(
             "role": "system",
             "content": (
                 "You identify whether DuckDuckGo search result domains are probably the official website "
-                "for a Norwegian registry company. Judge only domains present in the input. Return JSON only."
+                "for a Norwegian registry company. Reject third-party registry, directory, marketplace, association profile, "
+                "or public listing pages even when they contain exact organization numbers. Judge only domains present in "
+                "the input. Return JSON only."
             ),
         },
         {
@@ -409,6 +414,8 @@ def build_domain_verification_messages(
             "role": "system",
             "content": (
                 "You verify whether a crawled website belongs to a specific Norwegian registry company. "
+                "Reject third-party registry, directory, marketplace, association profile, or public listing pages even when "
+                "they contain exact organization numbers. "
                 "Require page evidence such as legal name, organization number, address, contact details, "
                 "or strongly matching business description. Return JSON only."
             ),
