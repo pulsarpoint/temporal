@@ -2,17 +2,17 @@
 
 ## Decision
 
-Dagster owns BRREG ingestion and enrichment. Corpscout owns storage, normalized source read models, suggestions, review, and approval.
+Dagster owns BRREG ingestion and enrichment, including a BRREG working store for in-progress artifacts. Corpscout owns published storage, normalized source read models, suggestions, review, and approval.
 
-The BRREG pipeline should not use Corpscout as an upstream source. Dagster should pull original BRREG data directly from BRREG, enrich it, and write both original and enhanced results into the Corpscout Postgres database. Corpscout should not know how BRREG orchestration works and should not periodically pull BRREG itself.
+The BRREG pipeline should not use Corpscout as an upstream source. Dagster should pull original BRREG data directly from BRREG, enrich it, and publish complete original and enhanced results into the Corpscout Postgres database. Corpscout should not know how BRREG orchestration works and should not periodically pull BRREG itself.
 
 ## Goals
 
 - Pull BRREG original raw company records directly from BRREG public endpoints.
-- Store original raw payloads in Corpscout Postgres.
+- Store original raw payloads in Dagster BRREG working tables during enrichment.
 - Produce enhanced BRREG JSON that follows the Corpscout BRREG enhanced schema.
-- Store enhanced payloads in Corpscout Postgres without using the Corpscout HTTP API.
-- Let Corpscout unpack enhanced JSON into normalized `brreg_source_*` tables and later create suggestions.
+- Publish original raw payloads and enhanced payloads to Corpscout Postgres without using the Corpscout HTTP API after enrichment is complete.
+- Let Corpscout unpack enhanced JSON into normalized `brreg_source_*` tables and create suggestions from those normalized tables.
 - Make pipeline status, retries, and failures visible in Dagster.
 - Keep the first implementation MVP-oriented and avoid preserving old orchestration compatibility unless it is cheaper than removing it.
 
@@ -28,12 +28,12 @@ The BRREG pipeline should not use Corpscout as an upstream source. Dagster shoul
 Dagster contains a BRREG graph with source-specific assets:
 
 - `brreg_raw_source`: downloads BRREG original rows from BRREG.
-- `brreg_raw_inputs`: upserts original rows into `brreg_company_raw_inputs`.
+- `brreg_working_raw_records`: upserts original rows into `dagster_brreg.raw_records`.
 - `brreg_translated_inputs`: translates fields needed by the enhanced schema.
 - `brreg_domain_enrichment`: discovers potential domains for each source company.
 - `brreg_financial_enrichment`: pulls and normalizes available financial fields.
-- `brreg_enhanced_raw_inputs`: builds the final enhanced BRREG JSON and writes it to Corpscout Postgres.
-- `brreg_enhanced_unpack`: asks the database-side Corpscout ingestion contract to unpack enhanced JSON into normalized source tables.
+- `brreg_enhanced_records`: builds the final enhanced BRREG JSON and writes it to `dagster_brreg.enhanced_records`.
+- `brreg_publish_enhanced_records`: publishes original raw plus final enhanced JSON to Corpscout Postgres and asks the database-side Corpscout ingestion contract to unpack enhanced JSON into normalized source tables.
 
 Corpscout keeps its normalized tables:
 
@@ -46,21 +46,22 @@ Corpscout keeps its normalized tables:
 - `brreg_source_domains`
 - `brreg_source_financials`
 
-The normalized `brreg_source_*` tables are Corpscout read models. Dagster writes raw and enhanced source facts, then invokes a database ingestion function or procedure that belongs to the Corpscout schema.
+The normalized `brreg_source_*` tables are Corpscout read models. Dagster stores in-progress raw and enhanced source facts in `dagster_brreg`, then publishes complete raw/enhanced outputs and invokes a database ingestion function or procedure that belongs to the Corpscout schema.
 
 ## Data Flow
 
 1. Dagster downloads BRREG data from the BRREG website or bulk endpoint.
 2. Dagster computes stable source identifiers and payload hashes.
-3. Dagster upserts original rows into `brreg_company_raw_inputs`.
+3. Dagster upserts original rows into `dagster_brreg.raw_records`.
 4. Dagster runs enrichment steps over the raw payload:
    - translation,
    - domain discovery,
    - financial extraction and USD conversion.
 5. Dagster builds one enhanced JSON object per BRREG raw input.
-6. Dagster inserts the enhanced JSON into `brreg_enhanced_raw_inputs`.
-7. Dagster invokes the Corpscout database unpack contract in the same Postgres environment.
-8. Corpscout reads normalized `brreg_source_*` tables for UI, filtering, review, and suggestion creation.
+6. Dagster inserts the enhanced JSON into `dagster_brreg.enhanced_records`.
+7. Dagster publishes original raw plus enhanced JSON to Corpscout Postgres.
+8. Dagster invokes the Corpscout database unpack contract in the same Postgres environment.
+9. Corpscout reads normalized `brreg_source_*` tables for UI, filtering, review, and suggestion creation.
 
 ## Database Contract
 
