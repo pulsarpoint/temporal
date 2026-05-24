@@ -76,6 +76,25 @@ def test_working_store_migration_has_independent_brreg_run_types() -> None:
     assert "'publish'" in sql
 
 
+def test_working_store_migration_creates_observability_views() -> None:
+    sql = ALL_UP_SQL
+
+    for view_name in [
+        "v_enrichment_run_summary",
+        "v_task_state_summary",
+        "v_failed_task_states",
+        "v_raw_record_task_overview",
+        "v_domain_enrichment_summary",
+    ]:
+        assert f"CREATE OR REPLACE VIEW dagster_brreg.{view_name}" in sql
+
+    assert "jsonb_object_agg(" in sql
+    assert "rts.task_type" in sql
+    assert "domain_candidates_by_signal" in sql
+    assert "best_domain" in sql
+    assert "next_retry_at <= now()" in sql
+
+
 def test_working_store_migration_down_drops_schema() -> None:
     sql = DOWN_SQL.read_text()
 

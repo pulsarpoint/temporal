@@ -86,6 +86,40 @@ there are no pending records left for that signal.
 Default translation/domain jobs claim records that have not attempted that task
 yet; retrying failed attempts should be exposed as an explicit retry job/action.
 
+## BRREG Observability Views
+
+Migration `000005` adds read-only views for checking what has run, what failed,
+what is ready to retry, and which domains were proposed:
+
+- `dagster_brreg.v_enrichment_run_summary`
+- `dagster_brreg.v_task_state_summary`
+- `dagster_brreg.v_failed_task_states`
+- `dagster_brreg.v_raw_record_task_overview`
+- `dagster_brreg.v_domain_enrichment_summary`
+
+Useful queries:
+
+```sql
+SELECT task_type, status, row_count, retry_ready_count, stale_running_count, next_retry_at
+FROM dagster_brreg.v_task_state_summary
+ORDER BY task_type, status;
+```
+
+```sql
+SELECT organization_number, organization_name, task_type, status, attempt_count, next_retry_at, last_error
+FROM dagster_brreg.v_failed_task_states
+ORDER BY next_retry_at NULLS LAST, updated_at DESC
+LIMIT 100;
+```
+
+```sql
+SELECT organization_number, organization_name, best_domain, best_domain_score, domain_candidates_by_signal
+FROM dagster_brreg.v_domain_enrichment_summary
+WHERE domain_proposal_count > 0
+ORDER BY best_domain_score DESC NULLS LAST
+LIMIT 100;
+```
+
 Optional environment:
 
 ```bash
