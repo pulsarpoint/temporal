@@ -4,7 +4,6 @@ from dagster import AssetSelection, Definitions, define_asset_job
 
 from corpscout_dagster.brreg.assets import (
     brreg_domain_crtsh_candidates,
-    brreg_domain_dns_heuristic_candidates,
     brreg_domain_duckduckgo_candidates,
     brreg_domain_proposals,
     brreg_domain_website_field_candidates,
@@ -20,7 +19,6 @@ BRREG_DOMAIN_ASSETS = [
     brreg_domain_duckduckgo_candidates,
     brreg_domain_crtsh_candidates,
     brreg_domain_wikidata_candidates,
-    brreg_domain_dns_heuristic_candidates,
     brreg_domain_proposals,
 ]
 
@@ -42,10 +40,6 @@ defs = Definitions(
         define_asset_job("brreg_domain_duckduckgo_job", selection=AssetSelection.assets(brreg_domain_duckduckgo_candidates)),
         define_asset_job("brreg_domain_crtsh_job", selection=AssetSelection.assets(brreg_domain_crtsh_candidates)),
         define_asset_job("brreg_domain_wikidata_job", selection=AssetSelection.assets(brreg_domain_wikidata_candidates)),
-        define_asset_job(
-            "brreg_domain_dns_heuristic_job",
-            selection=AssetSelection.assets(brreg_domain_dns_heuristic_candidates),
-        ),
         define_asset_job("brreg_domain_proposals_job", selection=AssetSelection.assets(brreg_domain_proposals)),
         define_asset_job("brreg_domain_enrichment_job", selection=AssetSelection.assets(*BRREG_DOMAIN_ASSETS)),
         define_asset_job("brreg_enhanced_records_job", selection=AssetSelection.assets(brreg_enhanced_records)),

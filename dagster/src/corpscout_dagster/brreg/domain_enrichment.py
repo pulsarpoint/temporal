@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
-import re
-import socket
 import time
 import urllib.parse
 from dataclasses import dataclass
@@ -33,58 +31,12 @@ _CERTSH_BACKOFF_UNTIL: float = 0.0
 _certsh_lock: asyncio.Lock | None = None
 _wikidata_lock: asyncio.Lock | None = None
 
-_LEGAL_RE = re.compile(
-    "|".join(
-        [
-            r"\bprivate limited company\b",
-            r"\bpublic limited company\b",
-            r"\baksjeselskap\b",
-            r"\bannpartselskab\b",
-            r"\banpartsselskab\b",
-            r"\baktieselskab\b",
-            r"\baksjonærselskap\b",
-            r"\bincorporated\b",
-            r"\bcorporation\b",
-            r"\blimited liability company\b",
-            r"\blimited liability partnership\b",
-            r"\bllc\b",
-            r"\bllp\b",
-            r"\binc\b",
-            r"\bltd\b",
-            r"\bplc\b",
-            r"\bcorp\b",
-            r"\bco\b",
-            r"\b(as|asa|ans|da|ba|sa|nuf|ks|sf)\b",
-            r"\b(gmbh|ag|kg|ohg|kgaa|eg|gbr|ug)\b",
-            r"\b(srl|spa|sas|snc|sapa|scarl)\b",
-            r"\b(sarl|sas|sc|snc|sca)\b",
-            r"\b(sl|sa|cb|scp)\b",
-        ]
-    ),
-    re.IGNORECASE,
-)
-
-_COUNTRY_TLD_EXCEPTIONS: dict[str, str] = {
-    "GB": ".co.uk",
-    "US": ".com",
-    "AU": ".com.au",
-    "NZ": ".co.nz",
-    "JP": ".co.jp",
-    "KR": ".co.kr",
-    "BR": ".com.br",
-    "MX": ".com.mx",
-    "AR": ".com.ar",
-    "ZA": ".co.za",
-    "IN": ".co.in",
-}
-
 _DOMAIN_SIGNAL_PRIORITY = {
     "website_field": 0,
     "wikidata": 1,
     "duckduckgo": 2,
     "crtsh": 3,
     "certsh": 3,
-    "heuristic": 4,
 }
 
 
@@ -135,7 +87,6 @@ async def discover_domain_candidates(
             _duckduckgo_signal(name, country),
             _wikidata_signal(name),
             _certsh_signal(name),
-            _heuristic_signal(name, country),
             return_exceptions=True,
         )
         for batch in signal_batches:
@@ -178,8 +129,6 @@ async def discover_domain_candidates_for_signal(
         signal_rows = await _wikidata_signal(name)
     elif signal in ("crtsh", "certsh"):
         signal_rows = await _certsh_signal(name)
-    elif signal == "heuristic":
-        signal_rows = await _heuristic_signal(name, country)
     else:
         raise ValueError(f"unknown domain signal {signal!r}")
 
@@ -274,11 +223,6 @@ def _wikidata_lock_() -> asyncio.Lock:
     return _wikidata_lock
 
 
-def _country_tld(country: str) -> str:
-    code = country.upper()
-    return _COUNTRY_TLD_EXCEPTIONS.get(code, f".{code.lower()}")
-
-
 def _safe_domain(url: str) -> str | None:
     if not url:
         return None
@@ -299,47 +243,6 @@ def _safe_domain(url: str) -> str | None:
     if "." not in host:
         return None
     return host
-
-
-def _company_slug(name: str) -> str:
-    value = _LEGAL_RE.sub("", name).lower()
-    value = re.sub(r"[^a-z0-9]+", "-", value)
-    return value.strip("-")
-
-
-def _candidate_domains(name: str, country: str) -> list[str]:
-    slug = _company_slug(name)
-    if not slug or len(slug) < 2:
-        return []
-    slug_clean = slug.lstrip("0123456789-") or slug
-    if len(slug_clean) < 2:
-        slug_clean = slug
-    tlds = [".com"]
-    country_tld = _country_tld(country)
-    if country_tld != ".com":
-        tlds = [country_tld, ".com"]
-    seen: set[str] = set()
-    candidates: list[str] = []
-    for tld in tlds:
-        domain = slug_clean + tld
-        if domain not in seen:
-            seen.add(domain)
-            candidates.append(domain)
-        slug_nohyphen = slug_clean.replace("-", "")
-        if slug_nohyphen != slug_clean and len(slug_nohyphen) >= 3:
-            domain2 = slug_nohyphen + tld
-            if domain2 not in seen:
-                seen.add(domain2)
-                candidates.append(domain2)
-    return candidates
-
-
-def _dns_resolve(domain: str) -> bool:
-    try:
-        socket.getaddrinfo(domain, None, proto=socket.IPPROTO_TCP)
-        return True
-    except OSError:
-        return False
 
 
 def _sparql_literal(value: str) -> str:
@@ -473,22 +376,6 @@ async def _certsh_signal(company_name: str) -> list[tuple[str, str, int]]:
                         results.append((domain, "crtsh", 60))
 
     await asyncio.sleep(0.5)
-    return results
-
-
-async def _heuristic_signal(company_name: str, country: str) -> list[tuple[str, str, int]]:
-    candidates = _candidate_domains(company_name, country)
-    if not candidates:
-        return []
-    results: list[tuple[str, str, int]] = []
-    loop = asyncio.get_event_loop()
-    for domain in candidates:
-        try:
-            resolves = await loop.run_in_executor(None, _dns_resolve, domain)
-        except Exception:
-            resolves = False
-        if resolves:
-            results.append((domain, "heuristic", 40))
     return results
 
 

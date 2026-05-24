@@ -44,7 +44,6 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "'domain_duckduckgo'" in sql
     assert "'domain_crtsh'" in sql
     assert "'domain_wikidata'" in sql
-    assert "'domain_dns_heuristic'" in sql
     assert "'merge_domain_proposals'" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.translation_cache" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.domain_proposals" in sql
@@ -70,7 +69,6 @@ def test_working_store_migration_has_independent_brreg_run_types() -> None:
     assert "'domain_duckduckgo'" in sql
     assert "'domain_crtsh'" in sql
     assert "'domain_wikidata'" in sql
-    assert "'domain_dns_heuristic'" in sql
     assert "'merge_domain_proposals'" in sql
     assert "'build_enhanced'" in sql
     assert "'publish'" in sql

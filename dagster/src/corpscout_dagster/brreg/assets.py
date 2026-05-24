@@ -55,7 +55,6 @@ DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE = 5000
 DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE = 10
 DEFAULT_DOMAIN_CRTSH_BATCH_SIZE = 10
 DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE = 25
-DEFAULT_DOMAIN_DNS_HEURISTIC_BATCH_SIZE = 100
 DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE = 500
 DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 20
 DEFAULT_ENHANCED_RECORD_BATCH_SIZE = 500
@@ -66,7 +65,6 @@ DOMAIN_SIGNAL_ASSET_KEYS = [
     AssetKey("brreg_domain_duckduckgo_candidates"),
     AssetKey("brreg_domain_crtsh_candidates"),
     AssetKey("brreg_domain_wikidata_candidates"),
-    AssetKey("brreg_domain_dns_heuristic_candidates"),
 ]
 
 
@@ -153,19 +151,6 @@ def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
         signal="wikidata",
         task_type="domain_wikidata",
         batch_size=_env_int("BRREG_DOMAIN_WIKIDATA_BATCH_SIZE", DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE),
-        max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-    )
-
-
-@asset(name="brreg_domain_dns_heuristic_candidates")
-def brreg_domain_dns_heuristic_candidates(context) -> dict[str, int]:
-    return materialize_brreg_domain_signal_candidates(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        signal="heuristic",
-        task_type="domain_dns_heuristic",
-        batch_size=_env_int("BRREG_DOMAIN_DNS_HEURISTIC_BATCH_SIZE", DEFAULT_DOMAIN_DNS_HEURISTIC_BATCH_SIZE),
         max_batches_per_run=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
     )
 

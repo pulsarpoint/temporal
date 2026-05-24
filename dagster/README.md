@@ -67,7 +67,6 @@ BRREG now has separate Dagster jobs for each independent stage:
 - `brreg_domain_duckduckgo_job` materializes DuckDuckGo/crawler signal rows.
 - `brreg_domain_crtsh_job` materializes crt.sh certificate signal rows.
 - `brreg_domain_wikidata_job` materializes Wikidata signal rows.
-- `brreg_domain_dns_heuristic_job` materializes DNS heuristic signal rows.
 - `brreg_domain_proposals_job` scores signal rows into proposed domains.
 - `brreg_domain_enrichment_job` materializes all domain signal jobs and proposals.
 - `brreg_enhanced_records_job` builds Corpscout-compatible `brreg.enhanced.v1`
@@ -86,12 +85,12 @@ queue fully in one materialization. Domain signals are stored independently in
 `dagster_brreg.domain_candidates`; the proposal job merges those observations
 into `dagster_brreg.domain_proposals` with a score, source signals, and
 evidence. Each domain signal keeps its own batch size because DuckDuckGo/crawler,
-crt.sh, Wikidata, website-field parsing, and DNS heuristics have different speed
-and rate-limit profiles. Each domain run continues claiming pending batches
-until `BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or there are no pending
-records left for that signal. Default translation/domain jobs claim records that
-have not attempted that task yet; retrying failed attempts should be exposed as
-an explicit retry job/action.
+crt.sh, Wikidata, and website-field parsing have different speed and rate-limit
+profiles. Each domain run continues claiming pending batches until
+`BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or there are no pending records
+left for that signal. Default translation/domain jobs claim records that have
+not attempted that task yet; retrying failed attempts should be exposed as an
+explicit retry job/action.
 
 The enhanced-record job requires a successful or skipped translation task. It
 uses domain proposals when they exist; domain signal work remains best-effort
@@ -151,7 +150,6 @@ BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE=5000
 BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE=10
 BRREG_DOMAIN_CRTSH_BATCH_SIZE=10
 BRREG_DOMAIN_WIKIDATA_BATCH_SIZE=25
-BRREG_DOMAIN_DNS_HEURISTIC_BATCH_SIZE=100
 BRREG_DOMAIN_PROPOSAL_BATCH_SIZE=500
 BRREG_DOMAIN_MAX_BATCHES_PER_RUN=20
 BRREG_ENHANCED_RECORD_BATCH_SIZE=500

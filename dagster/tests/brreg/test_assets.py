@@ -3,7 +3,6 @@ from __future__ import annotations
 from corpscout_dagster.brreg.assets import (
     build_brreg_working_raw_record_rows,
     brreg_domain_crtsh_candidates,
-    brreg_domain_dns_heuristic_candidates,
     brreg_domain_duckduckgo_candidates,
     brreg_domain_proposals,
     brreg_domain_website_field_candidates,
@@ -150,7 +149,7 @@ def test_definitions_include_brreg_working_raw_records_asset() -> None:
     assert "brreg_domain_duckduckgo_candidates" in asset_keys
     assert "brreg_domain_crtsh_candidates" in asset_keys
     assert "brreg_domain_wikidata_candidates" in asset_keys
-    assert "brreg_domain_dns_heuristic_candidates" in asset_keys
+    assert "brreg_domain_dns_heuristic_candidates" not in asset_keys
     assert "brreg_domain_proposals" in asset_keys
     assert "brreg_enhanced_records" in asset_keys
     assert "brreg_publish_enhanced_records" in asset_keys
@@ -166,12 +165,11 @@ def test_definitions_include_independent_brreg_jobs() -> None:
     assert "brreg_domain_duckduckgo_job" in job_names
     assert "brreg_domain_crtsh_job" in job_names
     assert "brreg_domain_wikidata_job" in job_names
-    assert "brreg_domain_dns_heuristic_job" in job_names
+    assert "brreg_domain_dns_heuristic_job" not in job_names
     assert "brreg_domain_proposals_job" in job_names
     assert brreg_translation_results is not brreg_domain_website_field_candidates
     assert brreg_domain_proposals is not brreg_domain_duckduckgo_candidates
     assert brreg_domain_crtsh_candidates is not brreg_domain_wikidata_candidates
-    assert brreg_domain_dns_heuristic_candidates is not brreg_domain_crtsh_candidates
     assert "brreg_enhanced_records_job" in job_names
     assert "brreg_publish_enhanced_records_job" in job_names
     assert brreg_enhanced_records is not brreg_publish_enhanced_records
