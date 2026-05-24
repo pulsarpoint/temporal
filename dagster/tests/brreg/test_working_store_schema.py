@@ -48,11 +48,16 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "'merge_domain_proposals'" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.translation_cache" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.domain_proposals" in sql
+    assert "CREATE TABLE IF NOT EXISTS dagster_brreg.raw_record_task_states" in sql
+    assert "'failed_retryable'" in sql
+    assert "'failed_terminal'" in sql
     assert "UNIQUE (category, source_lang, target_lang, original_hash, model, prompt_version)" in sql
     assert "idx_dagster_brreg_translation_cache_lookup" in sql
     assert "idx_dagster_brreg_translation_success" in sql
     assert "idx_dagster_brreg_domain_task_success" in sql
     assert "idx_dagster_brreg_domain_proposals_raw_score" in sql
+    assert "idx_dagster_brreg_task_states_queue" in sql
+    assert "idx_dagster_brreg_domain_candidates_raw_updated" in sql
 
 
 def test_working_store_migration_has_independent_brreg_run_types() -> None:

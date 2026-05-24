@@ -180,8 +180,11 @@ def test_working_store_fetches_pending_task_records_without_coupling_tasks() -> 
     ]
     sql, params = cursor.calls[0]
     assert "FROM dagster_brreg.raw_records rr" in sql
-    assert "ta.task_type = %(task_type)s" in sql
-    assert "ta.status IN" not in sql
+    assert "LEFT JOIN dagster_brreg.raw_record_task_states ts" in sql
+    assert "ts.status = 'pending'" in sql
+    assert "ts.status = 'failed_retryable'" in sql
+    assert "ts.status = 'running'" in sql
+    assert "next_retry_at <= now()" in sql
     assert params == {"task_type": "translate", "limit": 100}
 
 
@@ -214,6 +217,10 @@ def test_working_store_creates_task_attempts_with_next_attempt_number() -> None:
     assert "INSERT INTO dagster_brreg.task_attempts" in sql
     assert "coalesce(max(attempt), 0) + 1" in sql
     assert params["task_type"] == "translate"
+    state_sql, state_params = cursor.calls[1]
+    assert "INSERT INTO dagster_brreg.raw_record_task_states" in state_sql
+    assert state_params["status"] == "running"
+    assert state_params["attempt_count"] == 1
 
 
 def test_working_store_upserts_translation_cache_and_results() -> None:
@@ -292,6 +299,35 @@ def test_working_store_inserts_domain_candidates_and_marks_attempts() -> None:
     assert "UPDATE dagster_brreg.task_attempts" in attempt_sql
     assert "finished_at = now()" in attempt_sql
     assert attempt_params["status"] == "succeeded"
+    state_sql, state_params = cursor.calls[1]
+    assert "UPDATE dagster_brreg.raw_record_task_states rts" in state_sql
+    assert "failed_retryable" in state_sql
+    assert "failed_terminal" in state_sql
+    assert state_params["status"] == "succeeded"
+
+
+def test_working_store_fetches_domain_proposal_records_when_merge_missing_or_candidates_changed() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = []
+    cursor.fetchall_values = [
+        (
+            "00000000-0000-0000-0000-000000000002",
+            "810202572",
+            "BORTIGARD AS",
+            "https://bortigard.no",
+            {"organisasjonsnummer": "810202572"},
+        )
+    ]
+    store = BrregWorkingStore(cursor)
+
+    rows = store.fetch_pending_domain_proposal_records(task_type="merge_domain_proposals", limit=100)
+
+    assert len(rows) == 1
+    sql, params = cursor.calls[0]
+    assert "FROM dagster_brreg.raw_records rr" in sql
+    assert "LEFT JOIN dagster_brreg.raw_record_task_states ts" in sql
+    assert "dc.updated_at > coalesce(ts.last_finished_at" in sql
+    assert params == {"task_type": "merge_domain_proposals", "limit": 100}
 
 
 def test_working_store_fetches_domain_candidates_and_upserts_proposals() -> None:

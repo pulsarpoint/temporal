@@ -252,11 +252,30 @@ class BrregWorkingStore:
         row = self._cursor.fetchone()
         if row is None:
             raise RuntimeError("expected task attempt insert to return one row")
-        return TaskAttempt(id=str(row[0]), raw_record_id=str(row[1]), attempt=int(row[2]))
+        attempt = TaskAttempt(id=str(row[0]), raw_record_id=str(row[1]), attempt=int(row[2]))
+        self._cursor.execute(
+            UPSERT_TASK_STATE_RUNNING_SQL,
+            {
+                "raw_record_id": attempt.raw_record_id,
+                "task_type": command.task_type,
+                "status": "running",
+                "attempt_count": attempt.attempt,
+                "last_attempt_id": attempt.id,
+            },
+        )
+        return attempt
 
     def finish_task_attempt(self, *, task_attempt_id: str, status: str, error: str | None) -> None:
         self._cursor.execute(
             FINISH_TASK_ATTEMPT_SQL,
+            {
+                "task_attempt_id": task_attempt_id,
+                "status": status,
+                "error": error,
+            },
+        )
+        self._cursor.execute(
+            UPDATE_TASK_STATE_FINISHED_SQL,
             {
                 "task_attempt_id": task_attempt_id,
                 "status": status,
@@ -553,14 +572,17 @@ SELECT
     rr.website,
     rr.raw_payload
 FROM dagster_brreg.raw_records rr
+LEFT JOIN dagster_brreg.raw_record_task_states ts
+  ON ts.raw_record_id = rr.id
+ AND ts.task_type = %(task_type)s
 WHERE rr.is_current = true
-  AND NOT EXISTS (
-      SELECT 1
-      FROM dagster_brreg.task_attempts ta
-      WHERE ta.raw_record_id = rr.id
-        AND ta.task_type = %(task_type)s
+  AND (
+      ts.raw_record_id IS NULL
+      OR ts.status = 'pending'
+      OR (ts.status = 'failed_retryable' AND ts.next_retry_at <= now())
+      OR (ts.status = 'running' AND ts.last_started_at < now() - interval '30 minutes')
   )
-ORDER BY rr.last_seen_at ASC, rr.id ASC
+ORDER BY coalesce(ts.next_retry_at, rr.last_seen_at) ASC, rr.id ASC
 LIMIT %(limit)s
 """
 
@@ -572,6 +594,9 @@ SELECT
     rr.website,
     rr.raw_payload
 FROM dagster_brreg.raw_records rr
+LEFT JOIN dagster_brreg.raw_record_task_states ts
+  ON ts.raw_record_id = rr.id
+ AND ts.task_type = %(task_type)s
 WHERE rr.is_current = true
   AND EXISTS (
       SELECT 1
@@ -579,13 +604,23 @@ WHERE rr.is_current = true
       WHERE dc.raw_record_id = rr.id
         AND dc.status IN ('candidate', 'accepted')
   )
-  AND NOT EXISTS (
-      SELECT 1
-      FROM dagster_brreg.task_attempts ta
-      WHERE ta.raw_record_id = rr.id
-        AND ta.task_type = %(task_type)s
+  AND (
+      ts.raw_record_id IS NULL
+      OR ts.status = 'pending'
+      OR (ts.status = 'failed_retryable' AND ts.next_retry_at <= now())
+      OR (ts.status = 'running' AND ts.last_started_at < now() - interval '30 minutes')
+      OR (
+          ts.status IN ('succeeded', 'skipped')
+          AND EXISTS (
+              SELECT 1
+              FROM dagster_brreg.domain_candidates dc
+              WHERE dc.raw_record_id = rr.id
+                AND dc.status IN ('candidate', 'accepted')
+                AND dc.updated_at > coalesce(ts.last_finished_at, '-infinity'::timestamptz)
+          )
+      )
   )
-ORDER BY rr.last_seen_at ASC, rr.id ASC
+ORDER BY coalesce(ts.next_retry_at, rr.last_seen_at) ASC, rr.id ASC
 LIMIT %(limit)s
 """
 
@@ -613,6 +648,42 @@ WHERE raw_record_id = %(raw_record_id)s
 RETURNING id, raw_record_id, attempt
 """
 
+UPSERT_TASK_STATE_RUNNING_SQL = """
+INSERT INTO dagster_brreg.raw_record_task_states (
+    raw_record_id,
+    task_type,
+    status,
+    attempt_count,
+    last_attempt_id,
+    last_started_at,
+    last_finished_at,
+    next_retry_at,
+    last_error,
+    result_summary
+) VALUES (
+    %(raw_record_id)s,
+    %(task_type)s,
+    %(status)s,
+    %(attempt_count)s,
+    %(last_attempt_id)s,
+    now(),
+    NULL,
+    NULL,
+    NULL,
+    '{}'::jsonb
+)
+ON CONFLICT (raw_record_id, task_type) DO UPDATE
+SET
+    status = EXCLUDED.status,
+    attempt_count = GREATEST(dagster_brreg.raw_record_task_states.attempt_count, EXCLUDED.attempt_count),
+    last_attempt_id = EXCLUDED.last_attempt_id,
+    last_started_at = EXCLUDED.last_started_at,
+    last_finished_at = NULL,
+    next_retry_at = NULL,
+    last_error = NULL,
+    updated_at = now()
+"""
+
 FINISH_TASK_ATTEMPT_SQL = """
 UPDATE dagster_brreg.task_attempts
 SET
@@ -620,6 +691,35 @@ SET
     finished_at = now(),
     error = %(error)s
 WHERE id = %(task_attempt_id)s
+"""
+
+UPDATE_TASK_STATE_FINISHED_SQL = """
+UPDATE dagster_brreg.raw_record_task_states rts
+SET
+    status = CASE
+        WHEN %(status)s = 'failed' AND ta.attempt >= 5 THEN 'failed_terminal'
+        WHEN %(status)s = 'failed' THEN 'failed_retryable'
+        WHEN %(status)s = 'succeeded' THEN 'succeeded'
+        WHEN %(status)s = 'skipped' THEN 'skipped'
+        WHEN %(status)s = 'cancelled' THEN 'cancelled'
+        ELSE rts.status
+    END,
+    attempt_count = GREATEST(rts.attempt_count, ta.attempt),
+    last_attempt_id = ta.id,
+    last_finished_at = now(),
+    next_retry_at = CASE
+        WHEN %(status)s <> 'failed' OR ta.attempt >= 5 THEN NULL
+        WHEN ta.attempt = 1 THEN now() + interval '5 minutes'
+        WHEN ta.attempt = 2 THEN now() + interval '30 minutes'
+        WHEN ta.attempt = 3 THEN now() + interval '6 hours'
+        ELSE now() + interval '1 day'
+    END,
+    last_error = %(error)s,
+    updated_at = now()
+FROM dagster_brreg.task_attempts ta
+WHERE ta.id = %(task_attempt_id)s
+  AND rts.raw_record_id = ta.raw_record_id
+  AND rts.task_type = ta.task_type
 """
 
 FETCH_CACHED_TRANSLATIONS_SQL = """
@@ -716,7 +816,8 @@ SET
     domain = EXCLUDED.domain,
     confidence = GREATEST(dagster_brreg.domain_candidates.confidence, EXCLUDED.confidence),
     evidence = dagster_brreg.domain_candidates.evidence || EXCLUDED.evidence,
-    metadata = dagster_brreg.domain_candidates.metadata || EXCLUDED.metadata
+    metadata = dagster_brreg.domain_candidates.metadata || EXCLUDED.metadata,
+    updated_at = now()
 """
 
 FETCH_DOMAIN_CANDIDATES_FOR_RAW_RECORD_SQL = """
