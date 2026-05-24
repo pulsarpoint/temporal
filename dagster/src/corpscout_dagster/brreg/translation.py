@@ -78,6 +78,39 @@ class DirectLLMTermTranslator:
     ) -> dict[str, str]:
         if not items:
             return {}
+        translated_by_id = self._translate_once(
+            category=category,
+            items=items,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            model=model,
+            prompt_version=prompt_version,
+        )
+
+        missing_items = [item for item in items if not translated_by_id.get(translation_item_id(item), "").strip()]
+        if missing_items and len(missing_items) < len(items):
+            translated_by_id.update(
+                self._translate_once(
+                    category=category,
+                    items=missing_items,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    model=model,
+                    prompt_version=prompt_version,
+                )
+            )
+        return translated_by_id
+
+    def _translate_once(
+        self,
+        *,
+        category: str,
+        items: list[TranslationItem],
+        source_lang: str,
+        target_lang: str,
+        model: str,
+        prompt_version: str,
+    ) -> dict[str, str]:
         response = httpx.post(
             f"{self._base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self._api_key}"},
@@ -190,13 +223,19 @@ def build_translation_messages(
         for item in items
     ]
     items_json = json.dumps(item_payload, ensure_ascii=False, separators=(",", ":"))
+    if any(item.category for item in items):
+        instruction = (
+            f"Translate {source_lang} business registry text to {target_lang}.\n"
+            "Use each item's category as context."
+        )
+    else:
+        instruction = f"Translate {source_lang} business registry {category} text to {target_lang}."
     return [
         {
             "role": "user",
             "content": (
                 "/no_think\n"
-                f"Translate {source_lang} business registry text to {target_lang}.\n"
-                f"Use category {category!r} as context. Prompt version: {prompt_version}.\n"
+                f"{instruction}\n"
                 'Return only JSON: {"translations":[{"id":"...","translation":"..."}]}\n'
                 "Preserve every input id exactly. Include one translation per input item.\n"
                 f"Items: {items_json}"
@@ -215,11 +254,19 @@ def translation_max_tokens(items: list[TranslationItem]) -> int:
 
 
 def parse_translation_response(content: str, allowed_ids: set[str]) -> dict[str, str]:
-    parsed = json.loads(_clean_json_content(content))
+    parsed = _load_json_with_repairs(_clean_json_content(content))
     if isinstance(parsed, dict):
         values = parsed.get("translations") or parsed.get("items")
         if isinstance(values, list):
             return _translations_from_list(values, allowed_ids)
+        inner = parsed.get("translations_json")
+        if isinstance(inner, str):
+            try:
+                inner = json.loads(inner)
+            except json.JSONDecodeError:
+                pass
+        if isinstance(inner, list):
+            return _translations_from_list(inner, allowed_ids)
         return {
             key: str(value).strip()
             for key, value in parsed.items()
@@ -228,6 +275,28 @@ def parse_translation_response(content: str, allowed_ids: set[str]) -> dict[str,
     if isinstance(parsed, list):
         return _translations_from_list(parsed, allowed_ids)
     return {}
+
+
+def _load_json_with_repairs(content: str) -> Any:
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        repaired = _repair_missing_translation_keys(content)
+        if repaired != content:
+            return json.loads(repaired)
+        try:
+            from json_repair import repair_json
+        except ImportError:
+            raise
+        return json.loads(repair_json(content))
+
+
+def _repair_missing_translation_keys(content: str) -> str:
+    return re.sub(
+        r'\{"id"\s*:\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\}',
+        r'{"id":"\1","translation":"\2"}',
+        content,
+    )
 
 
 def _append_text(items: list[TranslationItem], category: str, value: Any) -> None:

@@ -4,7 +4,6 @@ import asyncio
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
-from itertools import groupby
 
 import psycopg
 from dagster import AssetKey, Field, Int, asset
@@ -69,6 +68,11 @@ DOMAIN_SIGNAL_ASSET_KEYS = [
     AssetKey("brreg_domain_wikidata_candidates"),
     AssetKey("brreg_domain_web_search_llm_candidates"),
 ]
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    return int(value) if value else default
 
 
 @dataclass(frozen=True)
@@ -473,36 +477,17 @@ def materialize_brreg_translation_results(
                     break
 
                 batches_processed += 1
-                for record in records:
-                    rows_seen += 1
-                    attempt = _create_task_attempt(
-                        conn=conn,
-                        enrichment_run_id=enrichment_run_id,
-                        record=record,
-                        task_type="translate",
-                    )
-                    try:
-                        _translate_record(
-                            conn=conn,
-                            enrichment_run_id=enrichment_run_id,
-                            attempt=attempt,
-                            record=record,
-                            translator=translator,
-                            model=model,
-                            prompt_version=prompt_version,
-                        )
-                        rows_completed += 1
-                    except Exception as exc:
-                        conn.rollback()
-                        _mark_record_task_failed(
-                            conn=conn,
-                            enrichment_run_id=enrichment_run_id,
-                            attempt=attempt,
-                            record=record,
-                            task_type="translate",
-                            error=str(exc),
-                        )
-                        rows_failed += 1
+                completed, failed = _translate_record_batch(
+                    conn=conn,
+                    enrichment_run_id=enrichment_run_id,
+                    records=records,
+                    translator=translator,
+                    model=model,
+                    prompt_version=prompt_version,
+                )
+                rows_seen += len(records)
+                rows_completed += completed
+                rows_failed += failed
 
             context.log.info(
                 "BRREG translation batches committed rows_seen=%s rows_completed=%s rows_failed=%s batches_processed=%s max_batches_per_run=%s stopped_reason=%s",
@@ -566,8 +551,8 @@ def materialize_brreg_domain_signal_candidates(
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    if max_batches_per_run <= 0:
-        raise ValueError("max_batches_per_run must be positive")
+    if max_batches_per_run < 0:
+        raise ValueError("max_batches_per_run must be zero or positive")
     rows_seen = 0
     rows_completed = 0
     rows_failed = 0
@@ -587,7 +572,7 @@ def materialize_brreg_domain_signal_candidates(
         conn.commit()
 
         try:
-            while batches_processed < max_batches_per_run:
+            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
                 with conn.cursor() as cursor:
                     records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
                         task_type=task_type,
@@ -692,8 +677,8 @@ def materialize_brreg_domain_proposals(
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
-    if max_batches_per_run <= 0:
-        raise ValueError("max_batches_per_run must be positive")
+    if max_batches_per_run < 0:
+        raise ValueError("max_batches_per_run must be zero or positive")
     rows_seen = 0
     rows_completed = 0
     rows_failed = 0
@@ -714,7 +699,7 @@ def materialize_brreg_domain_proposals(
         conn.commit()
 
         try:
-            while batches_processed < max_batches_per_run:
+            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
                 with conn.cursor() as cursor:
                     records = BrregWorkingStore(cursor).fetch_pending_domain_proposal_records(
                         task_type=task_type,
@@ -1051,53 +1036,40 @@ def _create_task_attempt(
     return attempt
 
 
-def _translate_record(
+def _translate_record_batch(
     *,
     conn,
     enrichment_run_id: str,
-    attempt: TaskAttempt,
-    record: RawTaskRecord,
+    records: list[RawTaskRecord],
     translator: TermTranslator,
     model: str,
     prompt_version: str,
-) -> None:
-    items = extract_translation_items(record.raw_payload)
-    if not items:
-        payload = build_translation_payload(
-            raw_payload=record.raw_payload,
-            items=[],
-            cached_translations={},
-            model=model,
-            prompt_version=prompt_version,
+) -> tuple[int, int]:
+    attempts_by_record_id: dict[str, TaskAttempt] = {}
+    items_by_record_id: dict[str, list[TranslationItem]] = {}
+    for record in records:
+        attempts_by_record_id[record.id] = _create_task_attempt(
+            conn=conn,
+            enrichment_run_id=enrichment_run_id,
+            record=record,
+            task_type="translate",
         )
+        items_by_record_id[record.id] = extract_translation_items(record.raw_payload)
+
+    unique_items = _unique_translation_items(
+        item
+        for items in items_by_record_id.values()
+        for item in items
+    )
+    try:
+        keys = [translation_cache_key(item) for item in unique_items]
         with conn.cursor() as cursor:
             store = BrregWorkingStore(cursor)
-            store.insert_translation_result(
-                InsertTranslationResult(
-                    raw_record_id=record.id,
-                    task_attempt_id=attempt.id,
-                    status="skipped",
-                    translated_payload=payload,
-                    model=model,
-                    prompt_version=prompt_version,
-                    error=None,
-                    metadata={"reason": "no_translatable_terms"},
-                )
-            )
-            store.finish_task_attempt(task_attempt_id=attempt.id, status="skipped", error=None)
-            store.increment_enrichment_run_progress(
-                IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
-            )
-        conn.commit()
-        return
+            cached = store.fetch_cached_translations(keys, model=model, prompt_version=prompt_version)
 
-    keys = [translation_cache_key(item) for item in items]
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        cached = store.fetch_cached_translations(keys, model=model, prompt_version=prompt_version)
         missing_items = [
             item
-            for item in items
+            for item in unique_items
             if translation_cache_key(item) not in cached
         ]
         new_cache_rows = _translate_missing_terms(
@@ -1106,41 +1078,114 @@ def _translate_record(
             model=model,
             prompt_version=prompt_version,
         )
-        store.upsert_cached_translations(new_cache_rows)
-        for row in new_cache_rows:
-            key = TranslationCacheKey(
-                category=row.category,
-                source_lang=row.source_lang,
-                target_lang=row.target_lang,
-                original_hash=row.original_hash,
+        with conn.cursor() as cursor:
+            store = BrregWorkingStore(cursor)
+            store.upsert_cached_translations(new_cache_rows)
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        for record in records:
+            _mark_record_task_failed(
+                conn=conn,
+                enrichment_run_id=enrichment_run_id,
+                attempt=attempts_by_record_id[record.id],
+                record=record,
+                task_type="translate",
+                error=str(exc),
             )
-            cached[key] = CachedTermTranslation(
-                category=row.category,
-                original_text=row.original_text,
-                translated_text=row.translated_text,
-                model=row.model,
-                prompt_version=row.prompt_version,
+        return 0, len(records)
+
+    for row in new_cache_rows:
+        key = TranslationCacheKey(
+            category=row.category,
+            source_lang=row.source_lang,
+            target_lang=row.target_lang,
+            original_hash=row.original_hash,
+        )
+        cached[key] = CachedTermTranslation(
+            category=row.category,
+            original_text=row.original_text,
+            translated_text=row.translated_text,
+            model=row.model,
+            prompt_version=row.prompt_version,
+        )
+
+    rows_completed = 0
+    rows_failed = 0
+    for record in records:
+        try:
+            _write_translation_record_result(
+                conn=conn,
+                enrichment_run_id=enrichment_run_id,
+                attempt=attempts_by_record_id[record.id],
+                record=record,
+                items=items_by_record_id[record.id],
+                cached_translations=cached,
+                model=model,
+                prompt_version=prompt_version,
             )
+            rows_completed += 1
+        except Exception as exc:
+            conn.rollback()
+            _mark_record_task_failed(
+                conn=conn,
+                enrichment_run_id=enrichment_run_id,
+                attempt=attempts_by_record_id[record.id],
+                record=record,
+                task_type="translate",
+                error=str(exc),
+            )
+            rows_failed += 1
+    return rows_completed, rows_failed
+
+
+def _write_translation_record_result(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: RawTaskRecord,
+    items: list[TranslationItem],
+    cached_translations: dict[TranslationCacheKey, CachedTermTranslation],
+    model: str,
+    prompt_version: str,
+) -> None:
+    if not items:
         payload = build_translation_payload(
             raw_payload=record.raw_payload,
-            items=items,
-            cached_translations=cached,
+            items=[],
+            cached_translations={},
             model=model,
             prompt_version=prompt_version,
         )
+        status = "skipped"
+        metadata = {"reason": "no_translatable_terms"}
+    else:
+        payload = build_translation_payload(
+            raw_payload=record.raw_payload,
+            items=items,
+            cached_translations=cached_translations,
+            model=model,
+            prompt_version=prompt_version,
+        )
+        status = "succeeded"
+        metadata = {}
+
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
         store.insert_translation_result(
             InsertTranslationResult(
                 raw_record_id=record.id,
                 task_attempt_id=attempt.id,
-                status="succeeded",
+                status=status,
                 translated_payload=payload,
                 model=model,
                 prompt_version=prompt_version,
                 error=None,
-                metadata={},
+                metadata=metadata,
             )
         )
-        store.finish_task_attempt(task_attempt_id=attempt.id, status="succeeded", error=None)
+        store.finish_task_attempt(task_attempt_id=attempt.id, status=status, error=None)
         store.increment_enrichment_run_progress(
             IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
         )
@@ -1155,36 +1200,48 @@ def _translate_missing_terms(
     prompt_version: str,
 ) -> list[UpsertCachedTranslation]:
     rows: list[UpsertCachedTranslation] = []
-    sorted_items = sorted(missing_items, key=lambda item: item.category)
-    for category, grouped in groupby(sorted_items, key=lambda item: item.category):
-        items = list(grouped)
-        translated_by_id = translator.translate_terms(
-            category=category,
-            items=items,
-            source_lang="no",
-            target_lang="en",
-            model=model,
-            prompt_version=prompt_version,
-        )
-        for item in items:
-            translated_text = translated_by_id.get(translation_item_id(item), "").strip()
-            if not translated_text:
-                raise RuntimeError(f"missing translation for {item.category}: {item.text}")
-            key = translation_cache_key(item)
-            rows.append(
-                UpsertCachedTranslation(
-                    category=item.category,
-                    source_lang=key.source_lang,
-                    target_lang=key.target_lang,
-                    original_hash=key.original_hash,
-                    original_text=item.text,
-                    translated_text=translated_text,
-                    model=model,
-                    prompt_version=prompt_version,
-                    metadata={"source": "dagster"},
-                )
+    unique_items = _unique_translation_items(missing_items)
+    if not unique_items:
+        return rows
+    translated_by_id = translator.translate_terms(
+        category="mixed",
+        items=unique_items,
+        source_lang="no",
+        target_lang="en",
+        model=model,
+        prompt_version=prompt_version,
+    )
+    for item in unique_items:
+        translated_text = translated_by_id.get(translation_item_id(item), "").strip()
+        if not translated_text:
+            continue
+        key = translation_cache_key(item)
+        rows.append(
+            UpsertCachedTranslation(
+                category=item.category,
+                source_lang=key.source_lang,
+                target_lang=key.target_lang,
+                original_hash=key.original_hash,
+                original_text=item.text,
+                translated_text=translated_text,
+                model=model,
+                prompt_version=prompt_version,
+                metadata={"source": "dagster"},
             )
+        )
     return rows
+
+
+def _unique_translation_items(items: Iterable[TranslationItem]) -> list[TranslationItem]:
+    seen: set[TranslationCacheKey] = set()
+    unique: list[TranslationItem] = []
+    for item in sorted(items, key=lambda value: (value.category, value.text.strip().lower())):
+        key = translation_cache_key(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
 
 
 def _discover_record_domain_signal(
@@ -1383,11 +1440,6 @@ def _corpscout_database_url() -> str:
     if not value:
         raise RuntimeError("CORPSCOUT_DATABASE_URL or CORPSCOUT_DB_URL is required")
     return value
-
-
-def _env_int(name: str, default: int) -> int:
-    value = os.environ.get(name)
-    return int(value) if value else default
 
 
 def _enrichment_run_key(context, run_type: str) -> str:

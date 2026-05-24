@@ -113,6 +113,36 @@ class FakeTranslator:
         }
 
 
+class RecordingTranslator:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def translate_terms(
+        self,
+        *,
+        category: str,
+        items: list[TranslationItem],
+        source_lang: str,
+        target_lang: str,
+        model: str,
+        prompt_version: str,
+    ) -> dict[str, str]:
+        self.calls.append(
+            {
+                "category": category,
+                "items": items,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "model": model,
+                "prompt_version": prompt_version,
+            }
+        )
+        return {
+            translation_item_id(item): f"translated {item.text}"
+            for item in items
+        }
+
+
 class MissingTranslator:
     def translate_terms(
         self,
@@ -291,6 +321,75 @@ def test_materialize_brreg_translation_results_writes_task_cache_and_result() ->
     assert context.metadata[-1]["rows_completed"] == 1
 
 
+def test_materialize_brreg_translation_results_translates_unique_batch_misses_in_one_mixed_call() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    translator = RecordingTranslator()
+    first_raw_record_id = "00000000-0000-0000-0000-000000000010"
+    second_raw_record_id = "00000000-0000-0000-0000-000000000020"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", first_raw_record_id, 1),
+        ("00000000-0000-0000-0000-000000000021", second_raw_record_id, 1),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                first_raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                None,
+                {
+                    "organisasjonsnummer": "810202572",
+                    "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
+                },
+            ),
+            (
+                second_raw_record_id,
+                "910202572",
+                "NEXT AS",
+                None,
+                {
+                    "organisasjonsnummer": "910202572",
+                    "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
+                    "naeringskode1": {"kode": "62.010", "beskrivelse": "Programmeringstjenester"},
+                },
+            ),
+        ],
+        [],
+    ]
+
+    result = materialize_brreg_translation_results(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        translator=translator,
+        batch_size=50,
+        max_batches_per_run=1,
+        model="qwen3:6b",
+        prompt_version="v1",
+    )
+
+    assert result["rows_seen"] == 2
+    assert result["rows_completed"] == 2
+    assert result["rows_failed"] == 0
+    assert len(translator.calls) == 1
+    assert translator.calls[0]["category"] == "mixed"
+    assert {
+        (item.category, item.text)
+        for item in translator.calls[0]["items"]
+    } == {
+        ("org_form", "Aksjeselskap"),
+        ("industry_code", "Programmeringstjenester"),
+    }
+    assert sum("INSERT INTO dagster_brreg.translation_results" in sql for sql, _ in connection.cursor_instance.calls) == 2
+    cache_rows = connection.cursor_instance.many_calls[-1][1]
+    assert {(row["category"], row["original_text"]) for row in cache_rows} == {
+        ("org_form", "Aksjeselskap"),
+        ("industry_code", "Programmeringstjenester"),
+    }
+
+
 def test_materialize_brreg_translation_results_drains_multiple_batches_until_empty() -> None:
     context = FakeContext()
     connection = FakeConnection()
@@ -326,7 +425,6 @@ def test_materialize_brreg_translation_results_drains_multiple_batches_until_emp
                 },
             ),
         ],
-        [],
         [],
         [
             (
@@ -393,6 +491,7 @@ def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -
                 },
             )
         ],
+        [],
         [],
     ]
 
