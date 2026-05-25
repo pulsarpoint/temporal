@@ -11,8 +11,10 @@ from corpscout_dagster.brreg.working_store import (
     EnhancedPublishRecord,
     FinishEnrichmentRun,
     IncrementEnrichmentRunProgress,
+    InsertDomainCrawlResult,
     InsertDomainProposal,
     InsertDomainCandidate,
+    InsertDomainSearchResult,
     InsertEnhancedRecord,
     InsertTranslationResult,
     DomainCandidateRow,
@@ -338,6 +340,109 @@ def test_working_store_inserts_domain_candidates_and_marks_attempts() -> None:
     assert "failed_retryable" in state_sql
     assert "failed_terminal" in state_sql
     assert state_params["status"] == "succeeded"
+
+
+def test_working_store_inserts_domain_search_results() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.insert_domain_search_results(
+        [
+            InsertDomainSearchResult(
+                raw_record_id="00000000-0000-0000-0000-000000000002",
+                task_attempt_id="00000000-0000-0000-0000-000000000001",
+                provider="duckduckgo",
+                query='"BORTIGARD AS" Norway official website',
+                rank=1,
+                url="https://www.bortigard.no/",
+                domain="www.bortigard.no",
+                normalized_domain="bortigard.no",
+                title="Bortigard AS",
+                description="Norwegian property company.",
+                metadata={"source": "first_page"},
+            )
+        ]
+    )
+
+    sql, params_seq = cursor.many_calls[-1]
+    assert "INSERT INTO dagster_brreg.domain_search_results" in sql
+    assert "ON CONFLICT (raw_record_id, provider, query, rank, url) DO UPDATE" in sql
+    assert params_seq[0]["provider"] == "duckduckgo"
+    assert params_seq[0]["normalized_domain"] == "bortigard.no"
+
+
+def test_working_store_inserts_domain_crawl_results() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.insert_domain_crawl_results(
+        [
+            InsertDomainCrawlResult(
+                raw_record_id="00000000-0000-0000-0000-000000000002",
+                search_result_id="00000000-0000-0000-0000-000000000003",
+                task_attempt_id="00000000-0000-0000-0000-000000000001",
+                url="https://www.bortigard.no/",
+                domain="www.bortigard.no",
+                normalized_domain="bortigard.no",
+                status="succeeded",
+                markdown="BORTIGARD AS",
+                markdown_hash="hash",
+                llm_confidence=84,
+                llm_decision="accepted",
+                llm_reason="Exact legal name matched.",
+                llm_evidence={"matched": ["BORTIGARD AS"]},
+                metadata={"prompt_version": "v1"},
+            )
+        ]
+    )
+
+    sql, params_seq = cursor.many_calls[-1]
+    assert "INSERT INTO dagster_brreg.domain_crawl_results" in sql
+    assert "ON CONFLICT (raw_record_id, url) DO UPDATE" in sql
+    assert params_seq[0]["llm_confidence"] == 84
+    assert params_seq[0]["llm_decision"] == "accepted"
+
+
+def test_working_store_fetches_pending_duckduckgo_search_records_after_website_check() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = []
+    cursor.fetchall_values = []
+    store = BrregWorkingStore(cursor)
+
+    rows = store.fetch_pending_duckduckgo_search_records(
+        limit=10,
+        max_parallel_tasks=2,
+        lease_seconds=1800,
+    )
+
+    assert rows == []
+    sql, params = cursor.calls[-1]
+    assert params["task_type"] == "domain_duckduckgo_search"
+    assert "wts.task_type = 'domain_website_field'" in sql
+    assert "dc.signal = 'website_field'" in sql
+    assert "NOT EXISTS" in sql
+    assert "lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval" in sql
+
+
+def test_working_store_fetches_pending_web_search_llm_records_after_search_results() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = []
+    cursor.fetchall_values = []
+    store = BrregWorkingStore(cursor)
+
+    rows = store.fetch_pending_web_search_llm_records(
+        limit=10,
+        max_parallel_tasks=1,
+        lease_seconds=1800,
+    )
+
+    assert rows == []
+    sql, params = cursor.calls[-1]
+    assert params["task_type"] == "domain_web_search_llm"
+    assert "dagster_brreg.domain_search_results dsr" in sql
+    assert "dc.signal = 'website_field'" in sql
+    assert "dc.signal = 'web_search_llm'" in sql
+    assert "lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval" in sql
 
 
 def test_working_store_fetches_domain_proposal_records_when_merge_missing_or_candidates_changed() -> None:

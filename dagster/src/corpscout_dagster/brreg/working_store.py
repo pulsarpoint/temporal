@@ -122,6 +122,53 @@ class InsertDomainCandidate:
 
 
 @dataclass(frozen=True)
+class InsertDomainSearchResult:
+    raw_record_id: str
+    task_attempt_id: str
+    provider: str
+    query: str
+    rank: int
+    url: str
+    domain: str
+    normalized_domain: str
+    title: str | None
+    description: str | None
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class DomainSearchResultRow:
+    id: str
+    raw_record_id: str
+    query: str
+    rank: int
+    url: str
+    domain: str
+    normalized_domain: str
+    title: str | None
+    description: str | None
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class InsertDomainCrawlResult:
+    raw_record_id: str
+    search_result_id: str | None
+    task_attempt_id: str
+    url: str
+    domain: str
+    normalized_domain: str
+    status: str
+    markdown: str | None
+    markdown_hash: str | None
+    llm_confidence: int | None
+    llm_decision: str | None
+    llm_reason: str | None
+    llm_evidence: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class DomainCandidateRow:
     normalized_domain: str
     domain: str
@@ -317,6 +364,62 @@ class BrregWorkingStore:
         )
         return [_raw_task_record_from_row(row) for row in self._cursor.fetchall()]
 
+    def fetch_pending_duckduckgo_search_records(
+        self,
+        *,
+        limit: int,
+        max_parallel_tasks: int,
+        lease_seconds: int,
+    ) -> list[RawTaskRecord]:
+        return self._fetch_pending_domain_dependency_records(
+            sql=FETCH_PENDING_DUCKDUCKGO_SEARCH_RECORDS_SQL,
+            task_type="domain_duckduckgo_search",
+            limit=limit,
+            max_parallel_tasks=max_parallel_tasks,
+            lease_seconds=lease_seconds,
+        )
+
+    def fetch_pending_web_search_llm_records(
+        self,
+        *,
+        limit: int,
+        max_parallel_tasks: int,
+        lease_seconds: int,
+    ) -> list[RawTaskRecord]:
+        return self._fetch_pending_domain_dependency_records(
+            sql=FETCH_PENDING_WEB_SEARCH_LLM_RECORDS_SQL,
+            task_type="domain_web_search_llm",
+            limit=limit,
+            max_parallel_tasks=max_parallel_tasks,
+            lease_seconds=lease_seconds,
+        )
+
+    def _fetch_pending_domain_dependency_records(
+        self,
+        *,
+        sql: str,
+        task_type: str,
+        limit: int,
+        max_parallel_tasks: int,
+        lease_seconds: int,
+    ) -> list[RawTaskRecord]:
+        if limit <= 0:
+            return []
+        if max_parallel_tasks <= 0:
+            raise ValueError("max_parallel_tasks must be positive")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        self._cursor.execute(
+            sql,
+            {
+                "task_type": task_type,
+                "limit": limit,
+                "max_parallel_tasks": max_parallel_tasks,
+                "lease_seconds": lease_seconds,
+            },
+        )
+        return [_raw_task_record_from_row(row) for row in self._cursor.fetchall()]
+
     def create_task_attempt(self, command: CreateTaskAttempt) -> TaskAttempt:
         self._cursor.execute(
             CREATE_TASK_ATTEMPT_SQL,
@@ -459,6 +562,56 @@ class BrregWorkingStore:
         ]
         if params_seq:
             self._cursor.executemany(INSERT_DOMAIN_CANDIDATE_SQL, params_seq)
+
+    def insert_domain_search_results(self, rows: list[InsertDomainSearchResult]) -> None:
+        params_seq = [
+            {
+                "raw_record_id": row.raw_record_id,
+                "task_attempt_id": row.task_attempt_id,
+                "provider": row.provider,
+                "query": row.query,
+                "rank": row.rank,
+                "url": row.url,
+                "domain": row.domain,
+                "normalized_domain": row.normalized_domain,
+                "title": row.title,
+                "description": row.description,
+                "metadata": _json(row.metadata),
+            }
+            for row in rows
+        ]
+        if params_seq:
+            self._cursor.executemany(INSERT_DOMAIN_SEARCH_RESULT_SQL, params_seq)
+
+    def fetch_domain_search_results_for_raw_record(self, *, raw_record_id: str) -> list[DomainSearchResultRow]:
+        self._cursor.execute(
+            FETCH_DOMAIN_SEARCH_RESULTS_FOR_RAW_RECORD_SQL,
+            {"raw_record_id": raw_record_id},
+        )
+        return [_domain_search_result_row_from_row(row) for row in self._cursor.fetchall()]
+
+    def insert_domain_crawl_results(self, rows: list[InsertDomainCrawlResult]) -> None:
+        params_seq = [
+            {
+                "raw_record_id": row.raw_record_id,
+                "search_result_id": row.search_result_id,
+                "task_attempt_id": row.task_attempt_id,
+                "url": row.url,
+                "domain": row.domain,
+                "normalized_domain": row.normalized_domain,
+                "status": row.status,
+                "markdown": row.markdown,
+                "markdown_hash": row.markdown_hash,
+                "llm_confidence": row.llm_confidence,
+                "llm_decision": row.llm_decision,
+                "llm_reason": row.llm_reason,
+                "llm_evidence": _json(row.llm_evidence),
+                "metadata": _json(row.metadata),
+            }
+            for row in rows
+        ]
+        if params_seq:
+            self._cursor.executemany(INSERT_DOMAIN_CRAWL_RESULT_SQL, params_seq)
 
     def fetch_domain_candidates_for_raw_record(self, *, raw_record_id: str) -> list[DomainCandidateRow]:
         self._cursor.execute(
@@ -616,6 +769,22 @@ def _domain_candidate_row_from_row(row) -> DomainCandidateRow:
         confidence=int(row[3]),
         evidence=evidence,
         metadata=metadata,
+    )
+
+
+def _domain_search_result_row_from_row(row) -> DomainSearchResultRow:
+    metadata = _json_value(row[9], {})
+    return DomainSearchResultRow(
+        id=str(row[0]),
+        raw_record_id=str(row[1]),
+        query=str(row[2]),
+        rank=int(row[3]),
+        url=str(row[4]),
+        domain=str(row[5]),
+        normalized_domain=str(row[6]),
+        title=str(row[7]) if row[7] is not None else None,
+        description=str(row[8]) if row[8] is not None else None,
+        metadata=_dict(metadata),
     )
 
 
@@ -1084,6 +1253,295 @@ ORDER BY claimed_task_ids.sort_at ASC, claimed_task_ids.id ASC
 LIMIT %(limit)s
 """
 
+FETCH_PENDING_DUCKDUCKGO_SEARCH_RECORDS_SQL = """
+WITH lock_task AS (
+    SELECT pg_advisory_xact_lock(hashtext('dagster_brreg.raw_record_task_states:' || %(task_type)s))
+),
+active_slots AS (
+    SELECT GREATEST(%(max_parallel_tasks)s - count(*)::int, 0) AS available_slots
+    FROM dagster_brreg.raw_record_task_states ts
+    CROSS JOIN lock_task
+    WHERE ts.task_type = %(task_type)s
+      AND ts.status = 'running'
+      AND coalesce(ts.lease_until, ts.last_started_at + interval '30 minutes') > now()
+),
+eligible_records AS (
+    SELECT
+        rr.id,
+        coalesce(ts.next_retry_at, rr.last_seen_at) AS sort_at
+    FROM dagster_brreg.raw_records rr
+    LEFT JOIN dagster_brreg.raw_record_task_states ts
+      ON ts.raw_record_id = rr.id
+     AND ts.task_type = %(task_type)s
+    WHERE rr.is_current = true
+      AND EXISTS (
+          SELECT 1
+          FROM dagster_brreg.raw_record_task_states wts
+          WHERE wts.raw_record_id = rr.id
+            AND wts.task_type = 'domain_website_field'
+            AND wts.status IN ('succeeded', 'skipped')
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM dagster_brreg.domain_candidates dc
+          WHERE dc.raw_record_id = rr.id
+            AND dc.signal = 'website_field'
+            AND dc.status IN ('candidate', 'accepted')
+      )
+      AND (
+          ts.raw_record_id IS NULL
+          OR ts.status = 'pending'
+          OR (ts.status = 'failed_retryable' AND ts.next_retry_at <= now())
+          OR (
+              ts.status = 'running'
+              AND coalesce(ts.lease_until, ts.last_started_at + interval '30 minutes') <= now()
+          )
+      )
+    ORDER BY coalesce(ts.next_retry_at, rr.last_seen_at) ASC, rr.id ASC
+    LIMIT (SELECT LEAST(%(limit)s, active_slots.available_slots) FROM active_slots)
+),
+inserted_missing_task_ids AS (
+    INSERT INTO dagster_brreg.raw_record_task_states (
+        raw_record_id,
+        task_type,
+        status,
+        last_started_at,
+        lease_until,
+        next_retry_at
+    )
+    SELECT
+        eligible_records.id,
+        %(task_type)s,
+        'running',
+        now(),
+        now() + (%(lease_seconds)s::text || ' seconds')::interval,
+        NULL
+    FROM eligible_records
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM dagster_brreg.raw_record_task_states mts
+        WHERE mts.raw_record_id = eligible_records.id
+          AND mts.task_type = %(task_type)s
+    )
+    ON CONFLICT (raw_record_id, task_type) DO NOTHING
+    RETURNING raw_record_id AS id
+),
+existing_claimable_records AS (
+    SELECT
+        mts.raw_record_id AS id
+    FROM eligible_records
+    JOIN dagster_brreg.raw_record_task_states mts
+      ON mts.raw_record_id = eligible_records.id
+     AND mts.task_type = %(task_type)s
+    WHERE (
+        mts.status = 'pending'
+        OR (mts.status = 'failed_retryable' AND mts.next_retry_at <= now())
+        OR (
+            mts.status = 'running'
+            AND coalesce(mts.lease_until, mts.last_started_at + interval '30 minutes') <= now()
+        )
+    )
+    ORDER BY eligible_records.sort_at ASC, eligible_records.id ASC
+    LIMIT %(limit)s
+    FOR UPDATE OF mts SKIP LOCKED
+),
+claimed_existing_task_ids AS (
+    UPDATE dagster_brreg.raw_record_task_states mts
+    SET
+        status = 'running',
+        last_started_at = now(),
+        last_finished_at = NULL,
+        next_retry_at = NULL,
+        lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval,
+        last_error = NULL,
+        updated_at = now()
+    FROM existing_claimable_records
+    WHERE mts.raw_record_id = existing_claimable_records.id
+      AND mts.task_type = %(task_type)s
+    RETURNING mts.raw_record_id AS id
+),
+claimed_task_ids AS (
+    SELECT
+        claimed_existing_task_ids.id,
+        eligible_records.sort_at
+    FROM claimed_existing_task_ids
+    JOIN eligible_records ON eligible_records.id = claimed_existing_task_ids.id
+    UNION ALL
+    SELECT
+        inserted_missing_task_ids.id,
+        eligible_records.sort_at
+    FROM inserted_missing_task_ids
+    JOIN eligible_records ON eligible_records.id = inserted_missing_task_ids.id
+)
+SELECT
+    rr.id,
+    rr.organization_number,
+    rr.organization_name,
+    rr.website,
+    rr.raw_payload
+FROM claimed_task_ids
+JOIN dagster_brreg.raw_records rr ON rr.id = claimed_task_ids.id
+WHERE rr.is_current = true
+ORDER BY claimed_task_ids.sort_at ASC, claimed_task_ids.id ASC
+LIMIT %(limit)s
+"""
+
+FETCH_PENDING_WEB_SEARCH_LLM_RECORDS_SQL = """
+WITH lock_task AS (
+    SELECT pg_advisory_xact_lock(hashtext('dagster_brreg.raw_record_task_states:' || %(task_type)s))
+),
+active_slots AS (
+    SELECT GREATEST(%(max_parallel_tasks)s - count(*)::int, 0) AS available_slots
+    FROM dagster_brreg.raw_record_task_states ts
+    CROSS JOIN lock_task
+    WHERE ts.task_type = %(task_type)s
+      AND ts.status = 'running'
+      AND coalesce(ts.lease_until, ts.last_started_at + interval '30 minutes') > now()
+),
+eligible_records AS (
+    SELECT
+        rr.id,
+        coalesce(ts.next_retry_at, rr.last_seen_at) AS sort_at
+    FROM dagster_brreg.raw_records rr
+    LEFT JOIN dagster_brreg.raw_record_task_states ts
+      ON ts.raw_record_id = rr.id
+     AND ts.task_type = %(task_type)s
+    WHERE rr.is_current = true
+      AND EXISTS (
+          SELECT 1
+          FROM dagster_brreg.domain_search_results dsr
+          WHERE dsr.raw_record_id = rr.id
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM dagster_brreg.domain_candidates dc
+          WHERE dc.raw_record_id = rr.id
+            AND dc.signal = 'website_field'
+            AND dc.status IN ('candidate', 'accepted')
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM dagster_brreg.domain_candidates dc
+          WHERE dc.raw_record_id = rr.id
+            AND dc.signal = 'web_search_llm'
+            AND dc.status IN ('candidate', 'accepted')
+      )
+      AND (
+          ts.raw_record_id IS NULL
+          OR ts.status = 'pending'
+          OR (ts.status = 'failed_retryable' AND ts.next_retry_at <= now())
+          OR (
+              ts.status = 'running'
+              AND coalesce(ts.lease_until, ts.last_started_at + interval '30 minutes') <= now()
+          )
+          OR (
+              ts.status IN ('succeeded', 'skipped')
+              AND EXISTS (
+                  SELECT 1
+                  FROM dagster_brreg.domain_search_results dsr
+                  WHERE dsr.raw_record_id = rr.id
+                    AND dsr.updated_at > coalesce(ts.last_finished_at, '-infinity'::timestamptz)
+              )
+          )
+      )
+    ORDER BY coalesce(ts.next_retry_at, rr.last_seen_at) ASC, rr.id ASC
+    LIMIT (SELECT LEAST(%(limit)s, active_slots.available_slots) FROM active_slots)
+),
+inserted_missing_task_ids AS (
+    INSERT INTO dagster_brreg.raw_record_task_states (
+        raw_record_id,
+        task_type,
+        status,
+        last_started_at,
+        lease_until,
+        next_retry_at
+    )
+    SELECT
+        eligible_records.id,
+        %(task_type)s,
+        'running',
+        now(),
+        now() + (%(lease_seconds)s::text || ' seconds')::interval,
+        NULL
+    FROM eligible_records
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM dagster_brreg.raw_record_task_states mts
+        WHERE mts.raw_record_id = eligible_records.id
+          AND mts.task_type = %(task_type)s
+    )
+    ON CONFLICT (raw_record_id, task_type) DO NOTHING
+    RETURNING raw_record_id AS id
+),
+existing_claimable_records AS (
+    SELECT
+        mts.raw_record_id AS id
+    FROM eligible_records
+    JOIN dagster_brreg.raw_record_task_states mts
+      ON mts.raw_record_id = eligible_records.id
+     AND mts.task_type = %(task_type)s
+    WHERE (
+        mts.status = 'pending'
+        OR (mts.status = 'failed_retryable' AND mts.next_retry_at <= now())
+        OR (
+            mts.status = 'running'
+            AND coalesce(mts.lease_until, mts.last_started_at + interval '30 minutes') <= now()
+        )
+        OR (
+            mts.status IN ('succeeded', 'skipped')
+            AND EXISTS (
+                SELECT 1
+                FROM dagster_brreg.domain_search_results dsr
+                WHERE dsr.raw_record_id = eligible_records.id
+                  AND dsr.updated_at > coalesce(mts.last_finished_at, '-infinity'::timestamptz)
+            )
+        )
+    )
+    ORDER BY eligible_records.sort_at ASC, eligible_records.id ASC
+    LIMIT %(limit)s
+    FOR UPDATE OF mts SKIP LOCKED
+),
+claimed_existing_task_ids AS (
+    UPDATE dagster_brreg.raw_record_task_states mts
+    SET
+        status = 'running',
+        last_started_at = now(),
+        last_finished_at = NULL,
+        next_retry_at = NULL,
+        lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval,
+        last_error = NULL,
+        updated_at = now()
+    FROM existing_claimable_records
+    WHERE mts.raw_record_id = existing_claimable_records.id
+      AND mts.task_type = %(task_type)s
+    RETURNING mts.raw_record_id AS id
+),
+claimed_task_ids AS (
+    SELECT
+        claimed_existing_task_ids.id,
+        eligible_records.sort_at
+    FROM claimed_existing_task_ids
+    JOIN eligible_records ON eligible_records.id = claimed_existing_task_ids.id
+    UNION ALL
+    SELECT
+        inserted_missing_task_ids.id,
+        eligible_records.sort_at
+    FROM inserted_missing_task_ids
+    JOIN eligible_records ON eligible_records.id = inserted_missing_task_ids.id
+)
+SELECT
+    rr.id,
+    rr.organization_number,
+    rr.organization_name,
+    rr.website,
+    rr.raw_payload
+FROM claimed_task_ids
+JOIN dagster_brreg.raw_records rr ON rr.id = claimed_task_ids.id
+WHERE rr.is_current = true
+ORDER BY claimed_task_ids.sort_at ASC, claimed_task_ids.id ASC
+LIMIT %(limit)s
+"""
+
 CREATE_TASK_ATTEMPT_SQL = """
 INSERT INTO dagster_brreg.task_attempts (
     enrichment_run_id,
@@ -1281,6 +1739,109 @@ SET
     confidence = GREATEST(dagster_brreg.domain_candidates.confidence, EXCLUDED.confidence),
     evidence = dagster_brreg.domain_candidates.evidence || EXCLUDED.evidence,
     metadata = dagster_brreg.domain_candidates.metadata || EXCLUDED.metadata,
+    updated_at = now()
+"""
+
+INSERT_DOMAIN_SEARCH_RESULT_SQL = """
+INSERT INTO dagster_brreg.domain_search_results (
+    raw_record_id,
+    task_attempt_id,
+    provider,
+    query,
+    rank,
+    url,
+    domain,
+    normalized_domain,
+    title,
+    description,
+    metadata
+) VALUES (
+    %(raw_record_id)s,
+    %(task_attempt_id)s,
+    %(provider)s,
+    %(query)s,
+    %(rank)s,
+    %(url)s,
+    %(domain)s,
+    %(normalized_domain)s,
+    %(title)s,
+    %(description)s,
+    %(metadata)s::jsonb
+)
+ON CONFLICT (raw_record_id, provider, query, rank, url) DO UPDATE
+SET
+    task_attempt_id = EXCLUDED.task_attempt_id,
+    domain = EXCLUDED.domain,
+    normalized_domain = EXCLUDED.normalized_domain,
+    title = EXCLUDED.title,
+    description = EXCLUDED.description,
+    metadata = dagster_brreg.domain_search_results.metadata || EXCLUDED.metadata,
+    updated_at = now()
+"""
+
+FETCH_DOMAIN_SEARCH_RESULTS_FOR_RAW_RECORD_SQL = """
+SELECT
+    id,
+    raw_record_id,
+    query,
+    rank,
+    url,
+    domain,
+    normalized_domain,
+    title,
+    description,
+    metadata
+FROM dagster_brreg.domain_search_results
+WHERE raw_record_id = %(raw_record_id)s
+ORDER BY rank ASC, url ASC
+"""
+
+INSERT_DOMAIN_CRAWL_RESULT_SQL = """
+INSERT INTO dagster_brreg.domain_crawl_results (
+    raw_record_id,
+    search_result_id,
+    task_attempt_id,
+    url,
+    domain,
+    normalized_domain,
+    status,
+    markdown,
+    markdown_hash,
+    llm_confidence,
+    llm_decision,
+    llm_reason,
+    llm_evidence,
+    metadata
+) VALUES (
+    %(raw_record_id)s,
+    %(search_result_id)s,
+    %(task_attempt_id)s,
+    %(url)s,
+    %(domain)s,
+    %(normalized_domain)s,
+    %(status)s,
+    %(markdown)s,
+    %(markdown_hash)s,
+    %(llm_confidence)s,
+    %(llm_decision)s,
+    %(llm_reason)s,
+    %(llm_evidence)s::jsonb,
+    %(metadata)s::jsonb
+)
+ON CONFLICT (raw_record_id, url) DO UPDATE
+SET
+    search_result_id = EXCLUDED.search_result_id,
+    task_attempt_id = EXCLUDED.task_attempt_id,
+    domain = EXCLUDED.domain,
+    normalized_domain = EXCLUDED.normalized_domain,
+    status = EXCLUDED.status,
+    markdown = EXCLUDED.markdown,
+    markdown_hash = EXCLUDED.markdown_hash,
+    llm_confidence = EXCLUDED.llm_confidence,
+    llm_decision = EXCLUDED.llm_decision,
+    llm_reason = EXCLUDED.llm_reason,
+    llm_evidence = EXCLUDED.llm_evidence,
+    metadata = dagster_brreg.domain_crawl_results.metadata || EXCLUDED.metadata,
     updated_at = now()
 """
 
