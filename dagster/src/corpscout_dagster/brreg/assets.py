@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -11,6 +12,11 @@ import psycopg
 from dagster import AssetKey, Field, Int, asset
 
 from corpscout_dagster.brreg.domain_enrichment import build_domain_proposals, discover_domain_candidates_for_signal
+from corpscout_dagster.brreg.domain_search_llm import (
+    SearchResult,
+    collect_duckduckgo_search_results,
+    verify_domain_search_results_with_llm,
+)
 from corpscout_dagster.brreg.enhanced_payload import (
     BRREG_ENHANCED_SCHEMA_VERSION,
     build_brreg_enhanced_payload,
@@ -40,8 +46,10 @@ from corpscout_dagster.brreg.working_store import (
     FinishEnrichmentRun,
     EnhancedPublishRecord,
     IncrementEnrichmentRunProgress,
+    InsertDomainCrawlResult,
     InsertDomainCandidate,
     InsertDomainProposal,
+    InsertDomainSearchResult,
     InsertEnhancedRecord,
     InsertTranslationResult,
     RawTaskRecord,
@@ -56,6 +64,7 @@ DEFAULT_TRANSLATION_RECORD_BATCH_SIZE = 50
 DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN = 0
 DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE = 5000
 DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE = 10
+DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE = 10
 DEFAULT_DOMAIN_CRTSH_BATCH_SIZE = 10
 DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE = 25
 DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE = 10
@@ -67,6 +76,7 @@ DEFAULT_TASK_LEASE_SECONDS = 1800
 DEFAULT_TRANSLATION_MAX_PARALLEL_TASKS = DEFAULT_TRANSLATION_RECORD_BATCH_SIZE
 DEFAULT_DOMAIN_WEBSITE_FIELD_MAX_PARALLEL_TASKS = 50
 DEFAULT_DOMAIN_DUCKDUCKGO_MAX_PARALLEL_TASKS = 2
+DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS = 2
 DEFAULT_DOMAIN_CRTSH_MAX_PARALLEL_TASKS = 5
 DEFAULT_DOMAIN_WIKIDATA_MAX_PARALLEL_TASKS = 5
 DEFAULT_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS = 1
@@ -74,9 +84,7 @@ DEFAULT_DOMAIN_PROPOSAL_MAX_PARALLEL_TASKS = 50
 
 DOMAIN_SIGNAL_ASSET_KEYS = [
     AssetKey("brreg_domain_website_field_candidates"),
-    AssetKey("brreg_domain_duckduckgo_candidates"),
-    AssetKey("brreg_domain_crtsh_candidates"),
-    AssetKey("brreg_domain_wikidata_candidates"),
+    AssetKey("brreg_domain_duckduckgo_search_results"),
     AssetKey("brreg_domain_web_search_llm_candidates"),
 ]
 
@@ -235,6 +243,38 @@ def brreg_domain_website_field_candidates(context) -> dict[str, int]:
 
 
 @asset(
+    name="brreg_domain_duckduckgo_search_results",
+    deps=[AssetKey("brreg_domain_website_field_candidates")],
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE", DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE),
+        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        max_parallel_tasks_default=_env_int(
+            "BRREG_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS",
+            DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS,
+        ),
+    ),
+)
+def brreg_domain_duckduckgo_search_results(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE",
+        batch_size_default=DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE,
+        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+        max_parallel_tasks_env="BRREG_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS",
+        max_parallel_tasks_default=DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS,
+    )
+    return materialize_brreg_duckduckgo_search_results(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
+        max_parallel_tasks=run_config.max_parallel_tasks,
+    )
+
+
+@asset(
     name="brreg_domain_duckduckgo_candidates",
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=_env_int("BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE", DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE),
@@ -335,6 +375,7 @@ def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
 
 @asset(
     name="brreg_domain_web_search_llm_candidates",
+    deps=[AssetKey("brreg_domain_duckduckgo_search_results")],
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=_env_int("BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE", DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE),
         max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
@@ -354,12 +395,10 @@ def brreg_domain_web_search_llm_candidates(context) -> dict[str, int]:
         max_parallel_tasks_env="BRREG_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS",
         max_parallel_tasks_default=DEFAULT_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS,
     )
-    return materialize_brreg_domain_signal_candidates(
+    return materialize_brreg_web_search_llm_candidates(
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
-        signal="web_search_llm",
-        task_type="domain_web_search_llm",
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
         max_parallel_tasks=run_config.max_parallel_tasks,
@@ -741,6 +780,247 @@ def materialize_brreg_domain_signal_candidates(
             **result,
             "dagster_run_id": context.run_id,
             "signal": signal,
+            "task_type": task_type,
+            "max_batches_per_run": max_batches_per_run,
+            "max_parallel_tasks": max_parallel_tasks,
+            "stopped_reason": stopped_reason,
+        }
+    )
+    return result
+
+
+def materialize_brreg_duckduckgo_search_results(
+    context,
+    *,
+    connection_factory,
+    database_url: str,
+    batch_size: int,
+    max_batches_per_run: int = 1,
+    max_parallel_tasks: int = DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS,
+    search_collector=collect_duckduckgo_search_results,
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if max_batches_per_run < 0:
+        raise ValueError("max_batches_per_run must be zero or positive")
+    if max_parallel_tasks <= 0:
+        raise ValueError("max_parallel_tasks must be positive")
+    rows_seen = 0
+    rows_completed = 0
+    rows_failed = 0
+    search_results_written = 0
+    batches_processed = 0
+    stopped_reason = "max_batches_reached"
+    task_type = "domain_duckduckgo_search"
+    enrichment_run_id: str | None = None
+    with connection_factory(database_url) as conn:
+        with conn.cursor() as cursor:
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=_enrichment_run_key(context, task_type),
+                    run_type=task_type,
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id, "provider": "duckduckgo"},
+                )
+            )
+        conn.commit()
+
+        try:
+            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
+                with conn.cursor() as cursor:
+                    records = BrregWorkingStore(cursor).fetch_pending_duckduckgo_search_records(
+                        limit=batch_size,
+                        max_parallel_tasks=max_parallel_tasks,
+                        lease_seconds=DEFAULT_TASK_LEASE_SECONDS,
+                    )
+                conn.commit()
+                if not records:
+                    stopped_reason = "no_pending_records"
+                    break
+
+                batches_processed += 1
+                rows_seen += len(records)
+                completed, failed, written = _process_duckduckgo_search_records(
+                    connection_factory=connection_factory,
+                    database_url=database_url,
+                    shared_conn=conn,
+                    enrichment_run_id=enrichment_run_id,
+                    records=records,
+                    max_parallel_tasks=max_parallel_tasks,
+                    search_collector=search_collector,
+                )
+                rows_completed += completed
+                rows_failed += failed
+                search_results_written += written
+
+            context.log.info(
+                "BRREG DuckDuckGo search batches committed rows_seen=%s rows_completed=%s rows_failed=%s search_results_written=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
+                rows_seen,
+                rows_completed,
+                rows_failed,
+                search_results_written,
+                batches_processed,
+                max_batches_per_run,
+                max_parallel_tasks,
+                stopped_reason,
+            )
+
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(
+                        enrichment_run_id=enrichment_run_id,
+                        status="succeeded" if rows_failed == 0 else "failed",
+                        error=None if rows_failed == 0 else f"{rows_failed} DuckDuckGo search rows failed",
+                    )
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if enrichment_run_id is not None:
+                with conn.cursor() as cursor:
+                    BrregWorkingStore(cursor).finish_enrichment_run(
+                        FinishEnrichmentRun(
+                            enrichment_run_id=enrichment_run_id,
+                            status="failed",
+                            error=str(exc),
+                        )
+                    )
+                conn.commit()
+            raise
+
+    result = {
+        "rows_seen": rows_seen,
+        "rows_completed": rows_completed,
+        "rows_failed": rows_failed,
+        "search_results_written": search_results_written,
+        "batches_processed": batches_processed,
+    }
+    context.add_output_metadata(
+        {
+            **result,
+            "dagster_run_id": context.run_id,
+            "task_type": task_type,
+            "max_batches_per_run": max_batches_per_run,
+            "max_parallel_tasks": max_parallel_tasks,
+            "stopped_reason": stopped_reason,
+        }
+    )
+    return result
+
+
+def materialize_brreg_web_search_llm_candidates(
+    context,
+    *,
+    connection_factory,
+    database_url: str,
+    batch_size: int,
+    max_batches_per_run: int = 1,
+    max_parallel_tasks: int = DEFAULT_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS,
+    verifier=verify_domain_search_results_with_llm,
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if max_batches_per_run < 0:
+        raise ValueError("max_batches_per_run must be zero or positive")
+    if max_parallel_tasks <= 0:
+        raise ValueError("max_parallel_tasks must be positive")
+    rows_seen = 0
+    rows_completed = 0
+    rows_failed = 0
+    domains_written = 0
+    crawl_results_written = 0
+    batches_processed = 0
+    stopped_reason = "max_batches_reached"
+    task_type = "domain_web_search_llm"
+    enrichment_run_id: str | None = None
+    with connection_factory(database_url) as conn:
+        with conn.cursor() as cursor:
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=_enrichment_run_key(context, task_type),
+                    run_type=task_type,
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id, "signal": "web_search_llm"},
+                )
+            )
+        conn.commit()
+
+        try:
+            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
+                with conn.cursor() as cursor:
+                    records = BrregWorkingStore(cursor).fetch_pending_web_search_llm_records(
+                        limit=batch_size,
+                        max_parallel_tasks=max_parallel_tasks,
+                        lease_seconds=DEFAULT_TASK_LEASE_SECONDS,
+                    )
+                conn.commit()
+                if not records:
+                    stopped_reason = "no_pending_records"
+                    break
+
+                batches_processed += 1
+                rows_seen += len(records)
+                completed, failed, written, crawl_written = _process_web_search_llm_records(
+                    connection_factory=connection_factory,
+                    database_url=database_url,
+                    shared_conn=conn,
+                    enrichment_run_id=enrichment_run_id,
+                    records=records,
+                    max_parallel_tasks=max_parallel_tasks,
+                    verifier=verifier,
+                )
+                rows_completed += completed
+                rows_failed += failed
+                domains_written += written
+                crawl_results_written += crawl_written
+
+            context.log.info(
+                "BRREG web-search LLM batches committed rows_seen=%s rows_completed=%s rows_failed=%s domains_written=%s crawl_results_written=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
+                rows_seen,
+                rows_completed,
+                rows_failed,
+                domains_written,
+                crawl_results_written,
+                batches_processed,
+                max_batches_per_run,
+                max_parallel_tasks,
+                stopped_reason,
+            )
+
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(
+                        enrichment_run_id=enrichment_run_id,
+                        status="succeeded" if rows_failed == 0 else "failed",
+                        error=None if rows_failed == 0 else f"{rows_failed} web-search LLM rows failed",
+                    )
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if enrichment_run_id is not None:
+                with conn.cursor() as cursor:
+                    BrregWorkingStore(cursor).finish_enrichment_run(
+                        FinishEnrichmentRun(
+                            enrichment_run_id=enrichment_run_id,
+                            status="failed",
+                            error=str(exc),
+                        )
+                    )
+                conn.commit()
+            raise
+
+    result = {
+        "rows_seen": rows_seen,
+        "rows_completed": rows_completed,
+        "rows_failed": rows_failed,
+        "domains_written": domains_written,
+        "crawl_results_written": crawl_results_written,
+        "batches_processed": batches_processed,
+    }
+    context.add_output_metadata(
+        {
+            **result,
+            "dagster_run_id": context.run_id,
+            "signal": "web_search_llm",
             "task_type": task_type,
             "max_batches_per_run": max_batches_per_run,
             "max_parallel_tasks": max_parallel_tasks,
@@ -1341,6 +1621,12 @@ def _unique_translation_items(items: Iterable[TranslationItem]) -> list[Translat
     return unique
 
 
+def _resolve_maybe_awaitable(value):
+    if inspect.isawaitable(value):
+        return asyncio.run(value)
+    return value
+
+
 def _process_domain_signal_records(
     *,
     connection_factory,
@@ -1449,6 +1735,216 @@ def _process_domain_signal_record(
         return 0, 1, 0
 
 
+def _process_duckduckgo_search_records(
+    *,
+    connection_factory,
+    database_url: str,
+    shared_conn,
+    enrichment_run_id: str,
+    records: list[RawTaskRecord],
+    max_parallel_tasks: int,
+    search_collector,
+) -> tuple[int, int, int]:
+    if max_parallel_tasks <= 1 or len(records) <= 1:
+        completed = 0
+        failed = 0
+        results_written = 0
+        for record in records:
+            record_completed, record_failed, record_results = _process_duckduckgo_search_record(
+                conn=shared_conn,
+                enrichment_run_id=enrichment_run_id,
+                record=record,
+                search_collector=search_collector,
+            )
+            completed += record_completed
+            failed += record_failed
+            results_written += record_results
+        return completed, failed, results_written
+
+    completed = 0
+    failed = 0
+    results_written = 0
+    worker_count = min(max_parallel_tasks, len(records))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(
+                _process_duckduckgo_search_record_with_new_connection,
+                connection_factory=connection_factory,
+                database_url=database_url,
+                enrichment_run_id=enrichment_run_id,
+                record=record,
+                search_collector=search_collector,
+            )
+            for record in records
+        ]
+        for future in as_completed(futures):
+            record_completed, record_failed, record_results = future.result()
+            completed += record_completed
+            failed += record_failed
+            results_written += record_results
+    return completed, failed, results_written
+
+
+def _process_duckduckgo_search_record_with_new_connection(
+    *,
+    connection_factory,
+    database_url: str,
+    enrichment_run_id: str,
+    record: RawTaskRecord,
+    search_collector,
+) -> tuple[int, int, int]:
+    with connection_factory(database_url) as conn:
+        return _process_duckduckgo_search_record(
+            conn=conn,
+            enrichment_run_id=enrichment_run_id,
+            record=record,
+            search_collector=search_collector,
+        )
+
+
+def _process_duckduckgo_search_record(
+    *,
+    conn,
+    enrichment_run_id: str,
+    record: RawTaskRecord,
+    search_collector,
+) -> tuple[int, int, int]:
+    task_type = "domain_duckduckgo_search"
+    attempt = _create_task_attempt(
+        conn=conn,
+        enrichment_run_id=enrichment_run_id,
+        record=record,
+        task_type=task_type,
+    )
+    try:
+        results_written = _discover_record_duckduckgo_search_results(
+            conn=conn,
+            enrichment_run_id=enrichment_run_id,
+            attempt=attempt,
+            record=record,
+            search_collector=search_collector,
+        )
+        return 1, 0, results_written
+    except Exception as exc:
+        conn.rollback()
+        _mark_record_task_failed(
+            conn=conn,
+            enrichment_run_id=enrichment_run_id,
+            attempt=attempt,
+            record=record,
+            task_type=task_type,
+            error=str(exc),
+        )
+        return 0, 1, 0
+
+
+def _process_web_search_llm_records(
+    *,
+    connection_factory,
+    database_url: str,
+    shared_conn,
+    enrichment_run_id: str,
+    records: list[RawTaskRecord],
+    max_parallel_tasks: int,
+    verifier,
+) -> tuple[int, int, int, int]:
+    if max_parallel_tasks <= 1 or len(records) <= 1:
+        completed = 0
+        failed = 0
+        domains_written = 0
+        crawl_results_written = 0
+        for record in records:
+            record_completed, record_failed, record_domains, record_crawls = _process_web_search_llm_record(
+                conn=shared_conn,
+                enrichment_run_id=enrichment_run_id,
+                record=record,
+                verifier=verifier,
+            )
+            completed += record_completed
+            failed += record_failed
+            domains_written += record_domains
+            crawl_results_written += record_crawls
+        return completed, failed, domains_written, crawl_results_written
+
+    completed = 0
+    failed = 0
+    domains_written = 0
+    crawl_results_written = 0
+    worker_count = min(max_parallel_tasks, len(records))
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = [
+            executor.submit(
+                _process_web_search_llm_record_with_new_connection,
+                connection_factory=connection_factory,
+                database_url=database_url,
+                enrichment_run_id=enrichment_run_id,
+                record=record,
+                verifier=verifier,
+            )
+            for record in records
+        ]
+        for future in as_completed(futures):
+            record_completed, record_failed, record_domains, record_crawls = future.result()
+            completed += record_completed
+            failed += record_failed
+            domains_written += record_domains
+            crawl_results_written += record_crawls
+    return completed, failed, domains_written, crawl_results_written
+
+
+def _process_web_search_llm_record_with_new_connection(
+    *,
+    connection_factory,
+    database_url: str,
+    enrichment_run_id: str,
+    record: RawTaskRecord,
+    verifier,
+) -> tuple[int, int, int, int]:
+    with connection_factory(database_url) as conn:
+        return _process_web_search_llm_record(
+            conn=conn,
+            enrichment_run_id=enrichment_run_id,
+            record=record,
+            verifier=verifier,
+        )
+
+
+def _process_web_search_llm_record(
+    *,
+    conn,
+    enrichment_run_id: str,
+    record: RawTaskRecord,
+    verifier,
+) -> tuple[int, int, int, int]:
+    task_type = "domain_web_search_llm"
+    attempt = _create_task_attempt(
+        conn=conn,
+        enrichment_run_id=enrichment_run_id,
+        record=record,
+        task_type=task_type,
+    )
+    try:
+        domains_written, crawl_results_written = _verify_record_web_search_llm_candidates(
+            conn=conn,
+            enrichment_run_id=enrichment_run_id,
+            attempt=attempt,
+            record=record,
+            verifier=verifier,
+        )
+        return 1, 0, domains_written, crawl_results_written
+    except Exception as exc:
+        conn.rollback()
+        _mark_record_task_failed(
+            conn=conn,
+            enrichment_run_id=enrichment_run_id,
+            attempt=attempt,
+            record=record,
+            task_type=task_type,
+            error=str(exc),
+        )
+        return 0, 1, 0, 0
+
+
 def _discover_record_domain_signal(
     *,
     conn,
@@ -1484,12 +1980,144 @@ def _discover_record_domain_signal(
                 for candidate in candidates
             ]
         )
-        store.finish_task_attempt(task_attempt_id=attempt.id, status="succeeded", error=None)
+        task_status = "skipped" if signal == "website_field" and not candidates else "succeeded"
+        store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=None)
         store.increment_enrichment_run_progress(
             IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
         )
     conn.commit()
     return len(candidates)
+
+
+def _discover_record_duckduckgo_search_results(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: RawTaskRecord,
+    search_collector,
+) -> int:
+    search_results = _resolve_maybe_awaitable(
+        search_collector(
+            raw_payload=record.raw_payload,
+            organization_number=record.organization_number,
+            organization_name=record.organization_name,
+            country="NO",
+        )
+    )
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        store.insert_domain_search_results(
+            [
+                InsertDomainSearchResult(
+                    raw_record_id=record.id,
+                    task_attempt_id=attempt.id,
+                    provider="duckduckgo",
+                    query=result.query,
+                    rank=result.rank,
+                    url=result.url,
+                    domain=result.domain,
+                    normalized_domain=result.normalized_domain,
+                    title=result.title,
+                    description=result.description,
+                    metadata={},
+                )
+                for result in search_results
+            ]
+        )
+        store.finish_task_attempt(task_attempt_id=attempt.id, status="succeeded", error=None)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
+        )
+    conn.commit()
+    return len(search_results)
+
+
+def _verify_record_web_search_llm_candidates(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: RawTaskRecord,
+    verifier,
+) -> tuple[int, int]:
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        search_rows = store.fetch_domain_search_results_for_raw_record(raw_record_id=record.id)
+    search_row_by_domain_url = {
+        (row.normalized_domain, row.url): row
+        for row in search_rows
+    }
+    search_results = [
+        SearchResult(
+            query=row.query,
+            rank=row.rank,
+            url=row.url,
+            domain=row.domain,
+            normalized_domain=row.normalized_domain,
+            title=row.title or "",
+            description=row.description or "",
+        )
+        for row in search_rows
+    ]
+    verified = _resolve_maybe_awaitable(
+        verifier(
+            raw_payload=record.raw_payload,
+            organization_number=record.organization_number,
+            organization_name=record.organization_name,
+            country="NO",
+            search_results=search_results,
+        )
+    )
+    crawl_rows: list[InsertDomainCrawlResult] = []
+    for artifact in verified.crawl_results:
+        search_row = search_row_by_domain_url.get(
+            (artifact.search_result.normalized_domain, artifact.search_result.url)
+        )
+        if search_row is None:
+            raise RuntimeError("verified crawl artifact has no matching stored search result")
+        crawl_rows.append(
+            InsertDomainCrawlResult(
+                raw_record_id=record.id,
+                search_result_id=search_row.id,
+                task_attempt_id=attempt.id,
+                url=artifact.search_result.url,
+                domain=artifact.search_result.domain,
+                normalized_domain=artifact.search_result.normalized_domain,
+                status=artifact.status,
+                markdown=artifact.markdown,
+                markdown_hash=artifact.markdown_hash,
+                llm_confidence=artifact.llm_confidence,
+                llm_decision=artifact.llm_decision,
+                llm_reason=artifact.llm_reason,
+                llm_evidence=artifact.llm_evidence,
+                metadata=artifact.metadata,
+            )
+        )
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        store.insert_domain_crawl_results(crawl_rows)
+        store.insert_domain_candidates(
+            [
+                InsertDomainCandidate(
+                    raw_record_id=record.id,
+                    task_attempt_id=attempt.id,
+                    domain=candidate.domain,
+                    normalized_domain=candidate.normalized_domain,
+                    signal=candidate.signal,
+                    confidence=candidate.confidence,
+                    evidence=candidate.evidence,
+                    metadata=candidate.metadata,
+                )
+                for candidate in verified.candidates
+            ]
+        )
+        store.finish_task_attempt(task_attempt_id=attempt.id, status="succeeded", error=None)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
+        )
+    conn.commit()
+    return len(verified.candidates), len(crawl_rows)
 
 
 def _merge_record_domain_proposals(*, conn, enrichment_run_id: str, attempt: TaskAttempt, record: RawTaskRecord) -> int:

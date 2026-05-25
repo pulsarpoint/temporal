@@ -6,6 +6,7 @@ from corpscout_dagster.brreg.assets import (
     build_brreg_working_raw_record_rows,
     brreg_domain_crtsh_candidates,
     brreg_domain_duckduckgo_candidates,
+    brreg_domain_duckduckgo_search_results,
     brreg_domain_proposals,
     brreg_domain_web_search_llm_candidates,
     brreg_domain_website_field_candidates,
@@ -16,13 +17,17 @@ from corpscout_dagster.brreg.assets import (
     materialize_brreg_enhanced_records,
     materialize_brreg_publish_enhanced_records,
     materialize_brreg_domain_proposals,
+    materialize_brreg_duckduckgo_search_results,
     materialize_brreg_domain_signal_candidates,
+    materialize_brreg_web_search_llm_candidates,
     materialize_brreg_translation_results,
     materialize_brreg_working_raw_records,
     resolve_brreg_batch_run_config,
 )
 from corpscout_dagster.brreg.fx_rates import FxRateSet
 from corpscout_dagster.brreg.models import BrregRawRecord
+from corpscout_dagster.brreg.domain_enrichment import DomainCandidate
+from corpscout_dagster.brreg.domain_search_llm import DomainCrawlArtifact, SearchResult, VerifiedDomainSearchResults
 from corpscout_dagster.brreg.translation import TranslationItem, translation_item_id
 from corpscout_dagster.definitions import defs
 
@@ -187,9 +192,10 @@ def test_definitions_include_brreg_working_raw_records_asset() -> None:
     assert "brreg_working_raw_records" in asset_keys
     assert "brreg_translation_results" in asset_keys
     assert "brreg_domain_website_field_candidates" in asset_keys
-    assert "brreg_domain_duckduckgo_candidates" in asset_keys
-    assert "brreg_domain_crtsh_candidates" in asset_keys
-    assert "brreg_domain_wikidata_candidates" in asset_keys
+    assert "brreg_domain_duckduckgo_search_results" in asset_keys
+    assert "brreg_domain_duckduckgo_candidates" not in asset_keys
+    assert "brreg_domain_crtsh_candidates" not in asset_keys
+    assert "brreg_domain_wikidata_candidates" not in asset_keys
     assert "brreg_domain_web_search_llm_candidates" in asset_keys
     assert "brreg_domain_dns_heuristic_candidates" not in asset_keys
     assert "brreg_domain_proposals" in asset_keys
@@ -204,14 +210,15 @@ def test_definitions_include_independent_brreg_jobs() -> None:
     assert "brreg_translate_job" in job_names
     assert "brreg_domain_enrichment_job" in job_names
     assert "brreg_domain_website_field_job" in job_names
-    assert "brreg_domain_duckduckgo_job" in job_names
-    assert "brreg_domain_crtsh_job" in job_names
-    assert "brreg_domain_wikidata_job" in job_names
+    assert "brreg_domain_duckduckgo_search_job" in job_names
+    assert "brreg_domain_duckduckgo_job" not in job_names
+    assert "brreg_domain_crtsh_job" not in job_names
+    assert "brreg_domain_wikidata_job" not in job_names
     assert "brreg_domain_web_search_llm_job" in job_names
     assert "brreg_domain_dns_heuristic_job" not in job_names
     assert "brreg_domain_proposals_job" in job_names
     assert brreg_translation_results is not brreg_domain_website_field_candidates
-    assert brreg_domain_proposals is not brreg_domain_duckduckgo_candidates
+    assert brreg_domain_proposals is not brreg_domain_duckduckgo_search_results
     assert brreg_domain_crtsh_candidates is not brreg_domain_wikidata_candidates
     assert brreg_domain_web_search_llm_candidates is not brreg_domain_wikidata_candidates
     assert "brreg_enhanced_records_job" in job_names
@@ -223,9 +230,7 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
     configurable_assets = [
         brreg_translation_results,
         brreg_domain_website_field_candidates,
-        brreg_domain_duckduckgo_candidates,
-        brreg_domain_crtsh_candidates,
-        brreg_domain_wikidata_candidates,
+        brreg_domain_duckduckgo_search_results,
         brreg_domain_web_search_llm_candidates,
         brreg_domain_proposals,
     ]
@@ -600,6 +605,179 @@ def test_materialize_brreg_domain_signal_candidates_writes_independent_task_resu
     many_sql_calls = [sql for sql, _ in connection.cursor_instance.many_calls]
     assert any("INSERT INTO dagster_brreg.domain_candidates" in sql for sql in many_sql_calls)
     assert any("UPDATE dagster_brreg.task_attempts" in sql for sql in sql_calls)
+
+
+def test_materialize_brreg_website_field_candidates_skips_records_without_website() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    raw_record_id = "00000000-0000-0000-0000-000000000010"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", raw_record_id, 1),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                None,
+                {"organisasjonsnummer": "810202572"},
+            )
+        ],
+    ]
+
+    result = materialize_brreg_domain_signal_candidates(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        signal="website_field",
+        task_type="domain_website_field",
+        batch_size=500,
+        max_parallel_tasks=1,
+    )
+
+    assert result["rows_completed"] == 1
+    assert result["domains_written"] == 0
+    assert any(
+        params.get("status") == "skipped"
+        for _, params in connection.cursor_instance.calls
+    )
+
+
+def test_materialize_brreg_duckduckgo_search_results_writes_search_artifacts() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    raw_record_id = "00000000-0000-0000-0000-000000000010"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", raw_record_id, 1),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                None,
+                {"organisasjonsnummer": "810202572"},
+            )
+        ],
+    ]
+
+    result = materialize_brreg_duckduckgo_search_results(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        batch_size=10,
+        max_parallel_tasks=1,
+        search_collector=lambda **_: [
+            SearchResult(
+                query='"BORTIGARD AS" Norway official website',
+                rank=1,
+                url="https://www.bortigard.no/",
+                domain="www.bortigard.no",
+                normalized_domain="bortigard.no",
+                title="Bortigard AS",
+                description="Norwegian property company.",
+            )
+        ],
+    )
+
+    assert result["rows_seen"] == 1
+    assert result["rows_completed"] == 1
+    assert result["rows_failed"] == 0
+    assert result["search_results_written"] == 1
+    sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
+    sql_params = [params for _, params in connection.cursor_instance.calls]
+    many_sql_calls = [sql for sql, _ in connection.cursor_instance.many_calls]
+    assert any(params.get("task_type") == "domain_duckduckgo_search" for params in sql_params)
+    assert any("INSERT INTO dagster_brreg.domain_search_results" in sql for sql in many_sql_calls)
+
+
+def test_materialize_brreg_web_search_llm_candidates_writes_crawl_and_candidate_artifacts() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    raw_record_id = "00000000-0000-0000-0000-000000000010"
+    search_result_id = "00000000-0000-0000-0000-000000000099"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", raw_record_id, 1),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                None,
+                {"organisasjonsnummer": "810202572"},
+            )
+        ],
+        [
+            (
+                search_result_id,
+                raw_record_id,
+                '"BORTIGARD AS" Norway official website',
+                1,
+                "https://www.bortigard.no/",
+                "www.bortigard.no",
+                "bortigard.no",
+                "Bortigard AS",
+                "Norwegian property company.",
+                {},
+            )
+        ],
+    ]
+    search_result = SearchResult(
+        query='"BORTIGARD AS" Norway official website',
+        rank=1,
+        url="https://www.bortigard.no/",
+        domain="www.bortigard.no",
+        normalized_domain="bortigard.no",
+        title="Bortigard AS",
+        description="Norwegian property company.",
+    )
+
+    result = materialize_brreg_web_search_llm_candidates(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        batch_size=10,
+        max_parallel_tasks=1,
+        verifier=lambda **_: VerifiedDomainSearchResults(
+            candidates=[
+                DomainCandidate(
+                    domain="www.bortigard.no",
+                    normalized_domain="bortigard.no",
+                    signal="web_search_llm",
+                    confidence=91,
+                    evidence={"source": "test"},
+                    metadata={"source": "dagster"},
+                )
+            ],
+            crawl_results=[
+                DomainCrawlArtifact(
+                    search_result=search_result,
+                    status="succeeded",
+                    markdown="# Bortigard AS",
+                    markdown_hash="markdown-hash",
+                    llm_confidence=91,
+                    llm_decision="accepted",
+                    llm_reason="Exact company evidence.",
+                    llm_evidence={"matched_evidence": ["Bortigard AS"]},
+                    metadata={"source": "test"},
+                )
+            ],
+        ),
+    )
+
+    assert result["rows_completed"] == 1
+    assert result["domains_written"] == 1
+    assert result["crawl_results_written"] == 1
+    many_sql_calls = [sql for sql, _ in connection.cursor_instance.many_calls]
+    assert any("INSERT INTO dagster_brreg.domain_crawl_results" in sql for sql in many_sql_calls)
+    assert any("INSERT INTO dagster_brreg.domain_candidates" in sql for sql in many_sql_calls)
 
 
 def test_materialize_brreg_domain_signal_candidates_drains_multiple_batches_for_one_signal() -> None:
