@@ -464,13 +464,18 @@ def test_materialize_brreg_translation_results_drains_multiple_batches_until_emp
     fetch_calls = [
         params
         for sql, params in connection.cursor_instance.calls
-        if "FROM dagster_brreg.raw_records rr" in sql
+        if "WITH pending_task_ids AS" in sql
     ]
     assert fetch_calls == [
-        {"task_type": "translate", "limit": 2},
-        {"task_type": "translate", "limit": 2},
-        {"task_type": "translate", "limit": 2},
+        {"task_type": "translate", "limit": 2, "include_new_records": False},
+        {"task_type": "translate", "limit": 2, "include_new_records": False},
+        {"task_type": "translate", "limit": 2, "include_new_records": False},
     ]
+    assert any(
+        "INSERT INTO dagster_brreg.raw_record_task_states" in sql
+        and "ON CONFLICT (raw_record_id, task_type) DO NOTHING" in sql
+        for sql, _ in connection.cursor_instance.calls
+    )
 
 
 def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -> None:
@@ -618,13 +623,18 @@ def test_materialize_brreg_domain_signal_candidates_drains_multiple_batches_for_
     fetch_calls = [
         params
         for sql, params in connection.cursor_instance.calls
-        if "FROM dagster_brreg.raw_records rr" in sql
+        if "WITH pending_task_ids AS" in sql
     ]
     assert fetch_calls == [
-        {"task_type": "domain_website_field", "limit": 2},
-        {"task_type": "domain_website_field", "limit": 2},
-        {"task_type": "domain_website_field", "limit": 2},
+        {"task_type": "domain_website_field", "limit": 2, "include_new_records": False},
+        {"task_type": "domain_website_field", "limit": 2, "include_new_records": False},
+        {"task_type": "domain_website_field", "limit": 2, "include_new_records": False},
     ]
+    assert any(
+        "INSERT INTO dagster_brreg.raw_record_task_states" in sql
+        and "ON CONFLICT (raw_record_id, task_type) DO NOTHING" in sql
+        for sql, _ in connection.cursor_instance.calls
+    )
 
 
 def test_materialize_brreg_domain_signal_candidates_zero_max_batches_drains_until_empty() -> None:

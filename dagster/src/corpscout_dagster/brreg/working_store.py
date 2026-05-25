@@ -269,12 +269,27 @@ class BrregWorkingStore:
             },
         )
 
-    def fetch_pending_raw_task_records(self, *, task_type: str, limit: int) -> list[RawTaskRecord]:
+    def seed_pending_raw_task_states(self, *, task_type: str) -> None:
+        self._cursor.execute(
+            SEED_PENDING_RAW_TASK_STATES_SQL,
+            {
+                "task_type": task_type,
+            },
+        )
+
+    def fetch_pending_raw_task_records(
+        self,
+        *,
+        task_type: str,
+        limit: int,
+        include_new_records: bool = True,
+    ) -> list[RawTaskRecord]:
         self._cursor.execute(
             FETCH_PENDING_RAW_TASK_RECORDS_SQL,
             {
                 "task_type": task_type,
                 "limit": limit,
+                "include_new_records": include_new_records,
             },
         )
         return [_raw_task_record_from_row(row) for row in self._cursor.fetchall()]
@@ -773,25 +788,96 @@ SET
 WHERE id = %(enrichment_run_id)s
 """
 
+SEED_PENDING_RAW_TASK_STATES_SQL = """
+INSERT INTO dagster_brreg.raw_record_task_states (
+    raw_record_id,
+    task_type,
+    status,
+    next_retry_at
+)
+SELECT
+    rr.id,
+    %(task_type)s,
+    'pending',
+    rr.last_seen_at
+FROM dagster_brreg.raw_records rr
+WHERE rr.is_current = true
+ON CONFLICT (raw_record_id, task_type) DO NOTHING
+"""
+
 FETCH_PENDING_RAW_TASK_RECORDS_SQL = """
+WITH pending_task_ids AS (
+    SELECT
+        ts.raw_record_id AS id,
+        ts.next_retry_at AS sort_at
+    FROM dagster_brreg.raw_record_task_states ts
+    WHERE ts.task_type = %(task_type)s
+      AND ts.status = 'pending'
+    ORDER BY ts.next_retry_at ASC NULLS FIRST, ts.raw_record_id ASC
+    LIMIT %(limit)s
+),
+failed_task_ids AS (
+    SELECT
+        ts.raw_record_id AS id,
+        ts.next_retry_at AS sort_at
+    FROM dagster_brreg.raw_record_task_states ts
+    WHERE ts.task_type = %(task_type)s
+      AND ts.status = 'failed_retryable'
+      AND ts.next_retry_at <= now()
+    ORDER BY ts.next_retry_at ASC, ts.raw_record_id ASC
+    LIMIT %(limit)s
+),
+stale_running_task_ids AS (
+    SELECT
+        ts.raw_record_id AS id,
+        ts.last_started_at AS sort_at
+    FROM dagster_brreg.raw_record_task_states ts
+    WHERE ts.task_type = %(task_type)s
+      AND ts.status = 'running'
+      AND ts.last_started_at < now() - interval '30 minutes'
+    ORDER BY ts.last_started_at ASC, ts.raw_record_id ASC
+    LIMIT %(limit)s
+),
+retryable_task_ids AS (
+    SELECT id, sort_at FROM pending_task_ids
+    UNION ALL
+    SELECT id, sort_at FROM failed_task_ids
+    UNION ALL
+    SELECT id, sort_at FROM stale_running_task_ids
+    ORDER BY sort_at ASC NULLS FIRST, id ASC
+    LIMIT %(limit)s
+),
+new_task_ids AS (
+    SELECT
+        rr.id,
+        rr.last_seen_at AS sort_at
+    FROM dagster_brreg.raw_records rr
+    WHERE %(include_new_records)s
+      AND rr.is_current = true
+      AND NOT EXISTS (
+          SELECT 1
+          FROM dagster_brreg.raw_record_task_states ts
+          WHERE ts.raw_record_id = rr.id
+            AND ts.task_type = %(task_type)s
+      )
+    ORDER BY rr.last_seen_at ASC, rr.id ASC
+    LIMIT %(limit)s
+),
+candidate_ids AS (
+    SELECT id, sort_at FROM retryable_task_ids
+    UNION ALL
+    SELECT id, sort_at FROM new_task_ids
+)
 SELECT
     rr.id,
     rr.organization_number,
     rr.organization_name,
     rr.website,
     rr.raw_payload
-FROM dagster_brreg.raw_records rr
-LEFT JOIN dagster_brreg.raw_record_task_states ts
-  ON ts.raw_record_id = rr.id
- AND ts.task_type = %(task_type)s
+FROM candidate_ids
+JOIN dagster_brreg.raw_records rr ON rr.id = candidate_ids.id
 WHERE rr.is_current = true
-  AND (
-      ts.raw_record_id IS NULL
-      OR ts.status = 'pending'
-      OR (ts.status = 'failed_retryable' AND ts.next_retry_at <= now())
-      OR (ts.status = 'running' AND ts.last_started_at < now() - interval '30 minutes')
-  )
-ORDER BY coalesce(ts.next_retry_at, rr.last_seen_at) ASC, rr.id ASC
+ORDER BY candidate_ids.sort_at ASC, candidate_ids.id ASC
 LIMIT %(limit)s
 """
 

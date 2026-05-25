@@ -1,0 +1,3 @@
+DROP INDEX IF EXISTS dagster_brreg.idx_dagster_brreg_task_states_running_stale_queue;
+DROP INDEX IF EXISTS dagster_brreg.idx_dagster_brreg_task_states_pending_retry_queue;
+DROP INDEX IF EXISTS dagster_brreg.idx_dagster_brreg_raw_records_current_last_seen_id;

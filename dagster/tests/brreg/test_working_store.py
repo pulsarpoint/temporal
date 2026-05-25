@@ -157,7 +157,7 @@ def test_working_store_updates_enrichment_run_progress_and_completion() -> None:
     assert finish_params["status"] == "succeeded"
 
 
-def test_working_store_fetches_pending_task_records_without_coupling_tasks() -> None:
+def test_working_store_fetches_pending_task_records_with_indexed_candidate_branches() -> None:
     cursor = FakeCursor()
     cursor.fetchone_values = []
     cursor.fetchall_values = [
@@ -183,13 +183,38 @@ def test_working_store_fetches_pending_task_records_without_coupling_tasks() -> 
         )
     ]
     sql, params = cursor.calls[0]
-    assert "FROM dagster_brreg.raw_records rr" in sql
-    assert "LEFT JOIN dagster_brreg.raw_record_task_states ts" in sql
+    assert "WITH pending_task_ids AS" in sql
+    assert "pending_task_ids AS" in sql
+    assert "failed_task_ids AS" in sql
+    assert "stale_running_task_ids AS" in sql
+    assert "new_task_ids AS" in sql
+    assert "UNION ALL" in sql
+    assert "NOT EXISTS" in sql
+    assert "%(include_new_records)s" in sql
+    assert "LEFT JOIN dagster_brreg.raw_record_task_states" not in sql
+    assert "JOIN dagster_brreg.raw_records rr ON rr.id = candidate_ids.id" in sql
     assert "ts.status = 'pending'" in sql
     assert "ts.status = 'failed_retryable'" in sql
     assert "ts.status = 'running'" in sql
     assert "next_retry_at <= now()" in sql
-    assert params == {"task_type": "translate", "limit": 100}
+    assert params == {"task_type": "translate", "limit": 100, "include_new_records": True}
+
+
+def test_working_store_can_seed_pending_task_state_queue_for_current_raw_records() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.seed_pending_raw_task_states(task_type="domain_website_field")
+
+    sql, params = cursor.calls[0]
+    assert "INSERT INTO dagster_brreg.raw_record_task_states" in sql
+    assert "next_retry_at" in sql
+    assert "rr.id" in sql
+    assert "rr.last_seen_at" in sql
+    assert "FROM dagster_brreg.raw_records rr" in sql
+    assert "rr.is_current = true" in sql
+    assert "ON CONFLICT (raw_record_id, task_type) DO NOTHING" in sql
+    assert params == {"task_type": "domain_website_field"}
 
 
 def test_working_store_creates_task_attempts_with_next_attempt_number() -> None:

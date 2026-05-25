@@ -57,6 +57,10 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "idx_dagster_brreg_domain_task_success" in sql
     assert "idx_dagster_brreg_domain_proposals_raw_score" in sql
     assert "idx_dagster_brreg_task_states_queue" in sql
+    assert "idx_dagster_brreg_raw_records_current_last_seen_id" in sql
+    assert "ON dagster_brreg.raw_records (last_seen_at, id)" in sql
+    assert "idx_dagster_brreg_task_states_pending_retry_queue" in sql
+    assert "idx_dagster_brreg_task_states_running_stale_queue" in sql
     assert "idx_dagster_brreg_domain_candidates_raw_updated" in sql
 
 
