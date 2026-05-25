@@ -29,6 +29,7 @@ class FakeCursor:
         self.many_calls: list[tuple[str, list[dict]]] = []
         self.last_sql = ""
         self.seed_pending_count = 0
+        self.task_run_lease_row = ("00000000-0000-0000-0000-000000000003", True)
         self.fetchone_values = [
             ("00000000-0000-0000-0000-000000000001",),
             ("00000000-0000-0000-0000-000000000002",),
@@ -45,6 +46,8 @@ class FakeCursor:
     def fetchone(self):
         if "seeded_raw_records" in self.last_sql:
             return (self.seed_pending_count,)
+        if "acquired" in self.last_sql:
+            return self.task_run_lease_row
         return self.fetchone_values.pop(0)
 
     def fetchall(self):
@@ -198,6 +201,9 @@ def test_working_store_fetches_pending_task_records_with_indexed_candidate_branc
     assert "%(include_new_records)s" in sql
     assert "LEFT JOIN dagster_brreg.raw_record_task_states" not in sql
     assert "JOIN dagster_brreg.raw_records rr ON rr.id = candidate_ids.id" in sql
+    assert "FOR UPDATE OF ts SKIP LOCKED" in sql
+    assert "UPDATE dagster_brreg.raw_record_task_states ts" in sql
+    assert "status = 'running'" in sql
     assert "ts.status = 'pending'" in sql
     assert "ts.status = 'failed_retryable'" in sql
     assert "ts.status = 'running'" in sql
@@ -226,6 +232,73 @@ def test_working_store_can_seed_pending_task_state_queue_for_current_raw_records
     assert "seeded_raw_records" in sql
     assert "ON CONFLICT (raw_record_id, task_type) DO NOTHING" in sql
     assert params == {"task_type": "domain_website_field", "limit": 500}
+
+
+def test_working_store_acquires_task_run_lease_with_per_task_limit() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    lease_id = store.try_acquire_raw_task_run_lease(
+        task_type="domain_duckduckgo",
+        enrichment_run_id="00000000-0000-0000-0000-000000000001",
+        dagster_run_id="dagster-run-1",
+        max_concurrent_runs=2,
+        lease_seconds=1800,
+    )
+
+    expire_sql, expire_params = cursor.calls[0]
+    sql, params = cursor.calls[1]
+    assert lease_id == "00000000-0000-0000-0000-000000000003"
+    assert "UPDATE dagster_brreg.raw_record_task_run_leases" in expire_sql
+    assert "lease_until <= now()" in expire_sql
+    assert expire_params == {"task_type": "domain_duckduckgo"}
+    assert "dagster_brreg.raw_record_task_run_leases" in sql
+    assert "pg_advisory_xact_lock" in sql
+    assert "count(*)::int AS active_count" in sql
+    assert "active_count < %(max_concurrent_runs)s" in sql
+    assert "dagster_run_id" in sql
+    assert "acquired" in sql
+    assert params == {
+        "task_type": "domain_duckduckgo",
+        "enrichment_run_id": "00000000-0000-0000-0000-000000000001",
+        "dagster_run_id": "dagster-run-1",
+        "max_concurrent_runs": 2,
+        "lease_seconds": 1800,
+    }
+
+
+def test_working_store_returns_none_when_task_run_lease_limit_is_reached() -> None:
+    cursor = FakeCursor()
+    cursor.task_run_lease_row = (None, False)
+    store = BrregWorkingStore(cursor)
+
+    lease_id = store.try_acquire_raw_task_run_lease(
+        task_type="domain_duckduckgo",
+        enrichment_run_id="00000000-0000-0000-0000-000000000001",
+        dagster_run_id="dagster-run-2",
+        max_concurrent_runs=1,
+        lease_seconds=1800,
+    )
+
+    assert lease_id is None
+
+
+def test_working_store_renews_and_releases_task_run_leases() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.renew_raw_task_run_lease(lease_id="00000000-0000-0000-0000-000000000003", lease_seconds=1800)
+    store.release_raw_task_run_lease(lease_id="00000000-0000-0000-0000-000000000003")
+
+    renew_sql, renew_params = cursor.calls[0]
+    assert "UPDATE dagster_brreg.raw_record_task_run_leases" in renew_sql
+    assert "lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval" in renew_sql
+    assert renew_params == {"lease_id": "00000000-0000-0000-0000-000000000003", "lease_seconds": 1800}
+
+    release_sql, release_params = cursor.calls[1]
+    assert "status = 'released'" in release_sql
+    assert "released_at = now()" in release_sql
+    assert release_params == {"lease_id": "00000000-0000-0000-0000-000000000003"}
 
 
 def test_working_store_creates_task_attempts_with_next_attempt_number() -> None:
@@ -367,6 +440,9 @@ def test_working_store_fetches_domain_proposal_records_when_merge_missing_or_can
     assert "FROM dagster_brreg.raw_records rr" in sql
     assert "LEFT JOIN dagster_brreg.raw_record_task_states ts" in sql
     assert "dc.updated_at > coalesce(ts.last_finished_at" in sql
+    assert "FOR UPDATE OF mts SKIP LOCKED" in sql
+    assert "UPDATE dagster_brreg.raw_record_task_states mts" in sql
+    assert "status = 'running'" in sql
     assert params == {"task_type": "merge_domain_proposals", "limit": 100}
 
 

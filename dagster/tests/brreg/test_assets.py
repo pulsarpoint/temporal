@@ -52,6 +52,7 @@ class FakeCursor:
         self.many_calls: list[tuple[str, list[dict]]] = []
         self.last_sql = ""
         self.seed_pending_count = 0
+        self.task_run_lease_row = ("00000000-0000-0000-0000-000000000003", True)
         self.fetchone_values = [
             ("00000000-0000-0000-0000-000000000001",),
             ("00000000-0000-0000-0000-000000000002",),
@@ -74,6 +75,8 @@ class FakeCursor:
     def fetchone(self):
         if "seeded_raw_records" in self.last_sql:
             return (self.seed_pending_count,)
+        if "acquired" in self.last_sql:
+            return self.task_run_lease_row
         return self.fetchone_values.pop(0)
 
     def fetchall(self):
@@ -232,9 +235,10 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
 
     for asset_def in configurable_assets:
         fields = asset_def.node_def.config_schema.config_type.fields
-        assert set(fields) == {"batch_size", "max_batches_per_run"}
+        assert set(fields) == {"batch_size", "max_batches_per_run", "max_concurrent_runs"}
         assert fields["batch_size"].default_provided
         assert fields["max_batches_per_run"].default_provided
+        assert fields["max_concurrent_runs"].default_provided
 
 
 def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkeypatch) -> None:
@@ -252,6 +256,26 @@ def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkey
 
     assert config.batch_size == 7
     assert config.max_batches_per_run == 3
+    assert config.max_concurrent_runs == 1
+
+
+def test_resolve_brreg_batch_run_config_accepts_launchpad_concurrency_override(monkeypatch) -> None:
+    monkeypatch.setenv("BRREG_TEST_MAX_CONCURRENT_RUNS", "2")
+    context = FakeContext(op_config={"batch_size": 7, "max_batches_per_run": 3, "max_concurrent_runs": 4})
+
+    config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_TEST_BATCH_SIZE",
+        batch_size_default=50,
+        max_batches_env="BRREG_TEST_MAX_BATCHES",
+        max_batches_default=0,
+        max_concurrent_runs_env="BRREG_TEST_MAX_CONCURRENT_RUNS",
+        max_concurrent_runs_default=1,
+    )
+
+    assert config.batch_size == 7
+    assert config.max_batches_per_run == 3
+    assert config.max_concurrent_runs == 4
 
 
 def test_materialize_brreg_working_raw_records_writes_batches_and_progress() -> None:
@@ -327,6 +351,32 @@ def test_materialize_brreg_translation_results_writes_task_cache_and_result() ->
     assert any("INSERT INTO dagster_brreg.translation_results" in sql for sql in sql_calls)
     assert any("INSERT INTO dagster_brreg.translation_cache" in sql for sql in many_sql_calls)
     assert context.metadata[-1]["rows_completed"] == 1
+
+
+def test_materialize_brreg_translation_results_skips_when_task_concurrency_limit_is_reached() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    connection.cursor_instance.task_run_lease_row = (None, False)
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+    ]
+
+    result = materialize_brreg_translation_results(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        translator=FakeTranslator(),
+        batch_size=50,
+        max_concurrent_runs=1,
+        model="qwen3:6b",
+        prompt_version="v1",
+    )
+
+    assert result == {"rows_seen": 0, "rows_completed": 0, "rows_failed": 0, "batches_processed": 0}
+    assert context.metadata[-1]["stopped_reason"] == "concurrency_limit_reached"
+    sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
+    assert any("dagster_brreg.raw_record_task_run_leases" in sql for sql in sql_calls)
+    assert not any("INSERT INTO dagster_brreg.raw_record_task_states" in sql for sql in sql_calls)
 
 
 def test_materialize_brreg_translation_results_translates_unique_batch_misses_in_one_mixed_call() -> None:

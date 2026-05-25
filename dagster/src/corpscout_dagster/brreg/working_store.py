@@ -280,6 +280,60 @@ class BrregWorkingStore:
         row = self._cursor.fetchone()
         return int(row[0] or 0) if row else 0
 
+    def try_acquire_raw_task_run_lease(
+        self,
+        *,
+        task_type: str,
+        enrichment_run_id: str,
+        dagster_run_id: str,
+        max_concurrent_runs: int,
+        lease_seconds: int,
+    ) -> str | None:
+        if max_concurrent_runs <= 0:
+            raise ValueError("max_concurrent_runs must be positive")
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+
+        self._cursor.execute(
+            EXPIRE_RAW_TASK_RUN_LEASES_SQL,
+            {
+                "task_type": task_type,
+            },
+        )
+        self._cursor.execute(
+            TRY_ACQUIRE_RAW_TASK_RUN_LEASE_SQL,
+            {
+                "task_type": task_type,
+                "enrichment_run_id": enrichment_run_id,
+                "dagster_run_id": dagster_run_id,
+                "max_concurrent_runs": max_concurrent_runs,
+                "lease_seconds": lease_seconds,
+            },
+        )
+        row = self._cursor.fetchone()
+        if row is None or not bool(row[1]):
+            return None
+        return str(row[0])
+
+    def renew_raw_task_run_lease(self, *, lease_id: str, lease_seconds: int) -> None:
+        if lease_seconds <= 0:
+            raise ValueError("lease_seconds must be positive")
+        self._cursor.execute(
+            RENEW_RAW_TASK_RUN_LEASE_SQL,
+            {
+                "lease_id": lease_id,
+                "lease_seconds": lease_seconds,
+            },
+        )
+
+    def release_raw_task_run_lease(self, *, lease_id: str) -> None:
+        self._cursor.execute(
+            RELEASE_RAW_TASK_RUN_LEASE_SQL,
+            {
+                "lease_id": lease_id,
+            },
+        )
+
     def fetch_pending_raw_task_records(
         self,
         *,
@@ -849,6 +903,92 @@ SELECT count(*)::int AS seeded_raw_records
 FROM next_records
 """
 
+TRY_ACQUIRE_RAW_TASK_RUN_LEASE_SQL = """
+WITH lock_task AS (
+    SELECT pg_advisory_xact_lock(hashtext('dagster_brreg.raw_record_task_run_leases:' || %(task_type)s))
+),
+renewed AS (
+    UPDATE dagster_brreg.raw_record_task_run_leases
+    SET
+        enrichment_run_id = %(enrichment_run_id)s,
+        lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval,
+        max_concurrent_runs = %(max_concurrent_runs)s,
+        updated_at = now()
+    WHERE task_type = %(task_type)s
+      AND dagster_run_id = %(dagster_run_id)s
+      AND status = 'active'
+      AND lease_until > now()
+    RETURNING id
+),
+active_leases AS (
+    SELECT count(*)::int AS active_count
+    FROM dagster_brreg.raw_record_task_run_leases
+    CROSS JOIN lock_task
+    WHERE task_type = %(task_type)s
+      AND status = 'active'
+      AND lease_until > now()
+),
+inserted AS (
+    INSERT INTO dagster_brreg.raw_record_task_run_leases (
+        task_type,
+        enrichment_run_id,
+        dagster_run_id,
+        status,
+        lease_until,
+        max_concurrent_runs
+    )
+    SELECT
+        %(task_type)s,
+        %(enrichment_run_id)s,
+        %(dagster_run_id)s,
+        'active',
+        now() + (%(lease_seconds)s::text || ' seconds')::interval,
+        %(max_concurrent_runs)s
+    FROM active_leases
+    WHERE NOT EXISTS (SELECT 1 FROM renewed)
+      AND active_count < %(max_concurrent_runs)s
+    RETURNING id
+)
+SELECT id, true AS acquired FROM renewed
+UNION ALL
+SELECT id, true AS acquired FROM inserted
+UNION ALL
+SELECT NULL::uuid AS id, false AS acquired
+WHERE NOT EXISTS (SELECT 1 FROM renewed)
+  AND NOT EXISTS (SELECT 1 FROM inserted)
+LIMIT 1
+"""
+
+EXPIRE_RAW_TASK_RUN_LEASES_SQL = """
+UPDATE dagster_brreg.raw_record_task_run_leases
+SET
+    status = 'expired',
+    released_at = now(),
+    updated_at = now()
+WHERE task_type = %(task_type)s
+  AND status = 'active'
+  AND lease_until <= now()
+"""
+
+RENEW_RAW_TASK_RUN_LEASE_SQL = """
+UPDATE dagster_brreg.raw_record_task_run_leases
+SET
+    lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval,
+    updated_at = now()
+WHERE id = %(lease_id)s
+  AND status = 'active'
+"""
+
+RELEASE_RAW_TASK_RUN_LEASE_SQL = """
+UPDATE dagster_brreg.raw_record_task_run_leases
+SET
+    status = 'released',
+    released_at = now(),
+    updated_at = now()
+WHERE id = %(lease_id)s
+  AND status = 'active'
+"""
+
 FETCH_PENDING_RAW_TASK_RECORDS_SQL = """
 WITH pending_task_ids AS (
     SELECT
@@ -907,10 +1047,59 @@ new_task_ids AS (
     ORDER BY rr.last_seen_at ASC, rr.id ASC
     LIMIT %(limit)s
 ),
+inserted_new_task_states AS (
+    INSERT INTO dagster_brreg.raw_record_task_states (
+        raw_record_id,
+        task_type,
+        status,
+        next_retry_at
+    )
+    SELECT
+        new_task_ids.id,
+        %(task_type)s,
+        'pending',
+        new_task_ids.sort_at
+    FROM new_task_ids
+    ON CONFLICT (raw_record_id, task_type) DO NOTHING
+    RETURNING raw_record_id AS id, next_retry_at AS sort_at
+),
 candidate_ids AS (
     SELECT id, sort_at FROM retryable_task_ids
     UNION ALL
-    SELECT id, sort_at FROM new_task_ids
+    SELECT id, sort_at FROM inserted_new_task_states
+),
+claimable_task_ids AS (
+    SELECT
+        ts.raw_record_id AS id,
+        candidate_ids.sort_at
+    FROM candidate_ids
+    JOIN dagster_brreg.raw_record_task_states ts
+      ON ts.raw_record_id = candidate_ids.id
+     AND ts.task_type = %(task_type)s
+    JOIN dagster_brreg.raw_records rr ON rr.id = candidate_ids.id
+    WHERE rr.is_current = true
+      AND (
+          ts.status = 'pending'
+          OR (ts.status = 'failed_retryable' AND ts.next_retry_at <= now())
+          OR (ts.status = 'running' AND ts.last_started_at < now() - interval '30 minutes')
+      )
+    ORDER BY candidate_ids.sort_at ASC, candidate_ids.id ASC
+    LIMIT %(limit)s
+    FOR UPDATE OF ts SKIP LOCKED
+),
+claimed_task_ids AS (
+    UPDATE dagster_brreg.raw_record_task_states ts
+    SET
+        status = 'running',
+        last_started_at = now(),
+        last_finished_at = NULL,
+        next_retry_at = NULL,
+        last_error = NULL,
+        updated_at = now()
+    FROM claimable_task_ids
+    WHERE ts.raw_record_id = claimable_task_ids.id
+      AND ts.task_type = %(task_type)s
+    RETURNING ts.raw_record_id AS id, claimable_task_ids.sort_at
 )
 SELECT
     rr.id,
@@ -918,48 +1107,135 @@ SELECT
     rr.organization_name,
     rr.website,
     rr.raw_payload
-FROM candidate_ids
-JOIN dagster_brreg.raw_records rr ON rr.id = candidate_ids.id
+FROM claimed_task_ids
+JOIN dagster_brreg.raw_records rr ON rr.id = claimed_task_ids.id
 WHERE rr.is_current = true
-ORDER BY candidate_ids.sort_at ASC, candidate_ids.id ASC
+ORDER BY claimed_task_ids.sort_at ASC, claimed_task_ids.id ASC
 LIMIT %(limit)s
 """
 
 FETCH_PENDING_DOMAIN_PROPOSAL_RECORDS_SQL = """
+WITH eligible_records AS (
+    SELECT
+        rr.id,
+        coalesce(ts.next_retry_at, rr.last_seen_at) AS sort_at
+    FROM dagster_brreg.raw_records rr
+    LEFT JOIN dagster_brreg.raw_record_task_states ts
+      ON ts.raw_record_id = rr.id
+     AND ts.task_type = %(task_type)s
+    WHERE rr.is_current = true
+      AND EXISTS (
+          SELECT 1
+          FROM dagster_brreg.domain_candidates dc
+          WHERE dc.raw_record_id = rr.id
+            AND dc.status IN ('candidate', 'accepted')
+      )
+      AND (
+          ts.raw_record_id IS NULL
+          OR ts.status = 'pending'
+          OR (ts.status = 'failed_retryable' AND ts.next_retry_at <= now())
+          OR (ts.status = 'running' AND ts.last_started_at < now() - interval '30 minutes')
+          OR (
+              ts.status IN ('succeeded', 'skipped')
+              AND EXISTS (
+                  SELECT 1
+                  FROM dagster_brreg.domain_candidates dc
+                  WHERE dc.raw_record_id = rr.id
+                    AND dc.status IN ('candidate', 'accepted')
+                    AND dc.updated_at > coalesce(ts.last_finished_at, '-infinity'::timestamptz)
+              )
+          )
+      )
+    ORDER BY coalesce(ts.next_retry_at, rr.last_seen_at) ASC, rr.id ASC
+    LIMIT %(limit)s
+),
+inserted_missing_task_ids AS (
+    INSERT INTO dagster_brreg.raw_record_task_states (
+        raw_record_id,
+        task_type,
+        status,
+        last_started_at,
+        next_retry_at
+    )
+    SELECT
+        eligible_records.id,
+        %(task_type)s,
+        'running',
+        now(),
+        NULL
+    FROM eligible_records
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM dagster_brreg.raw_record_task_states mts
+        WHERE mts.raw_record_id = eligible_records.id
+          AND mts.task_type = %(task_type)s
+    )
+    ON CONFLICT (raw_record_id, task_type) DO NOTHING
+    RETURNING raw_record_id AS id
+),
+existing_claimable_records AS (
+    SELECT
+        mts.raw_record_id AS id
+    FROM eligible_records
+    JOIN dagster_brreg.raw_record_task_states mts
+      ON mts.raw_record_id = eligible_records.id
+     AND mts.task_type = %(task_type)s
+    WHERE (
+        mts.status = 'pending'
+        OR (mts.status = 'failed_retryable' AND mts.next_retry_at <= now())
+        OR (mts.status = 'running' AND mts.last_started_at < now() - interval '30 minutes')
+        OR (
+            mts.status IN ('succeeded', 'skipped')
+            AND EXISTS (
+                SELECT 1
+                FROM dagster_brreg.domain_candidates dc
+                WHERE dc.raw_record_id = eligible_records.id
+                  AND dc.status IN ('candidate', 'accepted')
+                  AND dc.updated_at > coalesce(mts.last_finished_at, '-infinity'::timestamptz)
+            )
+        )
+    )
+    ORDER BY eligible_records.sort_at ASC, eligible_records.id ASC
+    LIMIT %(limit)s
+    FOR UPDATE OF mts SKIP LOCKED
+),
+claimed_existing_task_ids AS (
+    UPDATE dagster_brreg.raw_record_task_states mts
+    SET
+        status = 'running',
+        last_started_at = now(),
+        last_finished_at = NULL,
+        next_retry_at = NULL,
+        last_error = NULL,
+        updated_at = now()
+    FROM existing_claimable_records
+    WHERE mts.raw_record_id = existing_claimable_records.id
+      AND mts.task_type = %(task_type)s
+    RETURNING mts.raw_record_id AS id
+),
+claimed_task_ids AS (
+    SELECT
+        claimed_existing_task_ids.id,
+        eligible_records.sort_at
+    FROM claimed_existing_task_ids
+    JOIN eligible_records ON eligible_records.id = claimed_existing_task_ids.id
+    UNION ALL
+    SELECT
+        inserted_missing_task_ids.id,
+        eligible_records.sort_at
+    FROM inserted_missing_task_ids
+    JOIN eligible_records ON eligible_records.id = inserted_missing_task_ids.id
+)
 SELECT
     rr.id,
     rr.organization_number,
     rr.organization_name,
     rr.website,
     rr.raw_payload
-FROM dagster_brreg.raw_records rr
-LEFT JOIN dagster_brreg.raw_record_task_states ts
-  ON ts.raw_record_id = rr.id
- AND ts.task_type = %(task_type)s
+FROM claimed_task_ids
+JOIN dagster_brreg.raw_records rr ON rr.id = claimed_task_ids.id
 WHERE rr.is_current = true
-  AND EXISTS (
-      SELECT 1
-      FROM dagster_brreg.domain_candidates dc
-      WHERE dc.raw_record_id = rr.id
-        AND dc.status IN ('candidate', 'accepted')
-  )
-  AND (
-      ts.raw_record_id IS NULL
-      OR ts.status = 'pending'
-      OR (ts.status = 'failed_retryable' AND ts.next_retry_at <= now())
-      OR (ts.status = 'running' AND ts.last_started_at < now() - interval '30 minutes')
-      OR (
-          ts.status IN ('succeeded', 'skipped')
-          AND EXISTS (
-              SELECT 1
-              FROM dagster_brreg.domain_candidates dc
-              WHERE dc.raw_record_id = rr.id
-                AND dc.status IN ('candidate', 'accepted')
-                AND dc.updated_at > coalesce(ts.last_finished_at, '-infinity'::timestamptz)
-          )
-      )
-  )
-ORDER BY coalesce(ts.next_retry_at, rr.last_seen_at) ASC, rr.id ASC
+ORDER BY claimed_task_ids.sort_at ASC, claimed_task_ids.id ASC
 LIMIT %(limit)s
 """
 

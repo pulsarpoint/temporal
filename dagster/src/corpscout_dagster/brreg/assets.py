@@ -62,6 +62,8 @@ DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE = 500
 DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 0
 DEFAULT_ENHANCED_RECORD_BATCH_SIZE = 500
 DEFAULT_PUBLISH_ENHANCED_RECORD_BATCH_SIZE = 250
+DEFAULT_TASK_MAX_CONCURRENT_RUNS = 1
+DEFAULT_TASK_RUN_LEASE_SECONDS = 1800
 
 DOMAIN_SIGNAL_ASSET_KEYS = [
     AssetKey("brreg_domain_website_field_candidates"),
@@ -81,9 +83,15 @@ def _env_int(name: str, default: int) -> int:
 class BrregBatchRunConfig:
     batch_size: int
     max_batches_per_run: int
+    max_concurrent_runs: int
 
 
-def brreg_batch_run_config_schema(*, batch_size_default: int, max_batches_default: int) -> dict[str, Field]:
+def brreg_batch_run_config_schema(
+    *,
+    batch_size_default: int,
+    max_batches_default: int,
+    max_concurrent_runs_default: int = DEFAULT_TASK_MAX_CONCURRENT_RUNS,
+) -> dict[str, Field]:
     return {
         "batch_size": Field(
             Int,
@@ -95,6 +103,11 @@ def brreg_batch_run_config_schema(*, batch_size_default: int, max_batches_defaul
             default_value=max_batches_default,
             description="Maximum batches for this run. Use 0 to keep running until no pending rows remain.",
         ),
+        "max_concurrent_runs": Field(
+            Int,
+            default_value=max_concurrent_runs_default,
+            description="Maximum active Dagster runs for this BRREG task type.",
+        ),
     }
 
 
@@ -105,6 +118,8 @@ def resolve_brreg_batch_run_config(
     batch_size_default: int,
     max_batches_env: str,
     max_batches_default: int,
+    max_concurrent_runs_env: str = "BRREG_TASK_MAX_CONCURRENT_RUNS",
+    max_concurrent_runs_default: int = DEFAULT_TASK_MAX_CONCURRENT_RUNS,
 ) -> BrregBatchRunConfig:
     op_config = getattr(context, "op_config", None) or {}
     return BrregBatchRunConfig(
@@ -113,6 +128,12 @@ def resolve_brreg_batch_run_config(
             op_config.get(
                 "max_batches_per_run",
                 _env_int(max_batches_env, max_batches_default),
+            )
+        ),
+        max_concurrent_runs=int(
+            op_config.get(
+                "max_concurrent_runs",
+                _env_int(max_concurrent_runs_env, max_concurrent_runs_default),
             )
         ),
     )
@@ -144,6 +165,10 @@ def brreg_working_raw_records(context) -> dict[str, int]:
             "BRREG_TRANSLATION_MAX_BATCHES_PER_RUN",
             DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN,
         ),
+        max_concurrent_runs_default=_env_int(
+            "BRREG_TRANSLATION_MAX_CONCURRENT_RUNS",
+            DEFAULT_TASK_MAX_CONCURRENT_RUNS,
+        ),
     ),
 )
 def brreg_translation_results(context) -> dict[str, int]:
@@ -153,6 +178,8 @@ def brreg_translation_results(context) -> dict[str, int]:
         batch_size_default=DEFAULT_TRANSLATION_RECORD_BATCH_SIZE,
         max_batches_env="BRREG_TRANSLATION_MAX_BATCHES_PER_RUN",
         max_batches_default=DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN,
+        max_concurrent_runs_env="BRREG_TRANSLATION_MAX_CONCURRENT_RUNS",
+        max_concurrent_runs_default=DEFAULT_TASK_MAX_CONCURRENT_RUNS,
     )
     return materialize_brreg_translation_results(
         context,
@@ -161,6 +188,7 @@ def brreg_translation_results(context) -> dict[str, int]:
         translator=DirectLLMTermTranslator(),
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
+        max_concurrent_runs=run_config.max_concurrent_runs,
         model=os.environ.get("BRREG_TRANSLATION_MODEL") or DEFAULT_LLM_MODEL,
         prompt_version=os.environ.get("BRREG_TRANSLATION_PROMPT_VERSION") or DEFAULT_PROMPT_VERSION,
     )
@@ -171,6 +199,10 @@ def brreg_translation_results(context) -> dict[str, int]:
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=_env_int("BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE", DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE),
         max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        max_concurrent_runs_default=_env_int(
+            "BRREG_DOMAIN_WEBSITE_FIELD_MAX_CONCURRENT_RUNS",
+            DEFAULT_TASK_MAX_CONCURRENT_RUNS,
+        ),
     ),
 )
 def brreg_domain_website_field_candidates(context) -> dict[str, int]:
@@ -180,6 +212,8 @@ def brreg_domain_website_field_candidates(context) -> dict[str, int]:
         batch_size_default=DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE,
         max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
         max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+        max_concurrent_runs_env="BRREG_DOMAIN_WEBSITE_FIELD_MAX_CONCURRENT_RUNS",
+        max_concurrent_runs_default=DEFAULT_TASK_MAX_CONCURRENT_RUNS,
     )
     return materialize_brreg_domain_signal_candidates(
         context,
@@ -189,6 +223,7 @@ def brreg_domain_website_field_candidates(context) -> dict[str, int]:
         task_type="domain_website_field",
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
+        max_concurrent_runs=run_config.max_concurrent_runs,
     )
 
 
@@ -197,6 +232,10 @@ def brreg_domain_website_field_candidates(context) -> dict[str, int]:
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=_env_int("BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE", DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE),
         max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        max_concurrent_runs_default=_env_int(
+            "BRREG_DOMAIN_DUCKDUCKGO_MAX_CONCURRENT_RUNS",
+            DEFAULT_TASK_MAX_CONCURRENT_RUNS,
+        ),
     ),
 )
 def brreg_domain_duckduckgo_candidates(context) -> dict[str, int]:
@@ -206,6 +245,8 @@ def brreg_domain_duckduckgo_candidates(context) -> dict[str, int]:
         batch_size_default=DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE,
         max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
         max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+        max_concurrent_runs_env="BRREG_DOMAIN_DUCKDUCKGO_MAX_CONCURRENT_RUNS",
+        max_concurrent_runs_default=DEFAULT_TASK_MAX_CONCURRENT_RUNS,
     )
     return materialize_brreg_domain_signal_candidates(
         context,
@@ -215,6 +256,7 @@ def brreg_domain_duckduckgo_candidates(context) -> dict[str, int]:
         task_type="domain_duckduckgo",
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
+        max_concurrent_runs=run_config.max_concurrent_runs,
     )
 
 
@@ -223,6 +265,10 @@ def brreg_domain_duckduckgo_candidates(context) -> dict[str, int]:
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=_env_int("BRREG_DOMAIN_CRTSH_BATCH_SIZE", DEFAULT_DOMAIN_CRTSH_BATCH_SIZE),
         max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        max_concurrent_runs_default=_env_int(
+            "BRREG_DOMAIN_CRTSH_MAX_CONCURRENT_RUNS",
+            DEFAULT_TASK_MAX_CONCURRENT_RUNS,
+        ),
     ),
 )
 def brreg_domain_crtsh_candidates(context) -> dict[str, int]:
@@ -232,6 +278,8 @@ def brreg_domain_crtsh_candidates(context) -> dict[str, int]:
         batch_size_default=DEFAULT_DOMAIN_CRTSH_BATCH_SIZE,
         max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
         max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+        max_concurrent_runs_env="BRREG_DOMAIN_CRTSH_MAX_CONCURRENT_RUNS",
+        max_concurrent_runs_default=DEFAULT_TASK_MAX_CONCURRENT_RUNS,
     )
     return materialize_brreg_domain_signal_candidates(
         context,
@@ -241,6 +289,7 @@ def brreg_domain_crtsh_candidates(context) -> dict[str, int]:
         task_type="domain_crtsh",
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
+        max_concurrent_runs=run_config.max_concurrent_runs,
     )
 
 
@@ -249,6 +298,10 @@ def brreg_domain_crtsh_candidates(context) -> dict[str, int]:
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=_env_int("BRREG_DOMAIN_WIKIDATA_BATCH_SIZE", DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE),
         max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        max_concurrent_runs_default=_env_int(
+            "BRREG_DOMAIN_WIKIDATA_MAX_CONCURRENT_RUNS",
+            DEFAULT_TASK_MAX_CONCURRENT_RUNS,
+        ),
     ),
 )
 def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
@@ -258,6 +311,8 @@ def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
         batch_size_default=DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE,
         max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
         max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+        max_concurrent_runs_env="BRREG_DOMAIN_WIKIDATA_MAX_CONCURRENT_RUNS",
+        max_concurrent_runs_default=DEFAULT_TASK_MAX_CONCURRENT_RUNS,
     )
     return materialize_brreg_domain_signal_candidates(
         context,
@@ -267,6 +322,7 @@ def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
         task_type="domain_wikidata",
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
+        max_concurrent_runs=run_config.max_concurrent_runs,
     )
 
 
@@ -275,6 +331,10 @@ def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=_env_int("BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE", DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE),
         max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        max_concurrent_runs_default=_env_int(
+            "BRREG_DOMAIN_WEB_SEARCH_LLM_MAX_CONCURRENT_RUNS",
+            DEFAULT_TASK_MAX_CONCURRENT_RUNS,
+        ),
     ),
 )
 def brreg_domain_web_search_llm_candidates(context) -> dict[str, int]:
@@ -284,6 +344,8 @@ def brreg_domain_web_search_llm_candidates(context) -> dict[str, int]:
         batch_size_default=DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE,
         max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
         max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+        max_concurrent_runs_env="BRREG_DOMAIN_WEB_SEARCH_LLM_MAX_CONCURRENT_RUNS",
+        max_concurrent_runs_default=DEFAULT_TASK_MAX_CONCURRENT_RUNS,
     )
     return materialize_brreg_domain_signal_candidates(
         context,
@@ -293,6 +355,7 @@ def brreg_domain_web_search_llm_candidates(context) -> dict[str, int]:
         task_type="domain_web_search_llm",
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
+        max_concurrent_runs=run_config.max_concurrent_runs,
     )
 
 
@@ -302,6 +365,10 @@ def brreg_domain_web_search_llm_candidates(context) -> dict[str, int]:
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=_env_int("BRREG_DOMAIN_PROPOSAL_BATCH_SIZE", DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE),
         max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        max_concurrent_runs_default=_env_int(
+            "BRREG_DOMAIN_PROPOSAL_MAX_CONCURRENT_RUNS",
+            DEFAULT_TASK_MAX_CONCURRENT_RUNS,
+        ),
     ),
 )
 def brreg_domain_proposals(context) -> dict[str, int]:
@@ -311,6 +378,8 @@ def brreg_domain_proposals(context) -> dict[str, int]:
         batch_size_default=DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE,
         max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
         max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+        max_concurrent_runs_env="BRREG_DOMAIN_PROPOSAL_MAX_CONCURRENT_RUNS",
+        max_concurrent_runs_default=DEFAULT_TASK_MAX_CONCURRENT_RUNS,
     )
     return materialize_brreg_domain_proposals(
         context,
@@ -318,6 +387,7 @@ def brreg_domain_proposals(context) -> dict[str, int]:
         database_url=_corpscout_database_url(),
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
+        max_concurrent_runs=run_config.max_concurrent_runs,
     )
 
 
@@ -437,6 +507,7 @@ def materialize_brreg_translation_results(
     translator: TermTranslator,
     batch_size: int,
     max_batches_per_run: int = DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN,
+    max_concurrent_runs: int = DEFAULT_TASK_MAX_CONCURRENT_RUNS,
     model: str,
     prompt_version: str,
 ) -> dict[str, int]:
@@ -444,12 +515,15 @@ def materialize_brreg_translation_results(
         raise ValueError("batch_size must be positive")
     if max_batches_per_run < 0:
         raise ValueError("max_batches_per_run must be zero or positive")
+    if max_concurrent_runs <= 0:
+        raise ValueError("max_concurrent_runs must be positive")
     rows_seen = 0
     rows_completed = 0
     rows_failed = 0
     batches_processed = 0
     stopped_reason = "max_batches_reached"
     enrichment_run_id: str | None = None
+    lease_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
             enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
@@ -467,45 +541,60 @@ def materialize_brreg_translation_results(
         conn.commit()
 
         try:
-            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
-                with conn.cursor() as cursor:
-                    store = BrregWorkingStore(cursor)
-                    seeded_raw_records = store.seed_pending_raw_task_states(
-                        task_type="translate",
-                        limit=batch_size,
-                    )
-                    records = store.fetch_pending_raw_task_records(
-                        task_type="translate",
-                        limit=batch_size,
-                        include_new_records=False,
-                    )
+            lease_id = _try_acquire_raw_task_run_lease(
+                conn=conn,
+                task_type="translate",
+                enrichment_run_id=enrichment_run_id,
+                dagster_run_id=context.run_id,
+                max_concurrent_runs=max_concurrent_runs,
+            )
+            if lease_id is None:
+                stopped_reason = "concurrency_limit_reached"
+            else:
+                while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
+                    _renew_raw_task_run_lease(conn=conn, lease_id=lease_id)
+                    with conn.cursor() as cursor:
+                        store = BrregWorkingStore(cursor)
+                        seeded_raw_records = store.seed_pending_raw_task_states(
+                            task_type="translate",
+                            limit=batch_size,
+                        )
+                        records = store.fetch_pending_raw_task_records(
+                            task_type="translate",
+                            limit=batch_size,
+                            include_new_records=False,
+                        )
 
-                if not records:
-                    if seeded_raw_records > 0:
-                        continue
-                    stopped_reason = "no_pending_records"
-                    break
+                    if not records:
+                        if seeded_raw_records > 0:
+                            continue
+                        stopped_reason = "no_pending_records"
+                        break
 
-                batches_processed += 1
-                completed, failed = _translate_record_batch(
-                    conn=conn,
-                    enrichment_run_id=enrichment_run_id,
-                    records=records,
-                    translator=translator,
-                    model=model,
-                    prompt_version=prompt_version,
-                )
-                rows_seen += len(records)
-                rows_completed += completed
-                rows_failed += failed
+                    batches_processed += 1
+                    completed, failed = _translate_record_batch(
+                        conn=conn,
+                        enrichment_run_id=enrichment_run_id,
+                        records=records,
+                        translator=translator,
+                        model=model,
+                        prompt_version=prompt_version,
+                    )
+                    rows_seen += len(records)
+                    rows_completed += completed
+                    rows_failed += failed
+
+                _release_raw_task_run_lease(conn=conn, lease_id=lease_id)
+                lease_id = None
 
             context.log.info(
-                "BRREG translation batches committed rows_seen=%s rows_completed=%s rows_failed=%s batches_processed=%s max_batches_per_run=%s stopped_reason=%s",
+                "BRREG translation batches committed rows_seen=%s rows_completed=%s rows_failed=%s batches_processed=%s max_batches_per_run=%s max_concurrent_runs=%s stopped_reason=%s",
                 rows_seen,
                 rows_completed,
                 rows_failed,
                 batches_processed,
                 max_batches_per_run,
+                max_concurrent_runs,
                 stopped_reason,
             )
 
@@ -530,6 +619,8 @@ def materialize_brreg_translation_results(
                         )
                     )
                 conn.commit()
+            if lease_id is not None:
+                _release_raw_task_run_lease(conn=conn, lease_id=lease_id)
             raise
 
     result = {
@@ -543,6 +634,7 @@ def materialize_brreg_translation_results(
             **result,
             "dagster_run_id": context.run_id,
             "max_batches_per_run": max_batches_per_run,
+            "max_concurrent_runs": max_concurrent_runs,
             "stopped_reason": stopped_reason,
         }
     )
@@ -558,11 +650,14 @@ def materialize_brreg_domain_signal_candidates(
     task_type: str,
     batch_size: int,
     max_batches_per_run: int = 1,
+    max_concurrent_runs: int = DEFAULT_TASK_MAX_CONCURRENT_RUNS,
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
     if max_batches_per_run < 0:
         raise ValueError("max_batches_per_run must be zero or positive")
+    if max_concurrent_runs <= 0:
+        raise ValueError("max_concurrent_runs must be positive")
     rows_seen = 0
     rows_completed = 0
     rows_failed = 0
@@ -570,6 +665,7 @@ def materialize_brreg_domain_signal_candidates(
     batches_processed = 0
     stopped_reason = "max_batches_reached"
     enrichment_run_id: str | None = None
+    lease_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
             enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
@@ -582,56 +678,71 @@ def materialize_brreg_domain_signal_candidates(
         conn.commit()
 
         try:
-            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
-                with conn.cursor() as cursor:
-                    store = BrregWorkingStore(cursor)
-                    seeded_raw_records = store.seed_pending_raw_task_states(
-                        task_type=task_type,
-                        limit=batch_size,
-                    )
-                    records = store.fetch_pending_raw_task_records(
-                        task_type=task_type,
-                        limit=batch_size,
-                        include_new_records=False,
-                    )
-                if not records:
-                    if seeded_raw_records > 0:
-                        continue
-                    stopped_reason = "no_pending_records"
-                    break
-
-                batches_processed += 1
-                for record in records:
-                    rows_seen += 1
-                    attempt = _create_task_attempt(
-                        conn=conn,
-                        enrichment_run_id=enrichment_run_id,
-                        record=record,
-                        task_type=task_type,
-                    )
-                    try:
-                        domains_written += _discover_record_domain_signal(
-                            conn=conn,
-                            enrichment_run_id=enrichment_run_id,
-                            attempt=attempt,
-                            record=record,
-                            signal=signal,
+            lease_id = _try_acquire_raw_task_run_lease(
+                conn=conn,
+                task_type=task_type,
+                enrichment_run_id=enrichment_run_id,
+                dagster_run_id=context.run_id,
+                max_concurrent_runs=max_concurrent_runs,
+            )
+            if lease_id is None:
+                stopped_reason = "concurrency_limit_reached"
+            else:
+                while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
+                    _renew_raw_task_run_lease(conn=conn, lease_id=lease_id)
+                    with conn.cursor() as cursor:
+                        store = BrregWorkingStore(cursor)
+                        seeded_raw_records = store.seed_pending_raw_task_states(
+                            task_type=task_type,
+                            limit=batch_size,
                         )
-                        rows_completed += 1
-                    except Exception as exc:
-                        conn.rollback()
-                        _mark_record_task_failed(
+                        records = store.fetch_pending_raw_task_records(
+                            task_type=task_type,
+                            limit=batch_size,
+                            include_new_records=False,
+                        )
+                    if not records:
+                        if seeded_raw_records > 0:
+                            continue
+                        stopped_reason = "no_pending_records"
+                        break
+
+                    batches_processed += 1
+                    for record in records:
+                        _renew_raw_task_run_lease(conn=conn, lease_id=lease_id)
+                        rows_seen += 1
+                        attempt = _create_task_attempt(
                             conn=conn,
                             enrichment_run_id=enrichment_run_id,
-                            attempt=attempt,
                             record=record,
                             task_type=task_type,
-                            error=str(exc),
                         )
-                        rows_failed += 1
+                        try:
+                            domains_written += _discover_record_domain_signal(
+                                conn=conn,
+                                enrichment_run_id=enrichment_run_id,
+                                attempt=attempt,
+                                record=record,
+                                signal=signal,
+                            )
+                            rows_completed += 1
+                        except Exception as exc:
+                            conn.rollback()
+                            _mark_record_task_failed(
+                                conn=conn,
+                                enrichment_run_id=enrichment_run_id,
+                                attempt=attempt,
+                                record=record,
+                                task_type=task_type,
+                                error=str(exc),
+                            )
+                            rows_failed += 1
+
+                _release_raw_task_run_lease(conn=conn, lease_id=lease_id)
+                lease_id = None
 
             context.log.info(
-                "BRREG domain signal batches committed signal=%s rows_seen=%s rows_completed=%s rows_failed=%s domains_written=%s batches_processed=%s max_batches_per_run=%s stopped_reason=%s",
+                "BRREG domain signal batches committed signal=%s rows_seen=%s rows_completed=%s rows_failed=%s domains_written=%s batches_processed=%s max_batches_per_run=%s max_concurrent_runs=%s stopped_reason=%s",
                 signal,
                 rows_seen,
                 rows_completed,
@@ -639,6 +750,7 @@ def materialize_brreg_domain_signal_candidates(
                 domains_written,
                 batches_processed,
                 max_batches_per_run,
+                max_concurrent_runs,
                 stopped_reason,
             )
 
@@ -663,6 +775,8 @@ def materialize_brreg_domain_signal_candidates(
                         )
                     )
                 conn.commit()
+            if lease_id is not None:
+                _release_raw_task_run_lease(conn=conn, lease_id=lease_id)
             raise
 
     result = {
@@ -679,6 +793,7 @@ def materialize_brreg_domain_signal_candidates(
             "signal": signal,
             "task_type": task_type,
             "max_batches_per_run": max_batches_per_run,
+            "max_concurrent_runs": max_concurrent_runs,
             "stopped_reason": stopped_reason,
         }
     )
@@ -692,11 +807,14 @@ def materialize_brreg_domain_proposals(
     database_url: str,
     batch_size: int,
     max_batches_per_run: int = 1,
+    max_concurrent_runs: int = DEFAULT_TASK_MAX_CONCURRENT_RUNS,
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
     if max_batches_per_run < 0:
         raise ValueError("max_batches_per_run must be zero or positive")
+    if max_concurrent_runs <= 0:
+        raise ValueError("max_concurrent_runs must be positive")
     rows_seen = 0
     rows_completed = 0
     rows_failed = 0
@@ -704,6 +822,7 @@ def materialize_brreg_domain_proposals(
     batches_processed = 0
     stopped_reason = "max_batches_reached"
     enrichment_run_id: str | None = None
+    lease_id: str | None = None
     task_type = "merge_domain_proposals"
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
@@ -717,53 +836,69 @@ def materialize_brreg_domain_proposals(
         conn.commit()
 
         try:
-            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
-                with conn.cursor() as cursor:
-                    records = BrregWorkingStore(cursor).fetch_pending_domain_proposal_records(
-                        task_type=task_type,
-                        limit=batch_size,
-                    )
-                if not records:
-                    stopped_reason = "no_pending_records"
-                    break
-
-                batches_processed += 1
-                for record in records:
-                    rows_seen += 1
-                    attempt = _create_task_attempt(
-                        conn=conn,
-                        enrichment_run_id=enrichment_run_id,
-                        record=record,
-                        task_type=task_type,
-                    )
-                    try:
-                        proposals_written += _merge_record_domain_proposals(
-                            conn=conn,
-                            enrichment_run_id=enrichment_run_id,
-                            attempt=attempt,
-                            record=record,
+            lease_id = _try_acquire_raw_task_run_lease(
+                conn=conn,
+                task_type=task_type,
+                enrichment_run_id=enrichment_run_id,
+                dagster_run_id=context.run_id,
+                max_concurrent_runs=max_concurrent_runs,
+            )
+            if lease_id is None:
+                stopped_reason = "concurrency_limit_reached"
+            else:
+                while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
+                    _renew_raw_task_run_lease(conn=conn, lease_id=lease_id)
+                    with conn.cursor() as cursor:
+                        records = BrregWorkingStore(cursor).fetch_pending_domain_proposal_records(
+                            task_type=task_type,
+                            limit=batch_size,
                         )
-                        rows_completed += 1
-                    except Exception as exc:
-                        conn.rollback()
-                        _mark_record_task_failed(
+                    if not records:
+                        stopped_reason = "no_pending_records"
+                        break
+
+                    batches_processed += 1
+                    for record in records:
+                        _renew_raw_task_run_lease(conn=conn, lease_id=lease_id)
+                        rows_seen += 1
+                        attempt = _create_task_attempt(
                             conn=conn,
                             enrichment_run_id=enrichment_run_id,
-                            attempt=attempt,
                             record=record,
                             task_type=task_type,
-                            error=str(exc),
                         )
-                        rows_failed += 1
+                        try:
+                            proposals_written += _merge_record_domain_proposals(
+                                conn=conn,
+                                enrichment_run_id=enrichment_run_id,
+                                attempt=attempt,
+                                record=record,
+                            )
+                            rows_completed += 1
+                        except Exception as exc:
+                            conn.rollback()
+                            _mark_record_task_failed(
+                                conn=conn,
+                                enrichment_run_id=enrichment_run_id,
+                                attempt=attempt,
+                                record=record,
+                                task_type=task_type,
+                                error=str(exc),
+                            )
+                            rows_failed += 1
+
+                _release_raw_task_run_lease(conn=conn, lease_id=lease_id)
+                lease_id = None
 
             context.log.info(
-                "BRREG domain proposal batches committed rows_seen=%s rows_completed=%s rows_failed=%s proposals_written=%s batches_processed=%s max_batches_per_run=%s stopped_reason=%s",
+                "BRREG domain proposal batches committed rows_seen=%s rows_completed=%s rows_failed=%s proposals_written=%s batches_processed=%s max_batches_per_run=%s max_concurrent_runs=%s stopped_reason=%s",
                 rows_seen,
                 rows_completed,
                 rows_failed,
                 proposals_written,
                 batches_processed,
                 max_batches_per_run,
+                max_concurrent_runs,
                 stopped_reason,
             )
 
@@ -788,6 +923,8 @@ def materialize_brreg_domain_proposals(
                         )
                     )
                 conn.commit()
+            if lease_id is not None:
+                _release_raw_task_run_lease(conn=conn, lease_id=lease_id)
             raise
 
     result = {
@@ -803,6 +940,7 @@ def materialize_brreg_domain_proposals(
             "dagster_run_id": context.run_id,
             "task_type": task_type,
             "max_batches_per_run": max_batches_per_run,
+            "max_concurrent_runs": max_concurrent_runs,
             "stopped_reason": stopped_reason,
         }
     )
@@ -1037,6 +1175,41 @@ def _iter_working_row_batches(
             batch = []
     if batch:
         yield batch
+
+
+def _try_acquire_raw_task_run_lease(
+    *,
+    conn,
+    task_type: str,
+    enrichment_run_id: str,
+    dagster_run_id: str,
+    max_concurrent_runs: int,
+) -> str | None:
+    with conn.cursor() as cursor:
+        lease_id = BrregWorkingStore(cursor).try_acquire_raw_task_run_lease(
+            task_type=task_type,
+            enrichment_run_id=enrichment_run_id,
+            dagster_run_id=dagster_run_id,
+            max_concurrent_runs=max_concurrent_runs,
+            lease_seconds=DEFAULT_TASK_RUN_LEASE_SECONDS,
+        )
+    conn.commit()
+    return lease_id
+
+
+def _renew_raw_task_run_lease(*, conn, lease_id: str) -> None:
+    with conn.cursor() as cursor:
+        BrregWorkingStore(cursor).renew_raw_task_run_lease(
+            lease_id=lease_id,
+            lease_seconds=DEFAULT_TASK_RUN_LEASE_SECONDS,
+        )
+    conn.commit()
+
+
+def _release_raw_task_run_lease(*, conn, lease_id: str) -> None:
+    with conn.cursor() as cursor:
+        BrregWorkingStore(cursor).release_raw_task_run_lease(lease_id=lease_id)
+    conn.commit()
 
 
 def _create_task_attempt(
