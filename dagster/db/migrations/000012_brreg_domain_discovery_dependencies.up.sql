@@ -127,6 +127,8 @@ ALTER TABLE dagster_brreg.raw_record_task_states
     )
   );
 
+DROP VIEW IF EXISTS dagster_brreg.v_domain_enrichment_summary;
+
 CREATE OR REPLACE VIEW dagster_brreg.v_domain_enrichment_summary AS
 WITH candidate_counts AS (
   SELECT

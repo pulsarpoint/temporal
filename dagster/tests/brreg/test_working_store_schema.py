@@ -107,6 +107,10 @@ def test_domain_discovery_dependencies_migration_updates_task_types_and_views() 
     assert "'domain_duckduckgo'" in sql
     assert "'domain_crtsh'" in sql
     assert "'domain_wikidata'" in sql
+    assert "DROP VIEW IF EXISTS dagster_brreg.v_domain_enrichment_summary" in sql
+    assert sql.index("DROP VIEW IF EXISTS dagster_brreg.v_domain_enrichment_summary") < sql.index(
+        "CREATE OR REPLACE VIEW dagster_brreg.v_domain_enrichment_summary"
+    )
     assert "CREATE OR REPLACE VIEW dagster_brreg.v_domain_enrichment_summary" in sql
     assert "domain_search_results" in sql
     assert "domain_crawl_results" in sql
