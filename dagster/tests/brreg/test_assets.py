@@ -52,7 +52,6 @@ class FakeCursor:
         self.many_calls: list[tuple[str, list[dict]]] = []
         self.last_sql = ""
         self.seed_pending_count = 0
-        self.task_run_lease_row = ("00000000-0000-0000-0000-000000000003", True)
         self.fetchone_values = [
             ("00000000-0000-0000-0000-000000000001",),
             ("00000000-0000-0000-0000-000000000002",),
@@ -75,8 +74,6 @@ class FakeCursor:
     def fetchone(self):
         if "seeded_raw_records" in self.last_sql:
             return (self.seed_pending_count,)
-        if "acquired" in self.last_sql:
-            return self.task_run_lease_row
         return self.fetchone_values.pop(0)
 
     def fetchall(self):
@@ -235,10 +232,10 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
 
     for asset_def in configurable_assets:
         fields = asset_def.node_def.config_schema.config_type.fields
-        assert set(fields) == {"batch_size", "max_batches_per_run", "max_concurrent_runs"}
+        assert set(fields) == {"batch_size", "max_batches_per_run", "max_parallel_tasks"}
         assert fields["batch_size"].default_provided
         assert fields["max_batches_per_run"].default_provided
-        assert fields["max_concurrent_runs"].default_provided
+        assert fields["max_parallel_tasks"].default_provided
 
 
 def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkeypatch) -> None:
@@ -256,12 +253,12 @@ def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkey
 
     assert config.batch_size == 7
     assert config.max_batches_per_run == 3
-    assert config.max_concurrent_runs == 1
+    assert config.max_parallel_tasks == 50
 
 
-def test_resolve_brreg_batch_run_config_accepts_launchpad_concurrency_override(monkeypatch) -> None:
-    monkeypatch.setenv("BRREG_TEST_MAX_CONCURRENT_RUNS", "2")
-    context = FakeContext(op_config={"batch_size": 7, "max_batches_per_run": 3, "max_concurrent_runs": 4})
+def test_resolve_brreg_batch_run_config_accepts_launchpad_parallel_task_override(monkeypatch) -> None:
+    monkeypatch.setenv("BRREG_TEST_MAX_PARALLEL_TASKS", "2")
+    context = FakeContext(op_config={"batch_size": 7, "max_batches_per_run": 3, "max_parallel_tasks": 4})
 
     config = resolve_brreg_batch_run_config(
         context,
@@ -269,13 +266,13 @@ def test_resolve_brreg_batch_run_config_accepts_launchpad_concurrency_override(m
         batch_size_default=50,
         max_batches_env="BRREG_TEST_MAX_BATCHES",
         max_batches_default=0,
-        max_concurrent_runs_env="BRREG_TEST_MAX_CONCURRENT_RUNS",
-        max_concurrent_runs_default=1,
+        max_parallel_tasks_env="BRREG_TEST_MAX_PARALLEL_TASKS",
+        max_parallel_tasks_default=1,
     )
 
     assert config.batch_size == 7
     assert config.max_batches_per_run == 3
-    assert config.max_concurrent_runs == 4
+    assert config.max_parallel_tasks == 4
 
 
 def test_materialize_brreg_working_raw_records_writes_batches_and_progress() -> None:
@@ -351,32 +348,6 @@ def test_materialize_brreg_translation_results_writes_task_cache_and_result() ->
     assert any("INSERT INTO dagster_brreg.translation_results" in sql for sql in sql_calls)
     assert any("INSERT INTO dagster_brreg.translation_cache" in sql for sql in many_sql_calls)
     assert context.metadata[-1]["rows_completed"] == 1
-
-
-def test_materialize_brreg_translation_results_skips_when_task_concurrency_limit_is_reached() -> None:
-    context = FakeContext()
-    connection = FakeConnection()
-    connection.cursor_instance.task_run_lease_row = (None, False)
-    connection.cursor_instance.fetchone_values = [
-        ("00000000-0000-0000-0000-000000000001",),
-    ]
-
-    result = materialize_brreg_translation_results(
-        context,
-        connection_factory=lambda _: connection,
-        database_url="postgresql://example.invalid/corpscout",
-        translator=FakeTranslator(),
-        batch_size=50,
-        max_concurrent_runs=1,
-        model="qwen3:6b",
-        prompt_version="v1",
-    )
-
-    assert result == {"rows_seen": 0, "rows_completed": 0, "rows_failed": 0, "batches_processed": 0}
-    assert context.metadata[-1]["stopped_reason"] == "concurrency_limit_reached"
-    sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
-    assert any("dagster_brreg.raw_record_task_run_leases" in sql for sql in sql_calls)
-    assert not any("INSERT INTO dagster_brreg.raw_record_task_states" in sql for sql in sql_calls)
 
 
 def test_materialize_brreg_translation_results_translates_unique_batch_misses_in_one_mixed_call() -> None:
@@ -519,18 +490,32 @@ def test_materialize_brreg_translation_results_drains_multiple_batches_until_emp
     fetch_calls = [
         params
         for sql, params in connection.cursor_instance.calls
-        if "WITH pending_task_ids AS" in sql
+        if "pending_task_ids AS" in sql
     ]
     assert fetch_calls == [
-        {"task_type": "translate", "limit": 2, "include_new_records": False},
-        {"task_type": "translate", "limit": 2, "include_new_records": False},
-        {"task_type": "translate", "limit": 2, "include_new_records": False},
+        {
+            "task_type": "translate",
+            "limit": 2,
+            "include_new_records": True,
+            "max_parallel_tasks": 50,
+            "lease_seconds": 1800,
+        },
+        {
+            "task_type": "translate",
+            "limit": 2,
+            "include_new_records": True,
+            "max_parallel_tasks": 50,
+            "lease_seconds": 1800,
+        },
+        {
+            "task_type": "translate",
+            "limit": 2,
+            "include_new_records": True,
+            "max_parallel_tasks": 50,
+            "lease_seconds": 1800,
+        },
     ]
-    assert any(
-        "INSERT INTO dagster_brreg.raw_record_task_states" in sql
-        and "ON CONFLICT (raw_record_id, task_type) DO NOTHING" in sql
-        for sql, _ in connection.cursor_instance.calls
-    )
+    assert not any("seeded_raw_records" in sql for sql, _ in connection.cursor_instance.calls)
 
 
 def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -> None:
@@ -603,6 +588,7 @@ def test_materialize_brreg_domain_signal_candidates_writes_independent_task_resu
         signal="website_field",
         task_type="domain_website_field",
         batch_size=500,
+        max_parallel_tasks=1,
     )
 
     assert result["rows_seen"] == 1
@@ -665,6 +651,7 @@ def test_materialize_brreg_domain_signal_candidates_drains_multiple_batches_for_
         task_type="domain_website_field",
         batch_size=2,
         max_batches_per_run=3,
+        max_parallel_tasks=1,
     )
 
     assert result["rows_seen"] == 3
@@ -678,18 +665,32 @@ def test_materialize_brreg_domain_signal_candidates_drains_multiple_batches_for_
     fetch_calls = [
         params
         for sql, params in connection.cursor_instance.calls
-        if "WITH pending_task_ids AS" in sql
+        if "pending_task_ids AS" in sql
     ]
     assert fetch_calls == [
-        {"task_type": "domain_website_field", "limit": 2, "include_new_records": False},
-        {"task_type": "domain_website_field", "limit": 2, "include_new_records": False},
-        {"task_type": "domain_website_field", "limit": 2, "include_new_records": False},
+        {
+            "task_type": "domain_website_field",
+            "limit": 2,
+            "include_new_records": True,
+            "max_parallel_tasks": 1,
+            "lease_seconds": 1800,
+        },
+        {
+            "task_type": "domain_website_field",
+            "limit": 2,
+            "include_new_records": True,
+            "max_parallel_tasks": 1,
+            "lease_seconds": 1800,
+        },
+        {
+            "task_type": "domain_website_field",
+            "limit": 2,
+            "include_new_records": True,
+            "max_parallel_tasks": 1,
+            "lease_seconds": 1800,
+        },
     ]
-    assert any(
-        "INSERT INTO dagster_brreg.raw_record_task_states" in sql
-        and "ON CONFLICT (raw_record_id, task_type) DO NOTHING" in sql
-        for sql, _ in connection.cursor_instance.calls
-    )
+    assert not any("seeded_raw_records" in sql for sql, _ in connection.cursor_instance.calls)
 
 
 def test_materialize_brreg_domain_signal_candidates_zero_max_batches_drains_until_empty() -> None:
@@ -732,6 +733,7 @@ def test_materialize_brreg_domain_signal_candidates_zero_max_batches_drains_unti
         task_type="domain_website_field",
         batch_size=1,
         max_batches_per_run=0,
+        max_parallel_tasks=1,
     )
 
     assert result["rows_seen"] == 2
