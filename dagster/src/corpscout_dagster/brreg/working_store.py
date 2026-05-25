@@ -269,13 +269,16 @@ class BrregWorkingStore:
             },
         )
 
-    def seed_pending_raw_task_states(self, *, task_type: str) -> None:
+    def seed_pending_raw_task_states(self, *, task_type: str, limit: int) -> int:
         self._cursor.execute(
             SEED_PENDING_RAW_TASK_STATES_SQL,
             {
                 "task_type": task_type,
+                "limit": limit,
             },
         )
+        row = self._cursor.fetchone()
+        return int(row[0] or 0) if row else 0
 
     def fetch_pending_raw_task_records(
         self,
@@ -789,20 +792,61 @@ WHERE id = %(enrichment_run_id)s
 """
 
 SEED_PENDING_RAW_TASK_STATES_SQL = """
-INSERT INTO dagster_brreg.raw_record_task_states (
-    raw_record_id,
-    task_type,
-    status,
-    next_retry_at
+WITH ensured_cursor AS (
+    INSERT INTO dagster_brreg.raw_record_task_cursors (task_type)
+    VALUES (%(task_type)s)
+    ON CONFLICT (task_type) DO NOTHING
+),
+current_cursor AS (
+    SELECT last_seen_at, last_raw_record_id
+    FROM dagster_brreg.raw_record_task_cursors
+    WHERE task_type = %(task_type)s
+),
+next_records AS (
+    SELECT
+        rr.id,
+        rr.last_seen_at
+    FROM dagster_brreg.raw_records rr
+    CROSS JOIN current_cursor cursor_state
+    WHERE rr.is_current = true
+      AND (
+          cursor_state.last_seen_at IS NULL
+          OR (rr.last_seen_at, rr.id) > (cursor_state.last_seen_at, cursor_state.last_raw_record_id)
+      )
+    ORDER BY rr.last_seen_at ASC, rr.id ASC
+    LIMIT %(limit)s
+),
+inserted_states AS (
+    INSERT INTO dagster_brreg.raw_record_task_states (
+        raw_record_id,
+        task_type,
+        status,
+        next_retry_at
+    )
+    SELECT
+        next_records.id,
+        %(task_type)s,
+        'pending',
+        next_records.last_seen_at
+    FROM next_records
+    ON CONFLICT (raw_record_id, task_type) DO NOTHING
+),
+advanced_cursor AS (
+    UPDATE dagster_brreg.raw_record_task_cursors cursor_state
+    SET
+        last_seen_at = last_record.last_seen_at,
+        last_raw_record_id = last_record.id,
+        updated_at = now()
+    FROM (
+        SELECT id, last_seen_at
+        FROM next_records
+        ORDER BY last_seen_at DESC, id DESC
+        LIMIT 1
+    ) last_record
+    WHERE cursor_state.task_type = %(task_type)s
 )
-SELECT
-    rr.id,
-    %(task_type)s,
-    'pending',
-    rr.last_seen_at
-FROM dagster_brreg.raw_records rr
-WHERE rr.is_current = true
-ON CONFLICT (raw_record_id, task_type) DO NOTHING
+SELECT count(*)::int AS seeded_raw_records
+FROM next_records
 """
 
 FETCH_PENDING_RAW_TASK_RECORDS_SQL = """
@@ -813,7 +857,7 @@ WITH pending_task_ids AS (
     FROM dagster_brreg.raw_record_task_states ts
     WHERE ts.task_type = %(task_type)s
       AND ts.status = 'pending'
-    ORDER BY ts.next_retry_at ASC NULLS FIRST, ts.raw_record_id ASC
+    ORDER BY ts.next_retry_at ASC, ts.raw_record_id ASC
     LIMIT %(limit)s
 ),
 failed_task_ids AS (
@@ -844,7 +888,7 @@ retryable_task_ids AS (
     SELECT id, sort_at FROM failed_task_ids
     UNION ALL
     SELECT id, sort_at FROM stale_running_task_ids
-    ORDER BY sort_at ASC NULLS FIRST, id ASC
+    ORDER BY sort_at ASC, id ASC
     LIMIT %(limit)s
 ),
 new_task_ids AS (

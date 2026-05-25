@@ -452,8 +452,7 @@ def materialize_brreg_translation_results(
     enrichment_run_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
-            store = BrregWorkingStore(cursor)
-            enrichment_run_id = store.create_enrichment_run(
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
                 CreateEnrichmentRun(
                     dagster_run_id=_enrichment_run_key(context, "translate"),
                     run_type="translate",
@@ -465,19 +464,25 @@ def materialize_brreg_translation_results(
                     },
                 )
             )
-            store.seed_pending_raw_task_states(task_type="translate")
         conn.commit()
 
         try:
             while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
                 with conn.cursor() as cursor:
-                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
+                    store = BrregWorkingStore(cursor)
+                    seeded_raw_records = store.seed_pending_raw_task_states(
+                        task_type="translate",
+                        limit=batch_size,
+                    )
+                    records = store.fetch_pending_raw_task_records(
                         task_type="translate",
                         limit=batch_size,
                         include_new_records=False,
                     )
 
                 if not records:
+                    if seeded_raw_records > 0:
+                        continue
                     stopped_reason = "no_pending_records"
                     break
 
@@ -567,26 +572,31 @@ def materialize_brreg_domain_signal_candidates(
     enrichment_run_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
-            store = BrregWorkingStore(cursor)
-            enrichment_run_id = store.create_enrichment_run(
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
                 CreateEnrichmentRun(
                     dagster_run_id=_enrichment_run_key(context, task_type),
                     run_type=task_type,
                     metadata={"source": "brreg", "dagster_run_id": context.run_id, "signal": signal},
                 )
             )
-            store.seed_pending_raw_task_states(task_type=task_type)
         conn.commit()
 
         try:
             while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
                 with conn.cursor() as cursor:
-                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
+                    store = BrregWorkingStore(cursor)
+                    seeded_raw_records = store.seed_pending_raw_task_states(
+                        task_type=task_type,
+                        limit=batch_size,
+                    )
+                    records = store.fetch_pending_raw_task_records(
                         task_type=task_type,
                         limit=batch_size,
                         include_new_records=False,
                     )
                 if not records:
+                    if seeded_raw_records > 0:
+                        continue
                     stopped_reason = "no_pending_records"
                     break
 

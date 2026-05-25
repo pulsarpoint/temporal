@@ -50,6 +50,8 @@ class FakeCursor:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
         self.many_calls: list[tuple[str, list[dict]]] = []
+        self.last_sql = ""
+        self.seed_pending_count = 0
         self.fetchone_values = [
             ("00000000-0000-0000-0000-000000000001",),
             ("00000000-0000-0000-0000-000000000002",),
@@ -63,12 +65,15 @@ class FakeCursor:
         return None
 
     def execute(self, sql: str, params: dict) -> None:
+        self.last_sql = sql
         self.calls.append((sql, params))
 
     def executemany(self, sql: str, params_seq: list[dict]) -> None:
         self.many_calls.append((sql, params_seq))
 
     def fetchone(self):
+        if "seeded_raw_records" in self.last_sql:
+            return (self.seed_pending_count,)
         return self.fetchone_values.pop(0)
 
     def fetchall(self):

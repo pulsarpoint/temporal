@@ -49,6 +49,8 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.translation_cache" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.domain_proposals" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.raw_record_task_states" in sql
+    assert "CREATE TABLE IF NOT EXISTS dagster_brreg.raw_record_task_cursors" in sql
+    assert "last_raw_record_id UUID" in sql
     assert "'failed_retryable'" in sql
     assert "'failed_terminal'" in sql
     assert "UNIQUE (category, source_lang, target_lang, original_hash, model, prompt_version)" in sql
