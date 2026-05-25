@@ -87,6 +87,31 @@ def test_working_store_migration_has_independent_brreg_run_types() -> None:
     assert "'publish'" in sql
 
 
+def test_domain_discovery_dependencies_migration_adds_search_and_crawl_artifacts() -> None:
+    sql = (MIGRATIONS_DIR / "000012_brreg_domain_discovery_dependencies.up.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS dagster_brreg.domain_search_results" in sql
+    assert "CREATE TABLE IF NOT EXISTS dagster_brreg.domain_crawl_results" in sql
+    assert "provider IN ('duckduckgo')" in sql
+    assert "UNIQUE (raw_record_id, provider, query, rank, url)" in sql
+    assert "UNIQUE (raw_record_id, url)" in sql
+    assert "idx_dagster_brreg_domain_search_results_raw" in sql
+    assert "idx_dagster_brreg_domain_crawl_results_raw" in sql
+    assert "idx_dagster_brreg_domain_crawl_results_decision" in sql
+
+
+def test_domain_discovery_dependencies_migration_updates_task_types_and_views() -> None:
+    sql = (MIGRATIONS_DIR / "000012_brreg_domain_discovery_dependencies.up.sql").read_text()
+
+    assert "'domain_duckduckgo_search'" in sql
+    assert "'domain_duckduckgo'" in sql
+    assert "'domain_crtsh'" in sql
+    assert "'domain_wikidata'" in sql
+    assert "CREATE OR REPLACE VIEW dagster_brreg.v_domain_enrichment_summary" in sql
+    assert "domain_search_results" in sql
+    assert "domain_crawl_results" in sql
+
+
 def test_working_store_migration_creates_observability_views() -> None:
     sql = ALL_UP_SQL
 
