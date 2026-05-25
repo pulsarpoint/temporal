@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -75,6 +76,25 @@ class VerificationDecision:
     reason: str
     matched_evidence: list[str]
     reject_reason: str
+
+
+@dataclass(frozen=True)
+class DomainCrawlArtifact:
+    search_result: SearchResult
+    status: str
+    markdown: str | None
+    markdown_hash: str | None
+    llm_confidence: int | None
+    llm_decision: str | None
+    llm_reason: str | None
+    llm_evidence: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class VerifiedDomainSearchResults:
+    candidates: list[DomainCandidate]
+    crawl_results: list[DomainCrawlArtifact]
 
 
 class DomainSearchLLM(Protocol):
@@ -197,7 +217,37 @@ async def discover_web_search_llm_domain_candidates(
     max_verified_candidates: int = DEFAULT_MAX_VERIFIED_CANDIDATES,
     prompt_version: str = DEFAULT_DOMAIN_LLM_PROMPT_VERSION,
 ) -> list[DomainCandidate]:
-    prompt_version = os.environ.get("DOMAIN_LLM_PROMPT_VERSION") or prompt_version
+    search_results = await collect_duckduckgo_search_results(
+        raw_payload=raw_payload,
+        organization_number=organization_number,
+        organization_name=organization_name,
+        country=country,
+        crawler_factory=crawler_factory,
+    )
+    verified = await verify_domain_search_results_with_llm(
+        raw_payload=raw_payload,
+        organization_number=organization_number,
+        organization_name=organization_name,
+        country=country,
+        search_results=search_results,
+        classifier=classifier,
+        crawler_factory=crawler_factory,
+        triage_threshold=triage_threshold,
+        verification_threshold=verification_threshold,
+        max_verified_candidates=max_verified_candidates,
+        prompt_version=prompt_version,
+    )
+    return verified.candidates
+
+
+async def collect_duckduckgo_search_results(
+    *,
+    raw_payload: dict[str, Any],
+    organization_number: str,
+    organization_name: str | None,
+    country: str = "NO",
+    crawler_factory=None,
+) -> list[SearchResult]:
     company = build_domain_search_company_facts(
         raw_payload=raw_payload,
         organization_number=organization_number,
@@ -206,65 +256,115 @@ async def discover_web_search_llm_domain_candidates(
     )
     if not company.organization_name:
         return []
+    if crawler_factory is None:
+        try:
+            from crawl4ai import AsyncWebCrawler  # type: ignore[import]
+        except ModuleNotFoundError:
+            logger.warning("duckduckgo domain search skipped because crawl4ai is not installed")
+            return []
+        crawler_factory = lambda: AsyncWebCrawler(config=domain_crawler_browser_config_from_env())
+
+    async with crawler_factory() as crawler:
+        for query in build_domain_search_queries(company):
+            search_results = await crawl_duckduckgo_first_page(crawler=crawler, query=query)
+            if search_results:
+                return search_results
+    return []
+
+
+async def verify_domain_search_results_with_llm(
+    *,
+    raw_payload: dict[str, Any],
+    organization_number: str,
+    organization_name: str | None,
+    country: str,
+    search_results: list[SearchResult],
+    classifier: DomainSearchLLM | None = None,
+    crawler_factory=None,
+    triage_threshold: int = DEFAULT_TRIAGE_THRESHOLD,
+    verification_threshold: int = DEFAULT_VERIFICATION_THRESHOLD,
+    max_verified_candidates: int = DEFAULT_MAX_VERIFIED_CANDIDATES,
+    prompt_version: str = DEFAULT_DOMAIN_LLM_PROMPT_VERSION,
+) -> VerifiedDomainSearchResults:
+    prompt_version = os.environ.get("DOMAIN_LLM_PROMPT_VERSION") or prompt_version
+    company = build_domain_search_company_facts(
+        raw_payload=raw_payload,
+        organization_number=organization_number,
+        organization_name=organization_name,
+        country=country,
+    )
+    if not company.organization_name or not search_results:
+        return VerifiedDomainSearchResults(candidates=[], crawl_results=[])
     if classifier is None:
         try:
             classifier = DirectDomainSearchLLM.from_env()
         except MissingDomainLLMConfig as exc:
             logger.warning("web search LLM domain signal skipped: %s", exc)
-            return []
+            return VerifiedDomainSearchResults(candidates=[], crawl_results=[])
     if crawler_factory is None:
         try:
             from crawl4ai import AsyncWebCrawler  # type: ignore[import]
         except ModuleNotFoundError:
             logger.warning("web search LLM domain signal skipped because crawl4ai is not installed")
-            return []
+            return VerifiedDomainSearchResults(candidates=[], crawl_results=[])
         crawler_factory = lambda: AsyncWebCrawler(config=domain_crawler_browser_config_from_env())
 
-    candidates: list[DomainCandidate] = []
-    async with crawler_factory() as crawler:
-        for query in build_domain_search_queries(company):
-            search_results = await crawl_duckduckgo_first_page(crawler=crawler, query=query)
-            if not search_results:
-                continue
+    triage = classifier.triage_search_results(
+        company=company,
+        results=search_results,
+        prompt_version=prompt_version,
+    )
+    triage_by_domain = {
+        decision.normalized_domain: decision
+        for decision in triage
+        if decision.confidence > triage_threshold
+    }
+    if not triage_by_domain:
+        return VerifiedDomainSearchResults(candidates=[], crawl_results=[])
 
-            triage = classifier.triage_search_results(
+    candidates: list[DomainCandidate] = []
+    crawl_results: list[DomainCrawlArtifact] = []
+    async with crawler_factory() as crawler:
+        for result in _selected_results_for_verification(search_results, triage_by_domain)[:max_verified_candidates]:
+            markdown = await crawl_candidate_markdown(crawler=crawler, url=result.url)
+            verification = classifier.verify_candidate(
                 company=company,
-                results=search_results,
+                result=result,
+                markdown=markdown,
                 prompt_version=prompt_version,
             )
-            triage_by_domain = {
-                decision.normalized_domain: decision
-                for decision in triage
-                if decision.confidence > triage_threshold
-            }
-            if not triage_by_domain:
+            accepted = verification is not None and verification.confidence >= verification_threshold
+            crawl_results.append(
+                DomainCrawlArtifact(
+                    search_result=result,
+                    status="succeeded",
+                    markdown=markdown,
+                    markdown_hash=_stable_hash(markdown),
+                    llm_confidence=verification.confidence if verification else None,
+                    llm_decision="accepted" if accepted else "rejected",
+                    llm_reason=verification.reason if verification else "LLM returned no verification decision.",
+                    llm_evidence={"matched_evidence": verification.matched_evidence} if verification else {},
+                    metadata={
+                        "prompt_version": prompt_version,
+                        "model": getattr(classifier, "model", "") or "",
+                    },
+                )
+            )
+            if not accepted or verification is None:
                 continue
-
-            for result in _selected_results_for_verification(search_results, triage_by_domain)[:max_verified_candidates]:
-                markdown = await crawl_candidate_markdown(crawler=crawler, url=result.url)
-                verification = classifier.verify_candidate(
+            candidates.append(
+                _candidate_from_verified_search_result(
                     company=company,
                     result=result,
+                    triage=triage_by_domain[result.normalized_domain],
+                    verification=verification,
                     markdown=markdown,
                     prompt_version=prompt_version,
+                    model=getattr(classifier, "model", None),
                 )
-                if verification is None or verification.confidence < verification_threshold:
-                    continue
-                candidates.append(
-                    _candidate_from_verified_search_result(
-                        company=company,
-                        result=result,
-                        triage=triage_by_domain[result.normalized_domain],
-                        verification=verification,
-                        markdown=markdown,
-                        prompt_version=prompt_version,
-                        model=getattr(classifier, "model", None),
-                    )
-                )
-            if candidates:
-                break
+            )
 
-    return _deduplicate_candidates(candidates)
+    return VerifiedDomainSearchResults(candidates=_deduplicate_candidates(candidates), crawl_results=crawl_results)
 
 
 def domain_crawler_browser_config_from_env():
@@ -591,6 +691,10 @@ def _truncate(value: str, max_chars: int) -> str:
     if len(stripped) <= max_chars:
         return stripped
     return stripped[:max_chars].rsplit(" ", 1)[0].strip()
+
+
+def _stable_hash(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _deduplicate_candidates(candidates: list[DomainCandidate]) -> list[DomainCandidate]:

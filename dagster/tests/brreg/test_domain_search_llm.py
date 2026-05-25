@@ -12,11 +12,13 @@ from corpscout_dagster.brreg.domain_search_llm import (
     build_domain_search_queries,
     build_domain_verification_messages,
     build_search_triage_messages,
+    collect_duckduckgo_search_results,
     domain_crawler_browser_config_from_env,
     discover_web_search_llm_domain_candidates,
     parse_domain_verification_response,
     parse_search_triage_response,
     search_results_from_crawl_result,
+    verify_domain_search_results_with_llm,
 )
 
 
@@ -150,6 +152,69 @@ async def test_web_search_llm_triages_first_page_then_verifies_selected_domain()
     assert len(crawler.urls) == 2
     assert "html.duckduckgo.com/html/" in crawler.urls[0]
     assert crawler.urls[1] == "https://www.bortigard.no/"
+
+
+@pytest.mark.asyncio
+async def test_collect_duckduckgo_search_results_returns_first_page_artifacts() -> None:
+    crawler = FakeCrawler()
+
+    results = await collect_duckduckgo_search_results(
+        raw_payload={
+            "organisasjonsnummer": "810202572",
+            "forretningsadresse": {
+                "adresse": ["Løkkeveien 18"],
+                "poststed": "HOLMESTRAND",
+                "postnummer": "3085",
+            },
+        },
+        organization_number="810202572",
+        organization_name="BORTIGARD AS",
+        country="NO",
+        crawler_factory=lambda: crawler,
+    )
+
+    assert [result.normalized_domain for result in results] == ["bortigard.no", "wrong.example"]
+    assert all(result.query for result in results)
+    assert "html.duckduckgo.com/html/" in crawler.urls[0]
+
+
+@pytest.mark.asyncio
+async def test_verify_stored_search_results_returns_candidates_and_crawl_artifacts() -> None:
+    crawler = FakeCrawler()
+    llm = FakeDomainSearchLLM()
+    search_results = [
+        SearchResult(
+            query='"BORTIGARD AS" Norway official website',
+            rank=1,
+            url="https://www.bortigard.no/",
+            domain="www.bortigard.no",
+            normalized_domain="bortigard.no",
+            title="Bortigard AS",
+            description="Norwegian property company.",
+        )
+    ]
+
+    verified = await verify_domain_search_results_with_llm(
+        raw_payload={"organisasjonsnummer": "810202572"},
+        organization_number="810202572",
+        organization_name="BORTIGARD AS",
+        country="NO",
+        search_results=search_results,
+        classifier=llm,
+        crawler_factory=lambda: crawler,
+        triage_threshold=50,
+        verification_threshold=60,
+        max_verified_candidates=3,
+        prompt_version="v1",
+    )
+
+    assert len(verified.candidates) == 1
+    assert verified.candidates[0].normalized_domain == "bortigard.no"
+    assert len(verified.crawl_results) == 1
+    assert verified.crawl_results[0].status == "succeeded"
+    assert verified.crawl_results[0].llm_confidence == 84
+    assert verified.crawl_results[0].llm_decision == "accepted"
+    assert verified.crawl_results[0].markdown_hash
 
 
 def test_build_domain_search_queries_uses_org_number_and_address_fallbacks() -> None:
