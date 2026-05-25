@@ -345,6 +345,7 @@ def test_domain_crawler_browser_config_defaults_to_headless_full_chromium(monkey
     assert config.headless is True
     assert config.ignore_https_errors is True
     assert config.light_mode is True
+    assert config.sleep_on_close is True
 
 
 def test_domain_crawler_browser_config_can_simulate_visible_chrome(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -358,6 +359,7 @@ def test_domain_crawler_browser_config_can_simulate_visible_chrome(monkeypatch: 
     assert config.chrome_channel == "chrome"
     assert config.channel == "chrome"
     assert config.headless is False
+    assert config.sleep_on_close is True
 
 
 def test_parse_search_triage_response_filters_unknown_domains_and_bad_confidence() -> None:

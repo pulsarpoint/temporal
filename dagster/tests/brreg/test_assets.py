@@ -242,6 +242,9 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
         assert fields["max_batches_per_run"].default_provided
         assert fields["max_parallel_tasks"].default_provided
 
+    duckduckgo_fields = brreg_domain_duckduckgo_search_results.node_def.config_schema.config_type.fields
+    assert duckduckgo_fields["max_parallel_tasks"].default_value == 1
+
 
 def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkeypatch) -> None:
     monkeypatch.setenv("BRREG_TEST_BATCH_SIZE", "100")

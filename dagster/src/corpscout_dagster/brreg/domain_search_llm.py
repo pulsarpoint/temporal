@@ -377,6 +377,7 @@ def domain_crawler_browser_config_from_env():
         chrome_channel=chrome_channel,
         channel=chrome_channel,
         ignore_https_errors=True,
+        sleep_on_close=True,
         light_mode=_env_bool("DOMAIN_CRAWLER_LIGHT_MODE", default=True),
         use_managed_browser=_env_bool("DOMAIN_CRAWLER_USE_MANAGED_BROWSER", default=False),
         enable_stealth=_env_bool("DOMAIN_CRAWLER_ENABLE_STEALTH", default=True),
