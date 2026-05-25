@@ -138,3 +138,11 @@ def test_parse_translation_response_repairs_missing_translation_key() -> None:
         "t0": "Providing accounting services.",
         "t1": "Information technology consulting services.",
     }
+
+
+def test_parse_translation_response_repairs_malformed_llm_json() -> None:
+    content = '{"translations":[{"id":"t0","translation":"Limited liability company",},]}'
+
+    result = parse_translation_response(content, {"t0"})
+
+    assert result == {"t0": "Limited liability company"}
