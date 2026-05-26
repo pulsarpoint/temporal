@@ -5,7 +5,7 @@ TRANSLATION_SERVICE_IMAGE ?= ghcr.io/pulsarpoint/corpscout-translation-service:l
 CRAWL_SERVICE_IMAGE ?= ghcr.io/pulsarpoint/corpscout-crawl-service:latest
 BRREG_STALE_RUN_CLEANUP_MINUTES ?= 30
 
-.PHONY: sync test validate smoke-brreg-db cleanup-stale-brreg-runs webserver daemon build pull up run down migrate-up migrate-down migrate-version logs logs-webserver logs-daemon shell
+.PHONY: sync test validate smoke-brreg-db cleanup-stale-brreg-runs webserver daemon build pull up run down migrate-up migrate-down migrate-version logs logs-webserver logs-daemon logs-translation logs-crawl shell
 
 sync:
 	uv sync
@@ -58,6 +58,12 @@ logs-webserver:
 
 logs-daemon:
 	$(COMPOSE) logs -f dagster-daemon
+
+logs-translation:
+	$(COMPOSE) logs -f translation-service
+
+logs-crawl:
+	$(COMPOSE) logs -f crawl-service
 
 shell:
 	$(COMPOSE) run --rm dagster-webserver bash

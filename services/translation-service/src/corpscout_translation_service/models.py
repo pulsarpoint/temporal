@@ -44,10 +44,30 @@ class LLMTranslationRequest(BaseModel):
     items: list[LLMTranslationItem] = Field(min_length=1)
 
 
+class LLMTermTranslation(BaseModel):
+    id: str
+    translation: str
+
+
 class TranslationError(BaseModel):
     code: str
     message: str
     detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class LLMTranslateResponse(BaseModel):
+    schema_version: str = "translation-service.terms.v1"
+    status: BatchStatus
+    provider: str
+    model: str
+    prompt_version: str
+    items_seen: int
+    items_completed: int
+    items_failed: int
+    translations: list[LLMTermTranslation]
+    missing_ids: list[str] = Field(default_factory=list)
+    error: TranslationError | None = None
+    duration_ms: int
 
 
 class BrregRecordTranslationResult(BaseModel):

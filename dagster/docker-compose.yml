@@ -11,6 +11,11 @@ services:
   dagster-webserver:
     image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
     restart: always
+    depends_on:
+      translation-service:
+        condition: service_healthy
+      crawl-service:
+        condition: service_healthy
     env_file:
       - path: .env
         required: false
@@ -34,6 +39,11 @@ services:
   dagster-daemon:
     image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
     restart: always
+    depends_on:
+      translation-service:
+        condition: service_healthy
+      crawl-service:
+        condition: service_healthy
     env_file:
       - path: .env
         required: false
@@ -58,6 +68,14 @@ services:
         required: false
     ports:
       - ${TRANSLATION_SERVICE_PORT:-8095}:8095
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8095/healthz', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
 
   crawl-service:
     image: ${CRAWL_SERVICE_IMAGE:-ghcr.io/pulsarpoint/corpscout-crawl-service:latest}
@@ -67,6 +85,14 @@ services:
         required: false
     ports:
       - ${CRAWL_SERVICE_PORT:-8096}:8096
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8096/healthz', timeout=5)"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
 
   dagster-migrate-up:
     <<: *dagster-migrate-base

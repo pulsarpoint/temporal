@@ -30,7 +30,7 @@ from corpscout_dagster.brreg.translation import (
     DEFAULT_LLM_MODEL,
     DEFAULT_PROMPT_VERSION,
     CachedTermTranslation,
-    DirectLLMTermTranslator,
+    HttpTranslationServiceTermTranslator,
     TermTranslator,
     TranslationCacheKey,
     TranslationItem,
@@ -204,11 +204,15 @@ def brreg_translation_results(context) -> dict[str, int]:
         context,
         connection_factory=psycopg.connect,
         database_url=_corpscout_database_url(),
-        translator=DirectLLMTermTranslator(),
+        translator=HttpTranslationServiceTermTranslator.from_env(),
         batch_size=run_config.batch_size,
         max_batches_per_run=run_config.max_batches_per_run,
         max_parallel_tasks=run_config.max_parallel_tasks,
-        model=os.environ.get("BRREG_TRANSLATION_MODEL") or DEFAULT_LLM_MODEL,
+        model=(
+            os.environ.get("BRREG_TRANSLATION_MODEL")
+            or os.environ.get("TRANSLATION_DEFAULT_MODEL")
+            or DEFAULT_LLM_MODEL
+        ),
         prompt_version=os.environ.get("BRREG_TRANSLATION_PROMPT_VERSION") or DEFAULT_PROMPT_VERSION,
     )
 

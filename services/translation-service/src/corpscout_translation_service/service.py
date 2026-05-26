@@ -20,6 +20,8 @@ from corpscout_translation_service.models import (
     BrregTranslateResponse,
     LLMTranslationItem,
     LLMTranslationRequest,
+    LLMTermTranslation,
+    LLMTranslateResponse,
     TranslationError,
 )
 
@@ -91,6 +93,56 @@ class TranslationService:
             records_seen=len(request.records),
             results=results,
             started=started,
+        )
+
+    async def translate_terms(self, request: LLMTranslationRequest) -> LLMTranslateResponse:
+        started = time.monotonic()
+        provider = request.provider if request.provider != "default" else default_provider()
+        model = request.model if request.model != "default" else default_model()
+        llm_request = request.model_copy(update={"provider": provider, "model": model})
+
+        try:
+            translated_by_id = await self._llm_client.translate_terms(llm_request)
+        except Exception as exc:
+            logger.exception("Term translation request failed")
+            return LLMTranslateResponse(
+                status="failed",
+                provider=provider,
+                model=model,
+                prompt_version=request.prompt_version,
+                items_seen=len(request.items),
+                items_completed=0,
+                items_failed=len(request.items),
+                translations=[],
+                missing_ids=[item.id for item in request.items],
+                error=TranslationError(
+                    code="llm_request_failed",
+                    message="LLM request failed",
+                    detail={"error": str(exc), "error_type": type(exc).__name__},
+                ),
+                duration_ms=_elapsed_ms(started),
+            )
+
+        translations = [
+            LLMTermTranslation(id=item.id, translation=translated_by_id[item.id])
+            for item in request.items
+            if translated_by_id.get(item.id)
+        ]
+        translated_ids = {item.id for item in translations}
+        missing_ids = [item.id for item in request.items if item.id not in translated_ids]
+        status = "succeeded" if not missing_ids else "partial" if translations else "failed"
+        return LLMTranslateResponse(
+            status=status,
+            provider=provider,
+            model=model,
+            prompt_version=request.prompt_version,
+            items_seen=len(request.items),
+            items_completed=len(translations),
+            items_failed=len(missing_ids),
+            translations=translations,
+            missing_ids=missing_ids,
+            error=None,
+            duration_ms=_elapsed_ms(started),
         )
 
     async def _translate_unique_items(

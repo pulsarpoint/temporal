@@ -23,6 +23,14 @@ curl -X POST 'http://localhost:8095/v1/translate/brreg-records?provider=default&
   -d '{"records":[{"record_id":"record-1","organization_number":"810202572","raw_payload":{"organisasjonsnummer":"810202572","navn":"BORTIGARD AS","organisasjonsform":{"kode":"AS","beskrivelse":"Aksjeselskap"}}}]}'
 ```
 
+Term-batch translation used by Dagster cache fills:
+
+```bash
+curl -X POST 'http://localhost:8095/v1/translate/terms?provider=default&model=qwen3:6b' \
+  -H 'content-type: application/json' \
+  -d '{"provider":"default","model":"default","prompt_version":"v1","source_lang":"no","target_lang":"en","items":[{"id":"org_form:example","category":"org_form","text":"Aksjeselskap"}]}'
+```
+
 ## LLM Configuration
 
 The service supports multiple OpenAI-compatible providers selected per request with query parameters:

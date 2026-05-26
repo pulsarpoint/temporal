@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import httpx
+
 from corpscout_dagster.brreg.translation import (
     CachedTermTranslation,
+    HttpTranslationServiceTermTranslator,
     TranslationItem,
     build_translation_messages,
     build_translation_payload,
@@ -146,3 +149,69 @@ def test_parse_translation_response_repairs_malformed_llm_json() -> None:
     result = parse_translation_response(content, {"t0"})
 
     assert result == {"t0": "Limited liability company"}
+
+
+def test_http_translation_service_term_translator_calls_external_service() -> None:
+    item = TranslationItem(category="activity", text="Drive utleie av fast eiendom")
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.url == "http://translation-service.test/v1/translate/terms"
+        assert request.headers["content-type"] == "application/json"
+        body = json_from_request(request)
+        assert body["provider"] == "deepseek"
+        assert body["model"] == "deepseek-v4-flash"
+        assert body["prompt_version"] == "v2"
+        assert body["source_lang"] == "no"
+        assert body["target_lang"] == "en"
+        assert body["items"] == [
+            {
+                "id": translation_item_id(item),
+                "category": "activity",
+                "text": "Drive utleie av fast eiendom",
+            }
+        ]
+        return httpx.Response(
+            200,
+            json={
+                "schema_version": "translation-service.terms.v1",
+                "status": "succeeded",
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "prompt_version": "v2",
+                "items_seen": 1,
+                "items_completed": 1,
+                "items_failed": 0,
+                "translations": [
+                    {"id": translation_item_id(item), "translation": "Engage in rental of real estate"},
+                ],
+                "missing_ids": [],
+                "error": None,
+                "duration_ms": 10,
+            },
+        )
+
+    translator = HttpTranslationServiceTermTranslator(
+        base_url="http://translation-service.test",
+        provider="deepseek",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    translated = translator.translate_terms(
+        category="mixed",
+        items=[item],
+        source_lang="no",
+        target_lang="en",
+        model="deepseek-v4-flash",
+        prompt_version="v2",
+    )
+
+    assert translated == {translation_item_id(item): "Engage in rental of real estate"}
+    assert len(requests) == 1
+
+
+def json_from_request(request: httpx.Request) -> dict:
+    import json
+
+    return json.loads(request.content.decode("utf-8"))

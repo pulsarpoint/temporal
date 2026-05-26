@@ -33,6 +33,17 @@ The compose stack runs:
 
 - `dagster-webserver` on `DAGSTER_PORT`, default `3000`.
 - `dagster-daemon` for schedules, sensors, and queued runs.
+- `translation-service` on `TRANSLATION_SERVICE_PORT`, default `8095`.
+- `crawl-service` on `CRAWL_SERVICE_PORT`, default `8096`.
+
+Dagster waits for the translation and crawl services to pass `/healthz` before
+starting the webserver or daemon. The services still use prebuilt GHCR images
+by default:
+
+```bash
+TRANSLATION_SERVICE_IMAGE=ghcr.io/pulsarpoint/corpscout-translation-service:latest
+CRAWL_SERVICE_IMAGE=ghcr.io/pulsarpoint/corpscout-crawl-service:latest
+```
 
 Dagster runtime state is bind-mounted from `DAGSTER_HOME_DIR`, default
 `./.dagster_home`, so logs, run metadata, and local instance files are visible
@@ -89,14 +100,14 @@ BRREG now has separate Dagster jobs for each independent stage:
 
 Translation and domain enrichment both read current rows from
 `dagster_brreg.raw_records`; they do not depend on each other. The translation
-job uses the same OpenAI-compatible local LLM request shape as the old Temporal
-worker, writes reusable term translations to `dagster_brreg.translation_cache`,
-and records per-row task attempts in `dagster_brreg.task_attempts`. Translation
+job calls the standalone translation service at `TRANSLATION_SERVICE_URL`,
+writes reusable term translations to `dagster_brreg.translation_cache`, and
+records per-row task attempts in `dagster_brreg.task_attempts`. Translation
 keeps claiming `BRREG_TRANSLATION_BATCH_SIZE` chunks until there are no pending
 translation rows left; `BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0` means drain the
-queue fully in one materialization. Domain discovery is now one Dagster business
+queue fully in one materialization. Domain discovery is one Dagster business
 task, `brreg_domain_results`, backed by the standalone crawl service. The
-service owns DuckDuckGo first-page search, crawl4ai/Chromium crawling, LLM
+service owns DuckDuckGo/Yandex search, crawl4ai/Chromium crawling, LLM
 verification, scoring, and structured errors. Dagster claims rows, calls the
 service, stores one response artifact per company in `dagster_brreg.domain_results`,
 and leaves search/crawl/verification internals out of the Dagster asset graph.
@@ -159,36 +170,20 @@ Optional environment:
 ```bash
 BRREG_TRANSLATION_BATCH_SIZE=50
 BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0
-BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE=5000
-BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE=10
-BRREG_DOMAIN_CRTSH_BATCH_SIZE=10
-BRREG_DOMAIN_WIKIDATA_BATCH_SIZE=25
-BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE=10
-BRREG_DOMAIN_PROPOSAL_BATCH_SIZE=500
-BRREG_DOMAIN_MAX_BATCHES_PER_RUN=20
+BRREG_TRANSLATION_MAX_PARALLEL_TASKS=50
+BRREG_TRANSLATION_PROVIDER=local
+BRREG_TRANSLATION_MODEL=qwen3:6b
+BRREG_TRANSLATION_PROMPT_VERSION=v1
+TRANSLATION_SERVICE_TIMEOUT_SECONDS=300
+BRREG_DOMAIN_RESULT_BATCH_SIZE=10
+BRREG_DOMAIN_RESULT_MAX_BATCHES_PER_RUN=0
+BRREG_DOMAIN_RESULT_MAX_PARALLEL_TASKS=1
+CRAWL_SERVICE_TIMEOUT_SECONDS=300
 BRREG_ENHANCED_RECORD_BATCH_SIZE=500
 BRREG_PUBLISH_ENHANCED_RECORD_BATCH_SIZE=250
 BRREG_FX_RATE_DATE=2026-05-21
 BRREG_STALE_RUN_CLEANUP_MINUTES=30
-BRREG_TRANSLATION_MODEL=qwen3:6b
-BRREG_TRANSLATION_PROMPT_VERSION=v1
-LLM_BASE_URL=http://100.77.62.33:8888
-LLM_API_KEY=local
-DOMAIN_LLM_BASE_URL=https://api.deepseek.com
-DOMAIN_LLM_MODEL=deepseek-v4-flash
-DOMAIN_LLM_PROMPT_VERSION=v1
-DOMAIN_LLM_API_KEY=...
-DOMAIN_CRAWLER_BROWSER_TYPE=chromium
-DOMAIN_CRAWLER_CHROME_CHANNEL=chromium
-DOMAIN_CRAWLER_HEADLESS=true
-DOMAIN_CRAWLER_LIGHT_MODE=true
 ```
-
-The container installs a full Chromium executable for crawl4ai/Playwright, not
-only the headless shell. For local debugging you can set
-`DOMAIN_CRAWLER_HEADLESS=false`; a visible browser also needs a runtime with
-`DISPLAY` or Xvfb configured. If Chrome is installed in that runtime,
-`DOMAIN_CRAWLER_CHROME_CHANNEL=chrome` makes the crawler use the Chrome channel.
 
 Required environment:
 

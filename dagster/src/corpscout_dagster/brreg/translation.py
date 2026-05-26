@@ -14,6 +14,7 @@ import httpx
 DEFAULT_LLM_BASE_URL = "http://100.77.62.33:8888"
 DEFAULT_LLM_MODEL = "qwen3:6b"
 DEFAULT_PROMPT_VERSION = "v1"
+DEFAULT_TRANSLATION_SERVICE_URL = "http://translation-service:8095"
 TRANSLATION_PAYLOAD_SCHEMA_VERSION = "brreg.translation_terms.v1"
 
 
@@ -52,6 +53,92 @@ class TermTranslator(Protocol):
         prompt_version: str,
     ) -> dict[str, str]:
         ...
+
+
+class HttpTranslationServiceTermTranslator:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        provider: str = "default",
+        timeout_seconds: float = 300,
+        http_client: httpx.Client | None = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._provider = provider
+        self._timeout_seconds = timeout_seconds
+        self._http_client = http_client
+
+    @classmethod
+    def from_env(cls) -> "HttpTranslationServiceTermTranslator":
+        return cls(
+            base_url=os.environ.get("TRANSLATION_SERVICE_URL", DEFAULT_TRANSLATION_SERVICE_URL),
+            provider=(
+                os.environ.get("BRREG_TRANSLATION_PROVIDER")
+                or os.environ.get("TRANSLATION_DEFAULT_PROVIDER")
+                or "default"
+            ),
+            timeout_seconds=float(os.environ.get("TRANSLATION_SERVICE_TIMEOUT_SECONDS", "300")),
+        )
+
+    def translate_terms(
+        self,
+        *,
+        category: str,
+        items: list[TranslationItem],
+        source_lang: str,
+        target_lang: str,
+        model: str,
+        prompt_version: str,
+    ) -> dict[str, str]:
+        if not items:
+            return {}
+        response = self._post(
+            {
+                "provider": self._provider,
+                "model": model,
+                "prompt_version": prompt_version,
+                "source_lang": source_lang,
+                "target_lang": target_lang,
+                "items": [
+                    {
+                        "id": translation_item_id(item),
+                        "category": item.category,
+                        "text": item.text,
+                    }
+                    for item in items
+                ],
+            }
+        )
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("translation service returned a non-object response")
+        if payload.get("status") == "failed":
+            raise RuntimeError(_translation_service_error_message(payload))
+        translations = payload.get("translations")
+        if not isinstance(translations, list):
+            raise RuntimeError("translation service response is missing translations")
+        return {
+            str(item.get("id")): str(item.get("translation")).strip()
+            for item in translations
+            if isinstance(item, dict)
+            and item.get("id") is not None
+            and str(item.get("translation") or "").strip()
+        }
+
+    def _post(self, payload: dict[str, Any]) -> httpx.Response:
+        if self._http_client is not None:
+            response = self._http_client.post(
+                f"{self._base_url}/v1/translate/terms",
+                json=payload,
+                timeout=self._timeout_seconds,
+            )
+            response.raise_for_status()
+            return response
+        with httpx.Client(timeout=self._timeout_seconds) as client:
+            response = client.post(f"{self._base_url}/v1/translate/terms", json=payload)
+            response.raise_for_status()
+            return response
 
 
 class DirectLLMTermTranslator:
@@ -344,3 +431,11 @@ def _openai_api_base(base_url: str) -> str:
     if trimmed.endswith("/v1"):
         trimmed = trimmed[: -len("/v1")]
     return trimmed.rstrip("/") + "/v1"
+
+
+def _translation_service_error_message(payload: dict[str, Any]) -> str:
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return "translation service failed"
+    message = error.get("message") or error.get("code")
+    return str(message) if message else "translation service failed"
