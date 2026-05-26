@@ -6,8 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from corpscout_dagster.brreg.fx_rates import FxRateSet
-from corpscout_dagster.brreg.working_store import DomainProposalRow, RawTaskRecord
+from corpscout_dagster.brreg.working_store import DomainResultCandidateRow, RawTaskRecord
 
 
 BRREG_ENHANCED_SCHEMA_VERSION = "brreg.enhanced.v1"
@@ -20,9 +19,12 @@ def build_brreg_enhanced_payload(
     translation_status: str,
     translation_payload: dict[str, Any] | None,
     domain_status: str,
-    domain_proposals: list[DomainProposalRow],
+    domain_candidates: list[DomainResultCandidateRow],
+    currency_status: str,
+    financial_payload: dict[str, Any] | None,
+    usd_payload: dict[str, Any] | None,
+    fx_metadata: dict[str, Any] | None,
     task_statuses: dict[str, str],
-    fx_rates: FxRateSet | None = None,
     dagster_run_id: str,
 ) -> dict[str, Any]:
     raw = record.raw_payload
@@ -33,6 +35,7 @@ def build_brreg_enhanced_payload(
         "industries": "succeeded",
         "capital": "succeeded" if isinstance(raw.get("kapital"), dict) else "not_available",
         "domains": _section_status_from_task(domain_status),
+        "currency": _section_status_from_task(currency_status),
         "financials": "not_available",
     }
     now = _utc_now()
@@ -57,9 +60,11 @@ def build_brreg_enhanced_payload(
             raw=raw,
             translations=translations,
             translation_status=translation_status,
-            fx_rates=fx_rates,
+            financial_payload=financial_payload or {},
+            usd_payload=usd_payload or {},
+            fx_metadata=fx_metadata or {},
         ),
-        "domains": _domain_sections(domain_proposals),
+        "domains": _domain_sections(domain_candidates),
         "financials": [],
     }
 
@@ -202,29 +207,26 @@ def _capital_section(
     raw: dict[str, Any],
     translations: dict[tuple[str, str], str],
     translation_status: str,
-    fx_rates: FxRateSet | None,
+    financial_payload: dict[str, Any],
+    usd_payload: dict[str, Any],
+    fx_metadata: dict[str, Any],
 ) -> dict[str, Any] | None:
     capital = _dict(raw.get("kapital"))
     if not capital:
         return None
+    capital_financial = _dict(financial_payload.get("capital"))
+    capital_usd = _dict(usd_payload.get("capital"))
+    capital_fx_metadata = _dict(fx_metadata.get("capital"))
     capital_type = _optional_str(capital.get("type"))
-    original_amount = _optional_decimal(capital.get("belop"))
-    original_currency = _optional_str(capital.get("valuta"))
-    amount_usd_cents = None
-    amount_usd = None
-    fx_metadata: dict[str, Any] = {}
-    fx_source = None
-    fx_rate_date = None
-    if original_amount is not None or original_currency is not None:
-        if original_amount is None or original_currency is None:
-            raise ValueError("incomplete capital currency data")
-        if fx_rates is None:
-            raise ValueError("FX rates are required for BRREG capital conversion")
-        amount_usd_cents = fx_rates.to_usd_cents(original_amount, original_currency)
+    original_amount = _optional_decimal(capital_financial.get("original_amount", capital.get("belop")))
+    original_currency = _optional_str(capital_financial.get("original_currency") or capital.get("valuta"))
+    amount_usd_cents = _optional_int(capital_usd.get("amount_usd_cents"))
+    amount_usd_value = _optional_decimal(capital_usd.get("amount_usd"))
+    amount_usd = float(amount_usd_value) if amount_usd_value is not None else None
+    if amount_usd is None and amount_usd_cents is not None:
         amount_usd = amount_usd_cents / 100
-        fx_source = fx_rates.source
-        fx_rate_date = fx_rates.rate_date
-        fx_metadata = fx_rates.exchange_metadata(original_currency)
+    fx_source = _optional_str(fx_metadata.get("source"))
+    fx_rate_date = _optional_str(fx_metadata.get("rate_date"))
 
     return {
         "capital_type": capital_type,
@@ -242,23 +244,23 @@ def _capital_section(
         "amount_usd_cents": amount_usd_cents,
         "fx_source": fx_source,
         "fx_rate_date": fx_rate_date,
-        "fx_metadata": fx_metadata,
+        "fx_metadata": capital_fx_metadata,
     }
 
 
-def _domain_sections(proposals: list[DomainProposalRow]) -> list[dict[str, Any]]:
+def _domain_sections(candidates: list[DomainResultCandidateRow]) -> list[dict[str, Any]]:
     return [
         {
-            "domain": proposal.domain,
-            "normalized_domain": proposal.normalized_domain,
-            "best_signal": proposal.signals[0] if proposal.signals else "unknown",
-            "confidence": proposal.score,
-            "status": "active" if proposal.status in {"proposed", "accepted"} else proposal.status,
+            "domain": candidate.domain,
+            "normalized_domain": candidate.normalized_domain,
+            "best_signal": candidate.signals[0] if candidate.signals else "unknown",
+            "confidence": candidate.score,
+            "status": "active" if candidate.status in {"proposed", "accepted"} else candidate.status,
             "source": "dagster",
-            "evidence": proposal.evidence,
-            "metadata": proposal.metadata,
+            "evidence": candidate.evidence,
+            "metadata": candidate.metadata,
         }
-        for proposal in proposals
+        for candidate in candidates
     ]
 
 

@@ -121,7 +121,21 @@ class InsertDomainResult:
 
 
 @dataclass(frozen=True)
-class DomainProposalRow:
+class InsertFinancialResult:
+    raw_record_id: str
+    task_attempt_id: str
+    status: str
+    original_currency: str | None
+    financial_payload: dict[str, Any]
+    usd_payload: dict[str, Any]
+    fx_metadata: dict[str, Any]
+    source_uri: str | None
+    error: str | None
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class DomainResultCandidateRow:
     domain: str
     normalized_domain: str
     score: int
@@ -140,7 +154,11 @@ class EnhancedBuildRecord:
     translation_status: str
     translation_payload: dict[str, Any]
     domain_status: str
-    domain_proposals: list[DomainProposalRow]
+    domain_candidates: list[DomainResultCandidateRow]
+    currency_status: str
+    financial_payload: dict[str, Any]
+    usd_payload: dict[str, Any]
+    fx_metadata: dict[str, Any]
     task_statuses: dict[str, str]
 
 
@@ -395,6 +413,23 @@ class BrregWorkingStore:
             },
         )
 
+    def insert_financial_result(self, command: InsertFinancialResult) -> None:
+        self._cursor.execute(
+            INSERT_FINANCIAL_RESULT_SQL,
+            {
+                "raw_record_id": command.raw_record_id,
+                "task_attempt_id": command.task_attempt_id,
+                "status": command.status,
+                "original_currency": command.original_currency,
+                "financial_payload": _json(command.financial_payload),
+                "usd_payload": _json(command.usd_payload),
+                "fx_metadata": _json(command.fx_metadata),
+                "source_uri": command.source_uri,
+                "error": command.error,
+                "metadata": _json(command.metadata),
+            },
+        )
+
     def fetch_pending_enhanced_build_records(self, *, limit: int) -> list[EnhancedBuildRecord]:
         self._cursor.execute(FETCH_PENDING_ENHANCED_BUILD_RECORDS_SQL, {"limit": limit})
         return [_enhanced_build_record_from_row(row) for row in self._cursor.fetchall()]
@@ -440,8 +475,11 @@ def _raw_task_record_from_row(row) -> RawTaskRecord:
 def _enhanced_build_record_from_row(row) -> EnhancedBuildRecord:
     raw_payload = _json_value(row[6], {})
     translation_payload = _json_value(row[9], {})
-    domain_proposals = _json_value(row[11], [])
-    task_statuses = _json_value(row[12], {})
+    domain_candidates = _json_value(row[11], [])
+    financial_payload = _json_value(row[13], {})
+    usd_payload = _json_value(row[14], {})
+    fx_metadata = _json_value(row[15], {})
+    task_statuses = _json_value(row[16], {})
     return EnhancedBuildRecord(
         record=RawTaskRecord(
             id=str(row[0]),
@@ -456,13 +494,17 @@ def _enhanced_build_record_from_row(row) -> EnhancedBuildRecord:
         translation_status=str(row[8]),
         translation_payload=translation_payload,
         domain_status=str(row[10]) if row[10] is not None else "skipped",
-        domain_proposals=[_domain_proposal_row_from_mapping(item) for item in domain_proposals],
+        domain_candidates=[_domain_result_candidate_row_from_mapping(item) for item in domain_candidates],
+        currency_status=str(row[12]) if row[12] is not None else "skipped",
+        financial_payload=_dict(financial_payload),
+        usd_payload=_dict(usd_payload),
+        fx_metadata=_dict(fx_metadata),
         task_statuses={str(key): str(value) for key, value in task_statuses.items()},
     )
 
 
-def _domain_proposal_row_from_mapping(value: dict[str, Any]) -> DomainProposalRow:
-    return DomainProposalRow(
+def _domain_result_candidate_row_from_mapping(value: dict[str, Any]) -> DomainResultCandidateRow:
+    return DomainResultCandidateRow(
         domain=str(value.get("domain") or ""),
         normalized_domain=str(value.get("normalized_domain") or ""),
         score=int(value.get("score") or 0),
@@ -930,182 +972,30 @@ INSERT INTO dagster_brreg.domain_results (
 )
 """
 
-INSERT_DOMAIN_CANDIDATE_SQL = """
-INSERT INTO dagster_brreg.domain_candidates (
+INSERT_FINANCIAL_RESULT_SQL = """
+INSERT INTO dagster_brreg.financial_results (
     raw_record_id,
     task_attempt_id,
-    domain,
-    normalized_domain,
-    signal,
-    confidence,
-    evidence,
-    metadata
-) VALUES (
-    %(raw_record_id)s,
-    %(task_attempt_id)s,
-    %(domain)s,
-    %(normalized_domain)s,
-    %(signal)s,
-    %(confidence)s,
-    %(evidence)s::jsonb,
-    %(metadata)s::jsonb
-)
-ON CONFLICT (raw_record_id, normalized_domain, signal) DO UPDATE
-SET
-    task_attempt_id = EXCLUDED.task_attempt_id,
-    domain = EXCLUDED.domain,
-    confidence = GREATEST(dagster_brreg.domain_candidates.confidence, EXCLUDED.confidence),
-    evidence = dagster_brreg.domain_candidates.evidence || EXCLUDED.evidence,
-    metadata = dagster_brreg.domain_candidates.metadata || EXCLUDED.metadata,
-    updated_at = now()
-"""
-
-INSERT_DOMAIN_SEARCH_RESULT_SQL = """
-INSERT INTO dagster_brreg.domain_search_results (
-    raw_record_id,
-    task_attempt_id,
-    provider,
-    query,
-    rank,
-    url,
-    domain,
-    normalized_domain,
-    title,
-    description,
-    metadata
-) VALUES (
-    %(raw_record_id)s,
-    %(task_attempt_id)s,
-    %(provider)s,
-    %(query)s,
-    %(rank)s,
-    %(url)s,
-    %(domain)s,
-    %(normalized_domain)s,
-    %(title)s,
-    %(description)s,
-    %(metadata)s::jsonb
-)
-ON CONFLICT (raw_record_id, provider, query, rank, url) DO UPDATE
-SET
-    task_attempt_id = EXCLUDED.task_attempt_id,
-    domain = EXCLUDED.domain,
-    normalized_domain = EXCLUDED.normalized_domain,
-    title = EXCLUDED.title,
-    description = EXCLUDED.description,
-    metadata = dagster_brreg.domain_search_results.metadata || EXCLUDED.metadata,
-    updated_at = now()
-"""
-
-FETCH_DOMAIN_SEARCH_RESULTS_FOR_RAW_RECORD_SQL = """
-SELECT
-    id,
-    raw_record_id,
-    query,
-    rank,
-    url,
-    domain,
-    normalized_domain,
-    title,
-    description,
-    metadata
-FROM dagster_brreg.domain_search_results
-WHERE raw_record_id = %(raw_record_id)s
-ORDER BY rank ASC, url ASC
-"""
-
-INSERT_DOMAIN_CRAWL_RESULT_SQL = """
-INSERT INTO dagster_brreg.domain_crawl_results (
-    raw_record_id,
-    search_result_id,
-    task_attempt_id,
-    url,
-    domain,
-    normalized_domain,
     status,
-    markdown,
-    markdown_hash,
-    llm_confidence,
-    llm_decision,
-    llm_reason,
-    llm_evidence,
+    original_currency,
+    financial_payload,
+    usd_payload,
+    fx_metadata,
+    source_uri,
+    error,
     metadata
 ) VALUES (
     %(raw_record_id)s,
-    %(search_result_id)s,
     %(task_attempt_id)s,
-    %(url)s,
-    %(domain)s,
-    %(normalized_domain)s,
     %(status)s,
-    %(markdown)s,
-    %(markdown_hash)s,
-    %(llm_confidence)s,
-    %(llm_decision)s,
-    %(llm_reason)s,
-    %(llm_evidence)s::jsonb,
+    %(original_currency)s,
+    %(financial_payload)s::jsonb,
+    %(usd_payload)s::jsonb,
+    %(fx_metadata)s::jsonb,
+    %(source_uri)s,
+    %(error)s,
     %(metadata)s::jsonb
 )
-ON CONFLICT (raw_record_id, url) DO UPDATE
-SET
-    search_result_id = EXCLUDED.search_result_id,
-    task_attempt_id = EXCLUDED.task_attempt_id,
-    domain = EXCLUDED.domain,
-    normalized_domain = EXCLUDED.normalized_domain,
-    status = EXCLUDED.status,
-    markdown = EXCLUDED.markdown,
-    markdown_hash = EXCLUDED.markdown_hash,
-    llm_confidence = EXCLUDED.llm_confidence,
-    llm_decision = EXCLUDED.llm_decision,
-    llm_reason = EXCLUDED.llm_reason,
-    llm_evidence = EXCLUDED.llm_evidence,
-    metadata = dagster_brreg.domain_crawl_results.metadata || EXCLUDED.metadata,
-    updated_at = now()
-"""
-
-FETCH_DOMAIN_CANDIDATES_FOR_RAW_RECORD_SQL = """
-SELECT
-    normalized_domain,
-    domain,
-    signal,
-    confidence,
-    evidence,
-    metadata
-FROM dagster_brreg.domain_candidates
-WHERE raw_record_id = %(raw_record_id)s
-  AND status IN ('candidate', 'accepted')
-ORDER BY normalized_domain ASC, confidence DESC, signal ASC
-"""
-
-UPSERT_DOMAIN_PROPOSAL_SQL = """
-INSERT INTO dagster_brreg.domain_proposals (
-    raw_record_id,
-    task_attempt_id,
-    domain,
-    normalized_domain,
-    score,
-    signals,
-    evidence,
-    metadata
-) VALUES (
-    %(raw_record_id)s,
-    %(task_attempt_id)s,
-    %(domain)s,
-    %(normalized_domain)s,
-    %(score)s,
-    %(signals)s,
-    %(evidence)s::jsonb,
-    %(metadata)s::jsonb
-)
-ON CONFLICT (raw_record_id, normalized_domain) DO UPDATE
-SET
-    task_attempt_id = EXCLUDED.task_attempt_id,
-    domain = EXCLUDED.domain,
-    score = EXCLUDED.score,
-    signals = EXCLUDED.signals,
-    evidence = EXCLUDED.evidence,
-    metadata = dagster_brreg.domain_proposals.metadata || EXCLUDED.metadata,
-    updated_at = now()
 """
 
 FETCH_PENDING_ENHANCED_BUILD_RECORDS_SQL = """
@@ -1127,6 +1017,18 @@ latest_domain_result AS (
         created_at
     FROM dagster_brreg.domain_results
     WHERE status IN ('succeeded', 'not_found', 'partial')
+    ORDER BY raw_record_id, created_at DESC
+),
+latest_financial_result AS (
+    SELECT DISTINCT ON (raw_record_id)
+        raw_record_id,
+        status,
+        financial_payload,
+        usd_payload,
+        fx_metadata,
+        created_at
+    FROM dagster_brreg.financial_results
+    WHERE status IN ('succeeded', 'skipped', 'not_available')
     ORDER BY raw_record_id, created_at DESC
 ),
 domain_rows AS (
@@ -1155,7 +1057,7 @@ domain_rows AS (
                     ELSE 0
                 END DESC,
                 candidate->>'normalized_domain' ASC
-        ) AS proposals
+        ) AS candidates
     FROM latest_domain_result ldr
     CROSS JOIN LATERAL jsonb_array_elements(coalesce(ldr.domain_payload->'candidates', '[]'::jsonb)) AS item(candidate)
     WHERE coalesce(candidate->>'normalized_domain', '') <> ''
@@ -1180,7 +1082,11 @@ SELECT
     lt.status AS translation_status,
     coalesce(lt.translated_payload, '{}'::jsonb) AS translation_payload,
     coalesce(ldr.status, dts.status, 'not_found') AS domain_status,
-    coalesce(dr.proposals, '[]'::jsonb) AS domain_proposals,
+    coalesce(dr.candidates, '[]'::jsonb) AS domain_candidates,
+    coalesce(lfr.status, fts.status, 'skipped') AS currency_status,
+    coalesce(lfr.financial_payload, '{}'::jsonb) AS financial_payload,
+    coalesce(lfr.usd_payload, '{}'::jsonb) AS usd_payload,
+    coalesce(lfr.fx_metadata, '{}'::jsonb) AS fx_metadata,
     coalesce(tsr.task_statuses, '{}'::jsonb) AS task_statuses
 FROM dagster_brreg.raw_records rr
 JOIN latest_translation lt ON lt.raw_record_id = rr.id
@@ -1192,8 +1098,13 @@ JOIN dagster_brreg.raw_record_task_states dts
   ON dts.raw_record_id = rr.id
  AND dts.task_type = 'domain_results'
  AND dts.status IN ('succeeded', 'skipped')
+JOIN dagster_brreg.raw_record_task_states fts
+  ON fts.raw_record_id = rr.id
+ AND fts.task_type = 'currency_conversion'
+ AND fts.status IN ('succeeded', 'skipped')
 LEFT JOIN latest_domain_result ldr ON ldr.raw_record_id = rr.id
 LEFT JOIN domain_rows dr ON dr.raw_record_id = rr.id
+LEFT JOIN latest_financial_result lfr ON lfr.raw_record_id = rr.id
 LEFT JOIN task_status_rows tsr ON tsr.raw_record_id = rr.id
 WHERE rr.is_current = true
   AND NOT EXISTS (
@@ -1205,7 +1116,9 @@ WHERE rr.is_current = true
         AND er.built_at >= greatest(
             coalesce(tts.last_finished_at, '-infinity'::timestamptz),
             coalesce(dts.last_finished_at, '-infinity'::timestamptz),
+            coalesce(fts.last_finished_at, '-infinity'::timestamptz),
             coalesce(ldr.created_at, '-infinity'::timestamptz),
+            coalesce(lfr.created_at, '-infinity'::timestamptz),
             lt.created_at
         )
   )
@@ -1243,128 +1156,4 @@ SET
     built_at = now(),
     error = NULL
 RETURNING id
-"""
-
-FETCH_PENDING_ENHANCED_PUBLISH_RECORDS_SQL = """
-SELECT
-    er.id,
-    rr.id AS raw_record_id,
-    rr.organization_number,
-    rr.organization_name,
-    rr.registration_status,
-    rr.website,
-    rr.country_iso2,
-    rr.raw_payload,
-    rr.payload_hash,
-    er.schema_version,
-    er.enhanced_payload,
-    er.enhanced_payload_hash
-FROM dagster_brreg.enhanced_records er
-JOIN dagster_brreg.raw_records rr ON rr.id = er.raw_record_id
-WHERE er.status IN ('built', 'publish_failed')
-  AND rr.is_current = true
-ORDER BY er.built_at ASC, er.id ASC
-LIMIT %(limit)s
-"""
-
-UPSERT_CORPSCOUT_RAW_INPUT_SQL = """
-INSERT INTO brreg_company_raw_inputs (
-    source_native_id,
-    organization_number,
-    organization_name,
-    registration_status,
-    website,
-    country_iso2,
-    raw_payload,
-    payload_hash,
-    run_id
-) VALUES (
-    %(source_native_id)s,
-    %(organization_number)s,
-    %(organization_name)s,
-    %(registration_status)s,
-    %(website)s,
-    %(country_iso2)s,
-    %(raw_payload)s::jsonb,
-    %(payload_hash)s,
-    %(run_id)s
-)
-ON CONFLICT (organization_number, payload_hash) DO UPDATE
-SET
-    last_seen_at = now(),
-    organization_name = EXCLUDED.organization_name,
-    registration_status = EXCLUDED.registration_status,
-    website = EXCLUDED.website,
-    country_iso2 = EXCLUDED.country_iso2,
-    raw_payload = EXCLUDED.raw_payload,
-    run_id = EXCLUDED.run_id,
-    updated_at = now()
-RETURNING id
-"""
-
-UPSERT_CORPSCOUT_ENHANCED_RAW_INPUT_SQL = """
-INSERT INTO brreg_enhanced_raw_inputs (
-    raw_input_id,
-    organization_number,
-    payload_hash,
-    enhancement_version,
-    attempt,
-    dagster_run_id,
-    dagster_asset_key,
-    status,
-    section_statuses,
-    enhanced_payload,
-    error,
-    metadata,
-    started_at,
-    enhanced_at
-) VALUES (
-    %(raw_input_id)s,
-    %(organization_number)s,
-    %(payload_hash)s,
-    %(enhancement_version)s,
-    %(attempt)s,
-    %(dagster_run_id)s,
-    %(dagster_asset_key)s,
-    %(status)s,
-    %(section_statuses)s::jsonb,
-    %(enhanced_payload)s::jsonb,
-    %(error)s,
-    %(metadata)s::jsonb,
-    %(started_at)s::timestamptz,
-    %(enhanced_at)s::timestamptz
-)
-ON CONFLICT (raw_input_id, payload_hash, enhancement_version, attempt) DO UPDATE
-SET
-    organization_number = EXCLUDED.organization_number,
-    dagster_run_id = EXCLUDED.dagster_run_id,
-    dagster_asset_key = EXCLUDED.dagster_asset_key,
-    status = EXCLUDED.status,
-    section_statuses = EXCLUDED.section_statuses,
-    enhanced_payload = EXCLUDED.enhanced_payload,
-    error = EXCLUDED.error,
-    metadata = brreg_enhanced_raw_inputs.metadata || EXCLUDED.metadata,
-    started_at = EXCLUDED.started_at,
-    enhanced_at = EXCLUDED.enhanced_at,
-    updated_at = now()
-RETURNING id
-"""
-
-MARK_ENHANCED_RECORD_PUBLISHED_SQL = """
-UPDATE dagster_brreg.enhanced_records
-SET
-    status = 'published',
-    corpscout_raw_input_id = %(corpscout_raw_input_id)s,
-    corpscout_enhanced_raw_input_id = %(corpscout_enhanced_raw_input_id)s,
-    published_at = now(),
-    error = NULL
-WHERE id = %(enhanced_record_id)s
-"""
-
-MARK_ENHANCED_RECORD_PUBLISH_FAILED_SQL = """
-UPDATE dagster_brreg.enhanced_records
-SET
-    status = 'publish_failed',
-    error = %(error)s
-WHERE id = %(enhanced_record_id)s
 """

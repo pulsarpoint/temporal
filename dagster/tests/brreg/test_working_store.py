@@ -6,7 +6,7 @@ from corpscout_dagster.brreg.working_store import (
     CreateBulkSnapshot,
     CreateEnrichmentRun,
     CreateTaskAttempt,
-    DomainProposalRow,
+    DomainResultCandidateRow,
     EnhancedBuildRecord,
     FinishEnrichmentRun,
     IncrementEnrichmentRunProgress,
@@ -360,8 +360,8 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
             translation_status="succeeded",
             translation_payload={"terms": []},
             domain_status="succeeded",
-            domain_proposals=[
-                DomainProposalRow(
+            domain_candidates=[
+                DomainResultCandidateRow(
                     domain="www.example.no",
                     normalized_domain="example.no",
                     score=95,
@@ -395,7 +395,6 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
     assert "domain_payload->'candidates'" in sql
     assert "dts.task_type = 'domain_results'" in sql
     assert "fts.task_type = 'currency_conversion'" in sql
-    assert "merge_domain_proposals" not in sql
     assert "dagster_brreg.enhanced_records" in sql
     assert params == {"limit": 50}
 

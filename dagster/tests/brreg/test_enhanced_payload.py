@@ -5,8 +5,7 @@ from corpscout_dagster.brreg.enhanced_payload import (
     build_brreg_enhanced_payload,
     enhanced_payload_hash,
 )
-from corpscout_dagster.brreg.fx_rates import FxRateSet
-from corpscout_dagster.brreg.working_store import DomainProposalRow, RawTaskRecord
+from corpscout_dagster.brreg.working_store import DomainResultCandidateRow, RawTaskRecord
 
 
 def test_build_brreg_enhanced_payload_matches_corpscout_contract() -> None:
@@ -102,8 +101,8 @@ def test_build_brreg_enhanced_payload_matches_corpscout_contract() -> None:
             ]
         },
         domain_status="succeeded",
-        domain_proposals=[
-            DomainProposalRow(
+        domain_candidates=[
+            DomainResultCandidateRow(
                 domain="www.bortigard.no",
                 normalized_domain="bortigard.no",
                 score=95,
@@ -115,23 +114,38 @@ def test_build_brreg_enhanced_payload_matches_corpscout_contract() -> None:
         ],
         task_statuses={
             "translate": "succeeded",
-            "domain_website_field": "succeeded",
-            "merge_domain_proposals": "succeeded",
+            "domain_results": "succeeded",
+            "currency_conversion": "succeeded",
         },
-        fx_rates=FxRateSet(
-            source="ECB",
-            rate_date="2026-05-21",
-            eur_per={
-                "EUR": 1.0,
-                "NOK": 10.7075,
-                "USD": 1.1599,
+        currency_status="succeeded",
+        financial_payload={
+            "capital": {
+                "original_amount": 81870.0,
+                "original_currency": "NOK",
             },
-        ),
+        },
+        usd_payload={
+            "capital": {
+                "amount_usd": 8868.64,
+                "amount_usd_cents": 886864,
+            },
+        },
+        fx_metadata={
+            "source": "ECB",
+            "rate_date": "2026-05-21",
+            "capital": {
+                "source_currency": "NOK",
+                "target_currency": "USD",
+                "source_rate_per_eur": 10.7075,
+                "target_rate_per_eur": 1.1599,
+            },
+        },
         dagster_run_id="dagster-run-1",
     )
 
     assert payload["schema_version"] == BRREG_ENHANCED_SCHEMA_VERSION
     assert payload["enhancement"]["status"] == "partial"
+    assert payload["enhancement"]["section_statuses"]["currency"] == "succeeded"
     assert payload["enhancement"]["section_statuses"]["financials"] == "not_available"
     assert payload["source_company"]["organization_number"] == "810202572"
     assert payload["source_company"]["organization_form_description_en"]["value"] == "Limited Liability Company"

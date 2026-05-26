@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 
 from corpscout_dagster.brreg.assets import (
-    brreg_domain_enhanced_records,
+    brreg_currency_results,
+    brreg_domain_results,
+    brreg_enhanced_records,
     brreg_translation_results,
+    materialize_brreg_currency_results,
     materialize_brreg_enhanced_records,
     materialize_brreg_domain_results,
     materialize_brreg_translation_results,
@@ -197,48 +200,29 @@ def test_definitions_expose_only_operational_brreg_assets() -> None:
 
     assert asset_keys == {
         "brreg_translation_results",
-        "brreg_domain_enhanced_records",
+        "brreg_domain_results",
+        "brreg_currency_results",
+        "brreg_enhanced_records",
     }
-    assert "brreg_working_raw_records" not in asset_keys
-    assert "brreg_domain_results" not in asset_keys
-    assert "brreg_domain_website_field_candidates" not in asset_keys
-    assert "brreg_domain_duckduckgo_search_results" not in asset_keys
-    assert "brreg_domain_duckduckgo_candidates" not in asset_keys
-    assert "brreg_domain_crtsh_candidates" not in asset_keys
-    assert "brreg_domain_wikidata_candidates" not in asset_keys
-    assert "brreg_domain_web_search_llm_candidates" not in asset_keys
-    assert "brreg_domain_dns_heuristic_candidates" not in asset_keys
-    assert "brreg_domain_proposals" not in asset_keys
-    assert "brreg_enhanced_records" not in asset_keys
-    assert "brreg_publish_enhanced_records" not in asset_keys
 
 
-def test_definitions_expose_only_translation_and_domain_enhanced_jobs() -> None:
+def test_definitions_expose_only_operational_brreg_jobs() -> None:
     job_names = {job.name for job in defs.jobs or []}
 
     assert job_names == {
         "brreg_translate_job",
-        "brreg_domain_enhanced_job",
+        "brreg_domain_job",
+        "brreg_currency_job",
+        "brreg_build_enhanced_job",
+        "brreg_full_enrichment_job",
     }
-    assert "brreg_ingest_job" not in job_names
-    assert "brreg_domain_enrichment_job" not in job_names
-    assert "brreg_domain_results_job" not in job_names
-    assert "brreg_domain_website_field_job" not in job_names
-    assert "brreg_domain_duckduckgo_search_job" not in job_names
-    assert "brreg_domain_duckduckgo_job" not in job_names
-    assert "brreg_domain_crtsh_job" not in job_names
-    assert "brreg_domain_wikidata_job" not in job_names
-    assert "brreg_domain_web_search_llm_job" not in job_names
-    assert "brreg_domain_dns_heuristic_job" not in job_names
-    assert "brreg_domain_proposals_job" not in job_names
-    assert "brreg_enhanced_records_job" not in job_names
-    assert "brreg_publish_enhanced_records_job" not in job_names
 
 
 def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
     configurable_assets = [
         brreg_translation_results,
-        brreg_domain_enhanced_records,
+        brreg_domain_results,
+        brreg_currency_results,
     ]
 
     for asset_def in configurable_assets:
@@ -247,6 +231,14 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
         assert fields["batch_size"].default_provided
         assert fields["max_batches_per_run"].default_provided
         assert fields["max_parallel_tasks"].default_provided
+
+
+def test_brreg_enhanced_asset_exposes_batch_size_control() -> None:
+    fields = brreg_enhanced_records.node_def.config_schema.config_type.fields
+
+    assert set(fields) == {"batch_size"}
+    assert fields["batch_size"].default_provided
+
 
 def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkeypatch) -> None:
     monkeypatch.setenv("BRREG_TEST_BATCH_SIZE", "100")
@@ -594,6 +586,69 @@ def test_materialize_brreg_domain_results_writes_single_service_artifact() -> No
     )
 
 
+def test_materialize_brreg_currency_results_writes_single_financial_artifact() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    raw_record_id = "00000000-0000-0000-0000-000000000010"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", raw_record_id, 1),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                None,
+                {
+                    "organisasjonsnummer": "810202572",
+                    "kapital": {
+                        "type": "Aksjekapital",
+                        "belop": 81870.00,
+                        "valuta": "NOK",
+                    },
+                },
+            )
+        ],
+        [],
+    ]
+
+    result = materialize_brreg_currency_results(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        batch_size=500,
+        max_parallel_tasks=100,
+        fx_rate_loader=lambda _: FxRateSet(
+            source="ECB",
+            rate_date="2026-05-21",
+            eur_per={
+                "EUR": 1.0,
+                "NOK": 10.7075,
+                "USD": 1.1599,
+            },
+        ),
+    )
+
+    assert result["rows_seen"] == 1
+    assert result["rows_completed"] == 1
+    assert result["rows_failed"] == 0
+    assert result["financial_results_written"] == 1
+    assert all(isinstance(value, int) for value in result.values())
+    params_by_sql = connection.cursor_instance.calls
+    assert any(
+        "INSERT INTO dagster_brreg.task_attempts" in sql and params.get("task_type") == "currency_conversion"
+        for sql, params in params_by_sql
+    )
+    assert any(
+        "INSERT INTO dagster_brreg.financial_results" in sql
+        and params.get("status") == "succeeded"
+        and params.get("original_currency") == "NOK"
+        for sql, params in params_by_sql
+    )
+
+
 def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() -> None:
     context = FakeContext()
     connection = FakeConnection()
@@ -642,7 +697,20 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
                 },
                 "not_found",
                 [],
-                {"translate": "succeeded", "domain_results": "succeeded"},
+                "succeeded",
+                {"capital": {"original_amount": 81870.0, "original_currency": "NOK"}},
+                {"capital": {"amount_usd": 8868.64, "amount_usd_cents": 886864}},
+                {
+                    "source": "ECB",
+                    "rate_date": "2026-05-21",
+                    "capital": {
+                        "source_currency": "NOK",
+                        "target_currency": "USD",
+                        "source_rate_per_eur": 10.7075,
+                        "target_rate_per_eur": 1.1599,
+                    },
+                },
+                {"translate": "succeeded", "domain_results": "succeeded", "currency_conversion": "succeeded"},
             )
         ],
     ]
@@ -652,15 +720,6 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
         connection_factory=lambda _: connection,
         database_url="postgresql://example.invalid/corpscout",
         batch_size=50,
-        fx_rate_loader=lambda _: FxRateSet(
-            source="ECB",
-            rate_date="2026-05-21",
-            eur_per={
-                "EUR": 1.0,
-                "NOK": 10.7075,
-                "USD": 1.1599,
-            },
-        ),
     )
 
     assert result["rows_seen"] == 1

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Iterable
 from datetime import date
 
@@ -29,6 +28,7 @@ from corpscout_dagster.brreg.working_store import (
     IncrementEnrichmentRunProgress,
     InsertDomainResult,
     InsertEnhancedRecord,
+    InsertFinancialResult,
     InsertTranslationResult,
     RawTaskRecord,
     TaskAttempt,
@@ -40,10 +40,13 @@ DEFAULT_TRANSLATION_RECORD_BATCH_SIZE = 50
 DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN = 0
 DEFAULT_DOMAIN_RESULT_BATCH_SIZE = 10
 DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 0
+DEFAULT_CURRENCY_RESULT_BATCH_SIZE = 500
+DEFAULT_CURRENCY_MAX_BATCHES_PER_RUN = 0
 DEFAULT_ENHANCED_RECORD_BATCH_SIZE = 500
 DEFAULT_TASK_LEASE_SECONDS = 1800
 DEFAULT_TRANSLATION_MAX_PARALLEL_TASKS = DEFAULT_TRANSLATION_RECORD_BATCH_SIZE
 DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS = 1
+DEFAULT_CURRENCY_RESULT_MAX_PARALLEL_TASKS = 100
 
 
 def materialize_brreg_translation_results(
@@ -307,13 +310,153 @@ def materialize_brreg_domain_results(
     return result
 
 
+def materialize_brreg_currency_results(
+    context,
+    *,
+    connection_factory,
+    database_url: str,
+    batch_size: int,
+    max_batches_per_run: int = DEFAULT_CURRENCY_MAX_BATCHES_PER_RUN,
+    max_parallel_tasks: int = DEFAULT_CURRENCY_RESULT_MAX_PARALLEL_TASKS,
+    fx_rate_loader: Callable[[str | None], FxRateSet] | None = None,
+    fx_rate_date: str | None = None,
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if max_batches_per_run < 0:
+        raise ValueError("max_batches_per_run must be zero or positive")
+    if max_parallel_tasks <= 0:
+        raise ValueError("max_parallel_tasks must be positive")
+    rows_seen = 0
+    rows_completed = 0
+    rows_failed = 0
+    financial_results_written = 0
+    batches_processed = 0
+    stopped_reason = "max_batches_reached"
+    task_type = "currency_conversion"
+    enrichment_run_id: str | None = None
+    fx_rates: FxRateSet | None = None
+    with connection_factory(database_url) as conn:
+        with conn.cursor() as cursor:
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=_enrichment_run_key(context, task_type),
+                    run_type=task_type,
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id, "fx_source": "ECB"},
+                )
+            )
+        conn.commit()
+
+        try:
+            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
+                with conn.cursor() as cursor:
+                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
+                        task_type=task_type,
+                        limit=batch_size,
+                        include_new_records=True,
+                        max_parallel_tasks=max_parallel_tasks,
+                        lease_seconds=DEFAULT_TASK_LEASE_SECONDS,
+                    )
+                conn.commit()
+                if not records:
+                    stopped_reason = "no_pending_records"
+                    break
+
+                batches_processed += 1
+                rows_seen += len(records)
+                for record in records:
+                    attempt = _create_task_attempt(
+                        conn=conn,
+                        enrichment_run_id=enrichment_run_id,
+                        record=record,
+                        task_type=task_type,
+                    )
+                    try:
+                        if _record_needs_currency_conversion(record) and fx_rates is None:
+                            loader = fx_rate_loader or _load_brreg_fx_rates
+                            fx_rates = loader(fx_rate_date)
+                        _write_currency_result(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            fx_rates=fx_rates,
+                        )
+                        financial_results_written += 1
+                        rows_completed += 1
+                    except Exception as exc:
+                        conn.rollback()
+                        _mark_currency_result_failed(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            error=str(exc),
+                        )
+                        rows_failed += 1
+                        financial_results_written += 1
+
+            context.log.info(
+                "BRREG currency batches committed rows_seen=%s rows_completed=%s rows_failed=%s financial_results_written=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
+                rows_seen,
+                rows_completed,
+                rows_failed,
+                financial_results_written,
+                batches_processed,
+                max_batches_per_run,
+                max_parallel_tasks,
+                stopped_reason,
+            )
+
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(
+                        enrichment_run_id=enrichment_run_id,
+                        status="succeeded" if rows_failed == 0 else "failed",
+                        error=None if rows_failed == 0 else f"{rows_failed} currency rows failed",
+                    )
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if enrichment_run_id is not None:
+                with conn.cursor() as cursor:
+                    BrregWorkingStore(cursor).finish_enrichment_run(
+                        FinishEnrichmentRun(
+                            enrichment_run_id=enrichment_run_id,
+                            status="failed",
+                            error=str(exc),
+                        )
+                    )
+                conn.commit()
+            raise
+
+    result = {
+        "rows_seen": rows_seen,
+        "rows_completed": rows_completed,
+        "rows_failed": rows_failed,
+        "financial_results_written": financial_results_written,
+        "batches_processed": batches_processed,
+    }
+    context.add_output_metadata(
+        {
+            **result,
+            "dagster_run_id": context.run_id,
+            "task_type": task_type,
+            "max_batches_per_run": max_batches_per_run,
+            "max_parallel_tasks": max_parallel_tasks,
+            "stopped_reason": stopped_reason,
+        }
+    )
+    return result
+
+
 def materialize_brreg_enhanced_records(
     context,
     *,
     connection_factory,
     database_url: str,
     batch_size: int,
-    fx_rate_loader: Callable[[str | None], FxRateSet] | None = None,
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
@@ -337,10 +480,6 @@ def materialize_brreg_enhanced_records(
         try:
             with conn.cursor() as cursor:
                 records = BrregWorkingStore(cursor).fetch_pending_enhanced_build_records(limit=batch_size)
-            fx_rates = None
-            if _enhanced_build_records_need_fx(records):
-                loader = fx_rate_loader or _load_brreg_fx_rates
-                fx_rates = loader(os.environ.get("BRREG_FX_RATE_DATE"))
 
             for build_record in records:
                 rows_seen += 1
@@ -356,7 +495,6 @@ def materialize_brreg_enhanced_records(
                         enrichment_run_id=enrichment_run_id,
                         attempt=attempt,
                         build_record=build_record,
-                        fx_rates=fx_rates,
                         dagster_run_id=context.run_id,
                     )
                     rows_completed += 1
@@ -689,6 +827,139 @@ def _domain_result_error(payload: dict) -> str | None:
     return str(message) if message else None
 
 
+def _write_currency_result(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: RawTaskRecord,
+    fx_rates: FxRateSet | None,
+) -> None:
+    command = _build_currency_result(record=record, attempt=attempt, fx_rates=fx_rates)
+    task_status = "skipped" if command.status in {"skipped", "not_available"} else "succeeded"
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        store.insert_financial_result(command)
+        store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=None)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
+        )
+    conn.commit()
+
+
+def _build_currency_result(
+    *,
+    record: RawTaskRecord,
+    attempt: TaskAttempt,
+    fx_rates: FxRateSet | None,
+) -> InsertFinancialResult:
+    capital = record.raw_payload.get("kapital")
+    if not isinstance(capital, dict) or not capital:
+        return InsertFinancialResult(
+            raw_record_id=record.id,
+            task_attempt_id=attempt.id,
+            status="skipped",
+            original_currency=None,
+            financial_payload={},
+            usd_payload={},
+            fx_metadata={},
+            source_uri=None,
+            error=None,
+            metadata={"reason": "no_capital"},
+        )
+
+    original_amount = capital.get("belop")
+    original_currency = _optional_currency(capital.get("valuta"))
+    if original_amount is None or original_currency is None:
+        raise ValueError("incomplete capital currency data")
+    if fx_rates is None:
+        raise ValueError("FX rates are required for BRREG currency conversion")
+
+    amount_usd_cents = fx_rates.to_usd_cents(original_amount, original_currency)
+    amount_usd = amount_usd_cents / 100
+    return InsertFinancialResult(
+        raw_record_id=record.id,
+        task_attempt_id=attempt.id,
+        status="succeeded",
+        original_currency=original_currency,
+        financial_payload={
+            "capital": {
+                "original_amount": float(original_amount),
+                "original_currency": original_currency,
+            }
+        },
+        usd_payload={
+            "capital": {
+                "amount_usd": amount_usd,
+                "amount_usd_cents": amount_usd_cents,
+            }
+        },
+        fx_metadata={
+            "source": fx_rates.source,
+            "rate_date": fx_rates.rate_date,
+            "capital": fx_rates.exchange_metadata(original_currency),
+        },
+        source_uri=None,
+        error=None,
+        metadata={"source": "dagster"},
+    )
+
+
+def _mark_currency_result_failed(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: RawTaskRecord,
+    error: str,
+) -> None:
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        store.insert_financial_result(
+            InsertFinancialResult(
+                raw_record_id=record.id,
+                task_attempt_id=attempt.id,
+                status="failed",
+                original_currency=_capital_original_currency(record),
+                financial_payload={},
+                usd_payload={},
+                fx_metadata={},
+                source_uri=None,
+                error=error,
+                metadata={"source": "dagster"},
+            )
+        )
+        store.finish_task_attempt(task_attempt_id=attempt.id, status="failed", error=error)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(
+                enrichment_run_id=enrichment_run_id,
+                records_seen=1,
+                records_completed=0,
+                records_failed=1,
+            )
+        )
+    conn.commit()
+
+
+def _record_needs_currency_conversion(record: RawTaskRecord) -> bool:
+    capital = record.raw_payload.get("kapital")
+    return isinstance(capital, dict) and ("belop" in capital or "valuta" in capital)
+
+
+def _capital_original_currency(record: RawTaskRecord) -> str | None:
+    capital = record.raw_payload.get("kapital")
+    if not isinstance(capital, dict):
+        return None
+    return _optional_currency(capital.get("valuta"))
+
+
+def _optional_currency(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    return text or None
+
+
 def _translate_missing_terms(
     *,
     translator: TermTranslator,
@@ -747,7 +1018,6 @@ def _build_record_enhanced_payload(
     enrichment_run_id: str,
     attempt: TaskAttempt,
     build_record,
-    fx_rates: FxRateSet | None = None,
     dagster_run_id: str,
 ) -> None:
     payload = build_brreg_enhanced_payload(
@@ -756,9 +1026,12 @@ def _build_record_enhanced_payload(
         translation_status=build_record.translation_status,
         translation_payload=build_record.translation_payload,
         domain_status=build_record.domain_status,
-        domain_proposals=build_record.domain_proposals,
+        domain_candidates=build_record.domain_candidates,
+        currency_status=build_record.currency_status,
+        financial_payload=build_record.financial_payload,
+        usd_payload=build_record.usd_payload,
+        fx_metadata=build_record.fx_metadata,
         task_statuses=build_record.task_statuses,
-        fx_rates=fx_rates,
         dagster_run_id=dagster_run_id,
     )
     with conn.cursor() as cursor:
@@ -782,14 +1055,6 @@ def _build_record_enhanced_payload(
             IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
         )
     conn.commit()
-
-
-def _enhanced_build_records_need_fx(records) -> bool:
-    for build_record in records:
-        capital = build_record.record.raw_payload.get("kapital")
-        if isinstance(capital, dict) and ("belop" in capital or "valuta" in capital):
-            return True
-    return False
 
 
 def _load_brreg_fx_rates(rate_date: str | None) -> FxRateSet:
