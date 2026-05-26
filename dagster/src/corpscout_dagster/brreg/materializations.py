@@ -28,7 +28,7 @@ from corpscout_dagster.brreg.working_store import (
     IncrementEnrichmentRunProgress,
     InsertDomainResult,
     InsertEnhancedRecord,
-    InsertFinancialResult,
+    InsertCurrencyResult,
     InsertTranslationResult,
     RawTaskRecord,
     TaskAttempt,
@@ -330,7 +330,7 @@ def materialize_brreg_currency_results(
     rows_seen = 0
     rows_completed = 0
     rows_failed = 0
-    financial_results_written = 0
+    currency_results_written = 0
     batches_processed = 0
     stopped_reason = "max_batches_reached"
     task_type = "currency_conversion"
@@ -382,7 +382,7 @@ def materialize_brreg_currency_results(
                             record=record,
                             fx_rates=fx_rates,
                         )
-                        financial_results_written += 1
+                        currency_results_written += 1
                         rows_completed += 1
                     except Exception as exc:
                         conn.rollback()
@@ -394,14 +394,14 @@ def materialize_brreg_currency_results(
                             error=str(exc),
                         )
                         rows_failed += 1
-                        financial_results_written += 1
+                        currency_results_written += 1
 
             context.log.info(
-                "BRREG currency batches committed rows_seen=%s rows_completed=%s rows_failed=%s financial_results_written=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
+                "BRREG currency batches committed rows_seen=%s rows_completed=%s rows_failed=%s currency_results_written=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
                 rows_seen,
                 rows_completed,
                 rows_failed,
-                financial_results_written,
+                currency_results_written,
                 batches_processed,
                 max_batches_per_run,
                 max_parallel_tasks,
@@ -435,7 +435,7 @@ def materialize_brreg_currency_results(
         "rows_seen": rows_seen,
         "rows_completed": rows_completed,
         "rows_failed": rows_failed,
-        "financial_results_written": financial_results_written,
+        "currency_results_written": currency_results_written,
         "batches_processed": batches_processed,
     }
     context.add_output_metadata(
@@ -839,7 +839,7 @@ def _write_currency_result(
     task_status = "skipped" if command.status in {"skipped", "not_available"} else "succeeded"
     with conn.cursor() as cursor:
         store = BrregWorkingStore(cursor)
-        store.insert_financial_result(command)
+        store.insert_currency_result(command)
         store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=None)
         store.increment_enrichment_run_progress(
             IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
@@ -852,15 +852,15 @@ def _build_currency_result(
     record: RawTaskRecord,
     attempt: TaskAttempt,
     fx_rates: FxRateSet | None,
-) -> InsertFinancialResult:
+) -> InsertCurrencyResult:
     capital = record.raw_payload.get("kapital")
     if not isinstance(capital, dict) or not capital:
-        return InsertFinancialResult(
+        return InsertCurrencyResult(
             raw_record_id=record.id,
             task_attempt_id=attempt.id,
             status="skipped",
             original_currency=None,
-            financial_payload={},
+            original_payload={},
             usd_payload={},
             fx_metadata={},
             source_uri=None,
@@ -877,12 +877,12 @@ def _build_currency_result(
 
     amount_usd_cents = fx_rates.to_usd_cents(original_amount, original_currency)
     amount_usd = amount_usd_cents / 100
-    return InsertFinancialResult(
+    return InsertCurrencyResult(
         raw_record_id=record.id,
         task_attempt_id=attempt.id,
         status="succeeded",
         original_currency=original_currency,
-        financial_payload={
+        original_payload={
             "capital": {
                 "original_amount": float(original_amount),
                 "original_currency": original_currency,
@@ -915,13 +915,13 @@ def _mark_currency_result_failed(
 ) -> None:
     with conn.cursor() as cursor:
         store = BrregWorkingStore(cursor)
-        store.insert_financial_result(
-            InsertFinancialResult(
+        store.insert_currency_result(
+            InsertCurrencyResult(
                 raw_record_id=record.id,
                 task_attempt_id=attempt.id,
                 status="failed",
                 original_currency=_capital_original_currency(record),
-                financial_payload={},
+                original_payload={},
                 usd_payload={},
                 fx_metadata={},
                 source_uri=None,
@@ -1028,7 +1028,7 @@ def _build_record_enhanced_payload(
         domain_status=build_record.domain_status,
         domain_candidates=build_record.domain_candidates,
         currency_status=build_record.currency_status,
-        financial_payload=build_record.financial_payload,
+        original_payload=build_record.original_payload,
         usd_payload=build_record.usd_payload,
         fx_metadata=build_record.fx_metadata,
         task_statuses=build_record.task_statuses,

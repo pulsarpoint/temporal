@@ -1,5 +1,4 @@
-DROP INDEX IF EXISTS dagster_brreg.idx_dagster_brreg_financial_results_status;
-DROP INDEX IF EXISTS dagster_brreg.idx_dagster_brreg_financial_results_raw_created;
+DROP TABLE IF EXISTS dagster_brreg.currency_results;
 
 ALTER TABLE dagster_brreg.task_attempts
   DROP CONSTRAINT IF EXISTS chk_dagster_brreg_task_attempt_type;

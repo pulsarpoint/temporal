@@ -12,7 +12,7 @@ from corpscout_dagster.brreg.working_store import (
     IncrementEnrichmentRunProgress,
     InsertDomainResult,
     InsertEnhancedRecord,
-    InsertFinancialResult,
+    InsertCurrencyResult,
     InsertTranslationResult,
     RawTaskRecord,
     TaskAttempt,
@@ -372,7 +372,7 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
                 )
             ],
             currency_status="succeeded",
-            financial_payload={"capital": {"original_amount": 81870.0, "original_currency": "NOK"}},
+            original_payload={"capital": {"original_amount": 81870.0, "original_currency": "NOK"}},
             usd_payload={"capital": {"amount_usd": 8868.64, "amount_usd_cents": 886864}},
             fx_metadata={
                 "source": "ECB",
@@ -391,7 +391,7 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
     assert "FROM dagster_brreg.raw_records rr" in sql
     assert "dagster_brreg.translation_results" in sql
     assert "dagster_brreg.domain_results" in sql
-    assert "dagster_brreg.financial_results" in sql
+    assert "dagster_brreg.currency_results" in sql
     assert "domain_payload->'candidates'" in sql
     assert "dts.task_type = 'domain_results'" in sql
     assert "fts.task_type = 'currency_conversion'" in sql
@@ -448,13 +448,13 @@ def test_working_store_inserts_currency_result_artifact() -> None:
     cursor = FakeCursor()
     store = BrregWorkingStore(cursor)
 
-    store.insert_financial_result(
-        InsertFinancialResult(
+    store.insert_currency_result(
+        InsertCurrencyResult(
             raw_record_id="00000000-0000-0000-0000-000000000002",
             task_attempt_id="00000000-0000-0000-0000-000000000001",
             status="succeeded",
             original_currency="NOK",
-            financial_payload={"capital": {"original_amount": 81870.0, "original_currency": "NOK"}},
+            original_payload={"capital": {"original_amount": 81870.0, "original_currency": "NOK"}},
             usd_payload={"capital": {"amount_usd": 8868.64, "amount_usd_cents": 886864}},
             fx_metadata={"source": "ECB", "rate_date": "2026-05-21"},
             source_uri=None,
@@ -464,7 +464,7 @@ def test_working_store_inserts_currency_result_artifact() -> None:
     )
 
     sql, params = cursor.calls[0]
-    assert "INSERT INTO dagster_brreg.financial_results" in sql
+    assert "INSERT INTO dagster_brreg.currency_results" in sql
     assert params["status"] == "succeeded"
     assert params["original_currency"] == "NOK"
     assert params["usd_payload"] == '{"capital":{"amount_usd":8868.64,"amount_usd_cents":886864}}'

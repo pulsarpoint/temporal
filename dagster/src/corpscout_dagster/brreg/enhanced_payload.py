@@ -21,7 +21,7 @@ def build_brreg_enhanced_payload(
     domain_status: str,
     domain_candidates: list[DomainResultCandidateRow],
     currency_status: str,
-    financial_payload: dict[str, Any] | None,
+    original_payload: dict[str, Any] | None,
     usd_payload: dict[str, Any] | None,
     fx_metadata: dict[str, Any] | None,
     task_statuses: dict[str, str],
@@ -60,7 +60,7 @@ def build_brreg_enhanced_payload(
             raw=raw,
             translations=translations,
             translation_status=translation_status,
-            financial_payload=financial_payload or {},
+            original_payload=original_payload or {},
             usd_payload=usd_payload or {},
             fx_metadata=fx_metadata or {},
         ),
@@ -207,19 +207,19 @@ def _capital_section(
     raw: dict[str, Any],
     translations: dict[tuple[str, str], str],
     translation_status: str,
-    financial_payload: dict[str, Any],
+    original_payload: dict[str, Any],
     usd_payload: dict[str, Any],
     fx_metadata: dict[str, Any],
 ) -> dict[str, Any] | None:
     capital = _dict(raw.get("kapital"))
     if not capital:
         return None
-    capital_financial = _dict(financial_payload.get("capital"))
+    capital_original = _dict(original_payload.get("capital"))
     capital_usd = _dict(usd_payload.get("capital"))
     capital_fx_metadata = _dict(fx_metadata.get("capital"))
     capital_type = _optional_str(capital.get("type"))
-    original_amount = _optional_decimal(capital_financial.get("original_amount", capital.get("belop")))
-    original_currency = _optional_str(capital_financial.get("original_currency") or capital.get("valuta"))
+    original_amount = _optional_decimal(capital_original.get("original_amount", capital.get("belop")))
+    original_currency = _optional_str(capital_original.get("original_currency") or capital.get("valuta"))
     amount_usd_cents = _optional_int(capital_usd.get("amount_usd_cents"))
     amount_usd_value = _optional_decimal(capital_usd.get("amount_usd"))
     amount_usd = float(amount_usd_value) if amount_usd_value is not None else None

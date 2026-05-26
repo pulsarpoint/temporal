@@ -42,6 +42,7 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "'currency_conversion'" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.translation_cache" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.domain_results" in sql
+    assert "CREATE TABLE IF NOT EXISTS dagster_brreg.currency_results" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.raw_record_task_states" in sql
     assert "CREATE TABLE IF NOT EXISTS dagster_brreg.raw_record_task_cursors" in sql
     assert "ADD COLUMN IF NOT EXISTS lease_until TIMESTAMPTZ" in sql
@@ -56,7 +57,7 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "idx_dagster_brreg_translation_cache_lookup" in sql
     assert "idx_dagster_brreg_translation_success" in sql
     assert "idx_dagster_brreg_domain_results_raw_created" in sql
-    assert "idx_dagster_brreg_financial_results_raw_created" in sql
+    assert "idx_dagster_brreg_currency_results_raw_created" in sql
     assert "idx_dagster_brreg_task_states_queue" in sql
     assert "idx_dagster_brreg_raw_records_current_last_seen_id" in sql
     assert "ON dagster_brreg.raw_records (last_seen_at, id)" in sql
@@ -89,8 +90,8 @@ def test_currency_results_migration_adds_currency_task_type_and_indexes() -> Non
     sql = (MIGRATIONS_DIR / "000014_brreg_currency_results.up.sql").read_text()
 
     assert "'currency_conversion'" in sql
-    assert "idx_dagster_brreg_financial_results_raw_created" in sql
-    assert "idx_dagster_brreg_financial_results_status" in sql
+    assert "idx_dagster_brreg_currency_results_raw_created" in sql
+    assert "idx_dagster_brreg_currency_results_status" in sql
 
 
 def test_working_store_migration_creates_observability_views() -> None:

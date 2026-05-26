@@ -121,12 +121,12 @@ class InsertDomainResult:
 
 
 @dataclass(frozen=True)
-class InsertFinancialResult:
+class InsertCurrencyResult:
     raw_record_id: str
     task_attempt_id: str
     status: str
     original_currency: str | None
-    financial_payload: dict[str, Any]
+    original_payload: dict[str, Any]
     usd_payload: dict[str, Any]
     fx_metadata: dict[str, Any]
     source_uri: str | None
@@ -156,7 +156,7 @@ class EnhancedBuildRecord:
     domain_status: str
     domain_candidates: list[DomainResultCandidateRow]
     currency_status: str
-    financial_payload: dict[str, Any]
+    original_payload: dict[str, Any]
     usd_payload: dict[str, Any]
     fx_metadata: dict[str, Any]
     task_statuses: dict[str, str]
@@ -413,15 +413,15 @@ class BrregWorkingStore:
             },
         )
 
-    def insert_financial_result(self, command: InsertFinancialResult) -> None:
+    def insert_currency_result(self, command: InsertCurrencyResult) -> None:
         self._cursor.execute(
-            INSERT_FINANCIAL_RESULT_SQL,
+            INSERT_CURRENCY_RESULT_SQL,
             {
                 "raw_record_id": command.raw_record_id,
                 "task_attempt_id": command.task_attempt_id,
                 "status": command.status,
                 "original_currency": command.original_currency,
-                "financial_payload": _json(command.financial_payload),
+                "original_payload": _json(command.original_payload),
                 "usd_payload": _json(command.usd_payload),
                 "fx_metadata": _json(command.fx_metadata),
                 "source_uri": command.source_uri,
@@ -476,7 +476,7 @@ def _enhanced_build_record_from_row(row) -> EnhancedBuildRecord:
     raw_payload = _json_value(row[6], {})
     translation_payload = _json_value(row[9], {})
     domain_candidates = _json_value(row[11], [])
-    financial_payload = _json_value(row[13], {})
+    original_payload = _json_value(row[13], {})
     usd_payload = _json_value(row[14], {})
     fx_metadata = _json_value(row[15], {})
     task_statuses = _json_value(row[16], {})
@@ -496,7 +496,7 @@ def _enhanced_build_record_from_row(row) -> EnhancedBuildRecord:
         domain_status=str(row[10]) if row[10] is not None else "skipped",
         domain_candidates=[_domain_result_candidate_row_from_mapping(item) for item in domain_candidates],
         currency_status=str(row[12]) if row[12] is not None else "skipped",
-        financial_payload=_dict(financial_payload),
+        original_payload=_dict(original_payload),
         usd_payload=_dict(usd_payload),
         fx_metadata=_dict(fx_metadata),
         task_statuses={str(key): str(value) for key, value in task_statuses.items()},
@@ -972,13 +972,13 @@ INSERT INTO dagster_brreg.domain_results (
 )
 """
 
-INSERT_FINANCIAL_RESULT_SQL = """
-INSERT INTO dagster_brreg.financial_results (
+INSERT_CURRENCY_RESULT_SQL = """
+INSERT INTO dagster_brreg.currency_results (
     raw_record_id,
     task_attempt_id,
     status,
     original_currency,
-    financial_payload,
+    original_payload,
     usd_payload,
     fx_metadata,
     source_uri,
@@ -989,7 +989,7 @@ INSERT INTO dagster_brreg.financial_results (
     %(task_attempt_id)s,
     %(status)s,
     %(original_currency)s,
-    %(financial_payload)s::jsonb,
+    %(original_payload)s::jsonb,
     %(usd_payload)s::jsonb,
     %(fx_metadata)s::jsonb,
     %(source_uri)s,
@@ -1019,15 +1019,15 @@ latest_domain_result AS (
     WHERE status IN ('succeeded', 'not_found', 'partial')
     ORDER BY raw_record_id, created_at DESC
 ),
-latest_financial_result AS (
+latest_currency_result AS (
     SELECT DISTINCT ON (raw_record_id)
         raw_record_id,
         status,
-        financial_payload,
+        original_payload,
         usd_payload,
         fx_metadata,
         created_at
-    FROM dagster_brreg.financial_results
+    FROM dagster_brreg.currency_results
     WHERE status IN ('succeeded', 'skipped', 'not_available')
     ORDER BY raw_record_id, created_at DESC
 ),
@@ -1083,10 +1083,10 @@ SELECT
     coalesce(lt.translated_payload, '{}'::jsonb) AS translation_payload,
     coalesce(ldr.status, dts.status, 'not_found') AS domain_status,
     coalesce(dr.candidates, '[]'::jsonb) AS domain_candidates,
-    coalesce(lfr.status, fts.status, 'skipped') AS currency_status,
-    coalesce(lfr.financial_payload, '{}'::jsonb) AS financial_payload,
-    coalesce(lfr.usd_payload, '{}'::jsonb) AS usd_payload,
-    coalesce(lfr.fx_metadata, '{}'::jsonb) AS fx_metadata,
+    coalesce(lcr.status, fts.status, 'skipped') AS currency_status,
+    coalesce(lcr.original_payload, '{}'::jsonb) AS original_payload,
+    coalesce(lcr.usd_payload, '{}'::jsonb) AS usd_payload,
+    coalesce(lcr.fx_metadata, '{}'::jsonb) AS fx_metadata,
     coalesce(tsr.task_statuses, '{}'::jsonb) AS task_statuses
 FROM dagster_brreg.raw_records rr
 JOIN latest_translation lt ON lt.raw_record_id = rr.id
@@ -1104,7 +1104,7 @@ JOIN dagster_brreg.raw_record_task_states fts
  AND fts.status IN ('succeeded', 'skipped')
 LEFT JOIN latest_domain_result ldr ON ldr.raw_record_id = rr.id
 LEFT JOIN domain_rows dr ON dr.raw_record_id = rr.id
-LEFT JOIN latest_financial_result lfr ON lfr.raw_record_id = rr.id
+LEFT JOIN latest_currency_result lcr ON lcr.raw_record_id = rr.id
 LEFT JOIN task_status_rows tsr ON tsr.raw_record_id = rr.id
 WHERE rr.is_current = true
   AND NOT EXISTS (
@@ -1118,7 +1118,7 @@ WHERE rr.is_current = true
             coalesce(dts.last_finished_at, '-infinity'::timestamptz),
             coalesce(fts.last_finished_at, '-infinity'::timestamptz),
             coalesce(ldr.created_at, '-infinity'::timestamptz),
-            coalesce(lfr.created_at, '-infinity'::timestamptz),
+            coalesce(lcr.created_at, '-infinity'::timestamptz),
             lt.created_at
         )
   )

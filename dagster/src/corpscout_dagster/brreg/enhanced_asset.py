@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import psycopg
 from dagster import AssetKey, Field, Int, asset
 
-from corpscout_dagster.brreg.asset_config import corpscout_database_url, env_int
+from corpscout_dagster.brreg.asset_config import env_int
 from corpscout_dagster.brreg.materializations import (
     DEFAULT_ENHANCED_RECORD_BATCH_SIZE,
     materialize_brreg_enhanced_records,
@@ -24,6 +23,7 @@ from corpscout_dagster.brreg.materializations import (
             description="Number of BRREG rows assembled into enhanced records in this run.",
         )
     },
+    required_resource_keys={"postgres"},
 )
 def brreg_enhanced_records(context) -> dict[str, int]:
     op_config = getattr(context, "op_config", None) or {}
@@ -33,9 +33,10 @@ def brreg_enhanced_records(context) -> dict[str, int]:
             env_int("BRREG_ENHANCED_RECORD_BATCH_SIZE", DEFAULT_ENHANCED_RECORD_BATCH_SIZE),
         )
     )
+    postgres = context.resources.postgres
     return materialize_brreg_enhanced_records(
         context,
-        connection_factory=psycopg.connect,
-        database_url=corpscout_database_url(),
+        connection_factory=postgres.connection_factory,
+        database_url=postgres.database_url,
         batch_size=batch_size,
     )

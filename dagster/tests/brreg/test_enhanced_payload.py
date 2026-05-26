@@ -118,7 +118,7 @@ def test_build_brreg_enhanced_payload_matches_corpscout_contract() -> None:
             "currency_conversion": "succeeded",
         },
         currency_status="succeeded",
-        financial_payload={
+        original_payload={
             "capital": {
                 "original_amount": 81870.0,
                 "original_currency": "NOK",

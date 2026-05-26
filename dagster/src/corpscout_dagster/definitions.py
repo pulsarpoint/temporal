@@ -8,6 +8,12 @@ from corpscout_dagster.brreg.assets import (
     brreg_enhanced_records,
     brreg_translation_results,
 )
+from corpscout_dagster.brreg.resources import (
+    crawl_service_resource,
+    fx_resource,
+    postgres_resource,
+    translation_service_resource,
+)
 
 defs = Definitions(
     assets=[
@@ -31,4 +37,10 @@ defs = Definitions(
             ),
         ),
     ],
+    resources={
+        "postgres": postgres_resource,
+        "translation_service": translation_service_resource,
+        "crawl_service": crawl_service_resource,
+        "fx": fx_resource,
+    },
 )

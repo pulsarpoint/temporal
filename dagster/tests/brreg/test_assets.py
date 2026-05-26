@@ -233,6 +233,37 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
         assert fields["max_parallel_tasks"].default_provided
 
 
+def test_brreg_assets_use_dagster_resources_for_external_dependencies() -> None:
+    assert brreg_translation_results.required_resource_keys == {
+        "io_manager",
+        "postgres",
+        "translation_service",
+    }
+    assert brreg_domain_results.required_resource_keys == {
+        "io_manager",
+        "postgres",
+        "crawl_service",
+    }
+    assert brreg_currency_results.required_resource_keys == {
+        "io_manager",
+        "postgres",
+        "fx",
+    }
+    assert brreg_enhanced_records.required_resource_keys == {
+        "io_manager",
+        "postgres",
+    }
+
+
+def test_definitions_register_brreg_resources() -> None:
+    assert set(defs.resources) >= {
+        "postgres",
+        "translation_service",
+        "crawl_service",
+        "fx",
+    }
+
+
 def test_brreg_enhanced_asset_exposes_batch_size_control() -> None:
     fields = brreg_enhanced_records.node_def.config_schema.config_type.fields
 
@@ -586,7 +617,7 @@ def test_materialize_brreg_domain_results_writes_single_service_artifact() -> No
     )
 
 
-def test_materialize_brreg_currency_results_writes_single_financial_artifact() -> None:
+def test_materialize_brreg_currency_results_writes_single_currency_artifact() -> None:
     context = FakeContext()
     connection = FakeConnection()
     raw_record_id = "00000000-0000-0000-0000-000000000010"
@@ -634,7 +665,7 @@ def test_materialize_brreg_currency_results_writes_single_financial_artifact() -
     assert result["rows_seen"] == 1
     assert result["rows_completed"] == 1
     assert result["rows_failed"] == 0
-    assert result["financial_results_written"] == 1
+    assert result["currency_results_written"] == 1
     assert all(isinstance(value, int) for value in result.values())
     params_by_sql = connection.cursor_instance.calls
     assert any(
@@ -642,7 +673,7 @@ def test_materialize_brreg_currency_results_writes_single_financial_artifact() -
         for sql, params in params_by_sql
     )
     assert any(
-        "INSERT INTO dagster_brreg.financial_results" in sql
+        "INSERT INTO dagster_brreg.currency_results" in sql
         and params.get("status") == "succeeded"
         and params.get("original_currency") == "NOK"
         for sql, params in params_by_sql

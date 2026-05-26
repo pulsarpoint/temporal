@@ -1,8 +1,32 @@
-CREATE INDEX IF NOT EXISTS idx_dagster_brreg_financial_results_raw_created
-  ON dagster_brreg.financial_results (raw_record_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS dagster_brreg.currency_results (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  raw_record_id UUID NOT NULL REFERENCES dagster_brreg.raw_records(id) ON DELETE CASCADE,
+  task_attempt_id UUID REFERENCES dagster_brreg.task_attempts(id) ON DELETE SET NULL,
+  status TEXT NOT NULL,
+  original_currency TEXT,
+  original_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  usd_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  fx_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  source_uri TEXT,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  CONSTRAINT chk_dagster_brreg_currency_results_status CHECK (
+    status IN ('succeeded', 'failed', 'not_available', 'skipped')
+  ),
+  CONSTRAINT chk_dagster_brreg_currency_results_original_payload_object CHECK (
+    jsonb_typeof(original_payload) = 'object'
+  ),
+  CONSTRAINT chk_dagster_brreg_currency_results_usd_payload_object CHECK (jsonb_typeof(usd_payload) = 'object'),
+  CONSTRAINT chk_dagster_brreg_currency_results_fx_metadata_object CHECK (jsonb_typeof(fx_metadata) = 'object'),
+  CONSTRAINT chk_dagster_brreg_currency_results_metadata_object CHECK (jsonb_typeof(metadata) = 'object')
+);
 
-CREATE INDEX IF NOT EXISTS idx_dagster_brreg_financial_results_status
-  ON dagster_brreg.financial_results (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dagster_brreg_currency_results_raw_created
+  ON dagster_brreg.currency_results (raw_record_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_dagster_brreg_currency_results_status
+  ON dagster_brreg.currency_results (status, created_at DESC);
 
 ALTER TABLE dagster_brreg.task_attempts
   DROP CONSTRAINT IF EXISTS chk_dagster_brreg_task_attempt_type;
