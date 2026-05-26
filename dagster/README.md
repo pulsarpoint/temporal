@@ -36,9 +36,9 @@ The compose stack runs:
 - `translation-service` on `TRANSLATION_SERVICE_PORT`, default `8095`.
 - `crawl-service` on `CRAWL_SERVICE_PORT`, default `8096`.
 
-Dagster waits for the translation and crawl services to pass `/healthz` before
-starting the webserver or daemon. In Docker Compose, Dagster should use the
-service DNS names:
+Dagster runs `dagster-migrate` first and waits for the translation and crawl
+services to pass `/healthz` before starting the webserver or daemon. In Docker
+Compose, Dagster should use the service DNS names:
 
 ```bash
 TRANSLATION_SERVICE_URL=http://translation-service:8095
@@ -92,18 +92,13 @@ The `brreg_working_raw_records` asset downloads the BRREG bulk gzip payload from
 `https://data.brreg.no/enhetsregisteret/api/enheter/lastned` and upserts rows into
 Dagster-owned table `dagster_brreg.raw_records`.
 
-BRREG now has separate Dagster jobs for each independent stage:
+The operator-facing Dagster catalog intentionally exposes only two BRREG jobs:
 
-- `brreg_ingest_job` materializes `brreg_working_raw_records`.
 - `brreg_translate_job` materializes `brreg_translation_results`.
-- `brreg_domain_results_job` calls the crawl service and stores one
-  `dagster_brreg.domain_results` artifact per company.
-- `brreg_domain_enrichment_job` is the operator-facing alias for
-  `brreg_domain_results_job`.
-- `brreg_enhanced_records_job` builds Corpscout-compatible `brreg.enhanced.v1`
-  JSON into `dagster_brreg.enhanced_records`.
-- `brreg_publish_enhanced_records_job` upserts original raw inputs and enhanced
-  JSON artifacts into Corpscout handoff tables.
+- `brreg_domain_enhanced_job` calls the crawl service, stores one
+  `dagster_brreg.domain_results` artifact per company, then builds
+  Corpscout-compatible `brreg.enhanced.v1` JSON into
+  `dagster_brreg.enhanced_records`.
 
 Translation and domain enrichment both read current rows from
 `dagster_brreg.raw_records`; they do not depend on each other. The translation
@@ -113,21 +108,22 @@ records per-row task attempts in `dagster_brreg.task_attempts`. Translation
 keeps claiming `BRREG_TRANSLATION_BATCH_SIZE` chunks until there are no pending
 translation rows left; `BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0` means drain the
 queue fully in one materialization. Domain discovery is one Dagster business
-task, `brreg_domain_results`, backed by the standalone crawl service. The
-service owns DuckDuckGo/Yandex search, crawl4ai/Chromium crawling, LLM
+task inside `brreg_domain_enhanced_job`, backed by the standalone crawl service.
+The service owns DuckDuckGo/Yandex search, crawl4ai/Chromium crawling, LLM
 verification, scoring, and structured errors. Dagster claims rows, calls the
 service, stores one response artifact per company in `dagster_brreg.domain_results`,
 and leaves search/crawl/verification internals out of the Dagster asset graph.
 
-The enhanced-record job requires successful or skipped translation and domain
-result tasks. It reads the latest `dagster_brreg.domain_results.domain_payload`
-and converts accepted domain candidates into the enhanced payload. BRREG capital
+The enhanced build requires successful or skipped translation and domain result
+tasks. It reads the latest `dagster_brreg.domain_results.domain_payload` and
+converts accepted domain candidates into the enhanced payload. BRREG capital
 amounts are preserved in the original currency and converted to USD cents using
 ECB rates when `kapital.belop` and `kapital.valuta` are present. Set
 `BRREG_FX_RATE_DATE=YYYY-MM-DD` to use the latest ECB rate on or before a fixed
 date; leave it empty to use the latest daily ECB feed. Financials are currently
 emitted as `not_available` until the BRREG financial extraction job is
-implemented. Publishing writes directly to Postgres:
+implemented. Publishing to Corpscout handoff tables is kept as internal code and
+is not exposed as a Dagster catalog option:
 
 ```text
 dagster_brreg.enhanced_records

@@ -7,6 +7,7 @@ from corpscout_dagster.brreg.assets import (
     brreg_domain_crtsh_candidates,
     brreg_domain_duckduckgo_candidates,
     brreg_domain_duckduckgo_search_results,
+    brreg_domain_enhanced_records,
     brreg_domain_proposals,
     brreg_domain_results,
     brreg_domain_web_search_llm_candidates,
@@ -219,16 +220,19 @@ def test_build_brreg_working_raw_record_rows_maps_valid_records() -> None:
     assert [row.organization_number for row in rows] == ["810202572", "910202572"]
 
 
-def test_definitions_include_brreg_working_raw_records_asset() -> None:
+def test_definitions_expose_only_operational_brreg_assets() -> None:
     asset_keys = {
         key.to_user_string()
         for definition in defs.assets or []
         for key in definition.keys
     }
 
-    assert "brreg_working_raw_records" in asset_keys
-    assert "brreg_translation_results" in asset_keys
-    assert "brreg_domain_results" in asset_keys
+    assert asset_keys == {
+        "brreg_translation_results",
+        "brreg_domain_enhanced_records",
+    }
+    assert "brreg_working_raw_records" not in asset_keys
+    assert "brreg_domain_results" not in asset_keys
     assert "brreg_domain_website_field_candidates" not in asset_keys
     assert "brreg_domain_duckduckgo_search_results" not in asset_keys
     assert "brreg_domain_duckduckgo_candidates" not in asset_keys
@@ -237,17 +241,20 @@ def test_definitions_include_brreg_working_raw_records_asset() -> None:
     assert "brreg_domain_web_search_llm_candidates" not in asset_keys
     assert "brreg_domain_dns_heuristic_candidates" not in asset_keys
     assert "brreg_domain_proposals" not in asset_keys
-    assert "brreg_enhanced_records" in asset_keys
-    assert "brreg_publish_enhanced_records" in asset_keys
+    assert "brreg_enhanced_records" not in asset_keys
+    assert "brreg_publish_enhanced_records" not in asset_keys
 
 
-def test_definitions_include_independent_brreg_jobs() -> None:
+def test_definitions_expose_only_translation_and_domain_enhanced_jobs() -> None:
     job_names = {job.name for job in defs.jobs or []}
 
-    assert "brreg_ingest_job" in job_names
-    assert "brreg_translate_job" in job_names
-    assert "brreg_domain_enrichment_job" in job_names
-    assert "brreg_domain_results_job" in job_names
+    assert job_names == {
+        "brreg_translate_job",
+        "brreg_domain_enhanced_job",
+    }
+    assert "brreg_ingest_job" not in job_names
+    assert "brreg_domain_enrichment_job" not in job_names
+    assert "brreg_domain_results_job" not in job_names
     assert "brreg_domain_website_field_job" not in job_names
     assert "brreg_domain_duckduckgo_search_job" not in job_names
     assert "brreg_domain_duckduckgo_job" not in job_names
@@ -260,15 +267,15 @@ def test_definitions_include_independent_brreg_jobs() -> None:
     assert brreg_domain_proposals is not brreg_domain_duckduckgo_search_results
     assert brreg_domain_crtsh_candidates is not brreg_domain_wikidata_candidates
     assert brreg_domain_web_search_llm_candidates is not brreg_domain_wikidata_candidates
-    assert "brreg_enhanced_records_job" in job_names
-    assert "brreg_publish_enhanced_records_job" in job_names
+    assert "brreg_enhanced_records_job" not in job_names
+    assert "brreg_publish_enhanced_records_job" not in job_names
     assert brreg_enhanced_records is not brreg_publish_enhanced_records
 
 
 def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
     configurable_assets = [
         brreg_translation_results,
-        brreg_domain_results,
+        brreg_domain_enhanced_records,
     ]
 
     for asset_def in configurable_assets:

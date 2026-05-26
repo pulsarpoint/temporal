@@ -27,11 +27,19 @@ def test_compose_defines_dockerized_golang_migrate_services() -> None:
     assert "dagster-migrate-down:" in compose
     assert "dagster-migrate-version:" in compose
     assert "./db/migrations:/migrations:ro" in compose
-    assert "${DAGSTER_MIGRATIONS_DATABASE_URL:?" in compose
+    assert "${DAGSTER_MIGRATIONS_DATABASE_URL:-postgresql://corpscout:password123@companycollect:5432/corpscout?sslmode=disable&x-migrations-table=dagster_schema_migrations}" in compose
     assert "- up" in compose
     assert "- down" in compose
     assert "- \"1\"" in compose
     assert "- version" in compose
+
+
+def test_compose_runs_migrations_before_dagster_containers() -> None:
+    compose = read_project_file("docker-compose.yml")
+
+    assert "dagster-migrate:" in compose
+    assert "dagster-migrate:\n        condition: service_completed_successfully" in compose
+    assert "CORPSCOUT_DATABASE_URL: ${CORPSCOUT_DATABASE_URL:-postgresql://corpscout:password123@companycollect:5432/corpscout?sslmode=disable}" in compose
 
 
 def test_env_example_uses_separate_dagster_migration_table() -> None:

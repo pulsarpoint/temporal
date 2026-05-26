@@ -1,7 +1,5 @@
 x-dagster-migrate-base: &dagster-migrate-base
   image: ${MIGRATE_IMAGE:-migrate/migrate}
-  profiles:
-    - tools
   extra_hosts:
     - companycollect:100.85.212.113
   volumes:
@@ -12,6 +10,8 @@ services:
     image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
     restart: always
     depends_on:
+      dagster-migrate:
+        condition: service_completed_successfully
       translation-service:
         condition: service_healthy
       crawl-service:
@@ -23,6 +23,7 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_WEBSERVER_HOST: 0.0.0.0
       DAGSTER_WEBSERVER_PORT: ${DAGSTER_PORT:-3000}
+      CORPSCOUT_DATABASE_URL: ${CORPSCOUT_DATABASE_URL:-postgresql://corpscout:password123@companycollect:5432/corpscout?sslmode=disable}
       TRANSLATION_SERVICE_URL: ${TRANSLATION_SERVICE_URL:-http://translation-service:8095}
       CRAWL_SERVICE_URL: ${CRAWL_SERVICE_URL:-http://crawl-service:8096}
     extra_hosts:
@@ -40,6 +41,8 @@ services:
     image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}
     restart: always
     depends_on:
+      dagster-migrate:
+        condition: service_completed_successfully
       translation-service:
         condition: service_healthy
       crawl-service:
@@ -49,6 +52,7 @@ services:
         required: false
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
+      CORPSCOUT_DATABASE_URL: ${CORPSCOUT_DATABASE_URL:-postgresql://corpscout:password123@companycollect:5432/corpscout?sslmode=disable}
       TRANSLATION_SERVICE_URL: ${TRANSLATION_SERVICE_URL:-http://translation-service:8095}
       CRAWL_SERVICE_URL: ${CRAWL_SERVICE_URL:-http://crawl-service:8096}
     extra_hosts:
@@ -94,27 +98,41 @@ services:
       retries: 5
       start_period: 60s
 
-  dagster-migrate-up:
+  dagster-migrate:
     <<: *dagster-migrate-base
     command:
       - -path=/migrations
       - -database
-      - ${DAGSTER_MIGRATIONS_DATABASE_URL:?DAGSTER_MIGRATIONS_DATABASE_URL is required}
+      - ${DAGSTER_MIGRATIONS_DATABASE_URL:-postgresql://corpscout:password123@companycollect:5432/corpscout?sslmode=disable&x-migrations-table=dagster_schema_migrations}
+      - up
+
+  dagster-migrate-up:
+    <<: *dagster-migrate-base
+    profiles:
+      - tools
+    command:
+      - -path=/migrations
+      - -database
+      - ${DAGSTER_MIGRATIONS_DATABASE_URL:-postgresql://corpscout:password123@companycollect:5432/corpscout?sslmode=disable&x-migrations-table=dagster_schema_migrations}
       - up
 
   dagster-migrate-down:
     <<: *dagster-migrate-base
+    profiles:
+      - tools
     command:
       - -path=/migrations
       - -database
-      - ${DAGSTER_MIGRATIONS_DATABASE_URL:?DAGSTER_MIGRATIONS_DATABASE_URL is required}
+      - ${DAGSTER_MIGRATIONS_DATABASE_URL:-postgresql://corpscout:password123@companycollect:5432/corpscout?sslmode=disable&x-migrations-table=dagster_schema_migrations}
       - down
       - "1"
 
   dagster-migrate-version:
     <<: *dagster-migrate-base
+    profiles:
+      - tools
     command:
       - -path=/migrations
       - -database
-      - ${DAGSTER_MIGRATIONS_DATABASE_URL:?DAGSTER_MIGRATIONS_DATABASE_URL is required}
+      - ${DAGSTER_MIGRATIONS_DATABASE_URL:-postgresql://corpscout:password123@companycollect:5432/corpscout?sslmode=disable&x-migrations-table=dagster_schema_migrations}
       - version
