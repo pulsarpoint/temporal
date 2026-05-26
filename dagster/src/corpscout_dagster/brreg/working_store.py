@@ -110,6 +110,17 @@ class InsertTranslationResult:
 
 
 @dataclass(frozen=True)
+class InsertDomainResult:
+    raw_record_id: str
+    task_attempt_id: str
+    status: str
+    best_domain: str | None
+    domain_payload: dict[str, Any]
+    error: str | None
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class InsertDomainCandidate:
     raw_record_id: str
     task_attempt_id: str
@@ -541,6 +552,20 @@ class BrregWorkingStore:
                 "translated_payload": _json(command.translated_payload) if command.translated_payload is not None else None,
                 "model": command.model,
                 "prompt_version": command.prompt_version,
+                "error": command.error,
+                "metadata": _json(command.metadata),
+            },
+        )
+
+    def insert_domain_result(self, command: InsertDomainResult) -> None:
+        self._cursor.execute(
+            INSERT_DOMAIN_RESULT_SQL,
+            {
+                "raw_record_id": command.raw_record_id,
+                "task_attempt_id": command.task_attempt_id,
+                "status": command.status,
+                "best_domain": command.best_domain,
+                "domain_payload": _json(command.domain_payload),
                 "error": command.error,
                 "metadata": _json(command.metadata),
             },
@@ -1712,6 +1737,26 @@ INSERT INTO dagster_brreg.translation_results (
 )
 """
 
+INSERT_DOMAIN_RESULT_SQL = """
+INSERT INTO dagster_brreg.domain_results (
+    raw_record_id,
+    task_attempt_id,
+    status,
+    best_domain,
+    domain_payload,
+    error,
+    metadata
+) VALUES (
+    %(raw_record_id)s,
+    %(task_attempt_id)s,
+    %(status)s,
+    %(best_domain)s,
+    %(domain_payload)s::jsonb,
+    %(error)s,
+    %(metadata)s::jsonb
+)
+"""
+
 INSERT_DOMAIN_CANDIDATE_SQL = """
 INSERT INTO dagster_brreg.domain_candidates (
     raw_record_id,
@@ -1901,24 +1946,47 @@ WITH latest_translation AS (
     WHERE status IN ('succeeded', 'skipped')
     ORDER BY raw_record_id, created_at DESC
 ),
-proposal_rows AS (
-    SELECT
+latest_domain_result AS (
+    SELECT DISTINCT ON (raw_record_id)
         raw_record_id,
+        status,
+        domain_payload,
+        created_at
+    FROM dagster_brreg.domain_results
+    WHERE status IN ('succeeded', 'not_found', 'partial')
+    ORDER BY raw_record_id, created_at DESC
+),
+domain_rows AS (
+    SELECT
+        ldr.raw_record_id,
         jsonb_agg(
             jsonb_build_object(
-                'domain', domain,
-                'normalized_domain', normalized_domain,
-                'score', score,
-                'signals', signals,
-                'status', status,
-                'evidence', evidence,
-                'metadata', metadata
+                'domain', candidate->>'domain',
+                'normalized_domain', candidate->>'normalized_domain',
+                'score', CASE
+                    WHEN jsonb_typeof(candidate->'confidence') = 'number' THEN (candidate->>'confidence')::int
+                    ELSE 0
+                END,
+                'signals', jsonb_build_array(coalesce(candidate->>'source', 'crawl_service')),
+                'status', CASE
+                    WHEN candidate->>'decision' = 'accepted' THEN 'accepted'
+                    ELSE 'proposed'
+                END,
+                'evidence', coalesce(candidate->'evidence', '{}'::jsonb),
+                'metadata', coalesce(candidate->'metadata', '{}'::jsonb)
+                    || jsonb_build_object('source', 'crawl-service')
             )
-            ORDER BY score DESC, normalized_domain ASC
+            ORDER BY
+                CASE
+                    WHEN jsonb_typeof(candidate->'confidence') = 'number' THEN (candidate->>'confidence')::int
+                    ELSE 0
+                END DESC,
+                candidate->>'normalized_domain' ASC
         ) AS proposals
-    FROM dagster_brreg.domain_proposals
-    WHERE status IN ('proposed', 'accepted')
-    GROUP BY raw_record_id
+    FROM latest_domain_result ldr
+    CROSS JOIN LATERAL jsonb_array_elements(coalesce(ldr.domain_payload->'candidates', '[]'::jsonb)) AS item(candidate)
+    WHERE coalesce(candidate->>'normalized_domain', '') <> ''
+    GROUP BY ldr.raw_record_id
 ),
 task_status_rows AS (
     SELECT
@@ -1938,8 +2006,8 @@ SELECT
     rr.payload_hash,
     lt.status AS translation_status,
     coalesce(lt.translated_payload, '{}'::jsonb) AS translation_payload,
-    coalesce(mts.status, 'skipped') AS domain_status,
-    coalesce(pr.proposals, '[]'::jsonb) AS domain_proposals,
+    coalesce(ldr.status, dts.status, 'not_found') AS domain_status,
+    coalesce(dr.proposals, '[]'::jsonb) AS domain_proposals,
     coalesce(tsr.task_statuses, '{}'::jsonb) AS task_statuses
 FROM dagster_brreg.raw_records rr
 JOIN latest_translation lt ON lt.raw_record_id = rr.id
@@ -1947,21 +2015,14 @@ JOIN dagster_brreg.raw_record_task_states tts
   ON tts.raw_record_id = rr.id
  AND tts.task_type = 'translate'
  AND tts.status IN ('succeeded', 'skipped')
-LEFT JOIN dagster_brreg.raw_record_task_states mts
-  ON mts.raw_record_id = rr.id
- AND mts.task_type = 'merge_domain_proposals'
-LEFT JOIN proposal_rows pr ON pr.raw_record_id = rr.id
+JOIN dagster_brreg.raw_record_task_states dts
+  ON dts.raw_record_id = rr.id
+ AND dts.task_type = 'domain_results'
+ AND dts.status IN ('succeeded', 'skipped')
+LEFT JOIN latest_domain_result ldr ON ldr.raw_record_id = rr.id
+LEFT JOIN domain_rows dr ON dr.raw_record_id = rr.id
 LEFT JOIN task_status_rows tsr ON tsr.raw_record_id = rr.id
 WHERE rr.is_current = true
-  AND (
-      mts.status IN ('succeeded', 'skipped')
-      OR NOT EXISTS (
-          SELECT 1
-          FROM dagster_brreg.domain_candidates dc
-          WHERE dc.raw_record_id = rr.id
-            AND dc.status IN ('candidate', 'accepted')
-      )
-  )
   AND NOT EXISTS (
       SELECT 1
       FROM dagster_brreg.enhanced_records er
@@ -1970,7 +2031,8 @@ WHERE rr.is_current = true
         AND er.status IN ('built', 'published')
         AND er.built_at >= greatest(
             coalesce(tts.last_finished_at, '-infinity'::timestamptz),
-            coalesce(mts.last_finished_at, '-infinity'::timestamptz),
+            coalesce(dts.last_finished_at, '-infinity'::timestamptz),
+            coalesce(ldr.created_at, '-infinity'::timestamptz),
             lt.created_at
         )
   )

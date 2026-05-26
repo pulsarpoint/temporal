@@ -324,6 +324,10 @@ def _registration_status(raw: dict[str, Any]) -> str:
 
 
 def _section_status_from_task(status: str) -> str:
+    if status == "not_found":
+        return "not_available"
+    if status == "partial":
+        return "partial"
     if status in {"succeeded", "skipped", "failed"}:
         return status
     return "not_done"
@@ -332,7 +336,7 @@ def _section_status_from_task(status: str) -> str:
 def _enhancement_status(section_statuses: dict[str, str]) -> str:
     if any(status == "failed" for status in section_statuses.values()):
         return "partial"
-    if any(status in {"not_available", "skipped", "not_done"} for status in section_statuses.values()):
+    if any(status in {"not_available", "skipped", "not_done", "partial"} for status in section_statuses.values()):
         return "partial"
     return "succeeded"
 

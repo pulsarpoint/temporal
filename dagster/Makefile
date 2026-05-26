@@ -1,6 +1,8 @@
 COMPOSE ?= docker compose
 DAGSTER_PORT ?= 3000
 DAGSTER_IMAGE ?= ghcr.io/pulsarpoint/corpscout-dagster:latest
+TRANSLATION_SERVICE_IMAGE ?= ghcr.io/pulsarpoint/corpscout-translation-service:latest
+CRAWL_SERVICE_IMAGE ?= ghcr.io/pulsarpoint/corpscout-crawl-service:latest
 BRREG_STALE_RUN_CLEANUP_MINUTES ?= 30
 
 .PHONY: sync test validate smoke-brreg-db cleanup-stale-brreg-runs webserver daemon build pull up run down migrate-up migrate-down migrate-version logs logs-webserver logs-daemon shell
@@ -30,10 +32,10 @@ build:
 	docker build -t $(DAGSTER_IMAGE) .
 
 pull:
-	$(COMPOSE) pull dagster-webserver dagster-daemon
+	$(COMPOSE) pull dagster-webserver dagster-daemon translation-service crawl-service
 
 up run:
-	$(COMPOSE) pull dagster-webserver dagster-daemon
+	$(COMPOSE) pull dagster-webserver dagster-daemon translation-service crawl-service
 	$(COMPOSE) up -d
 
 down:

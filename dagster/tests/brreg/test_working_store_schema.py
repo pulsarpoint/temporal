@@ -40,6 +40,7 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "task_type IN (" in sql
     assert "'translate'" in sql
     assert "'discover_domains'" in sql
+    assert "'domain_results'" in sql
     assert "'domain_website_field'" in sql
     assert "'domain_duckduckgo'" in sql
     assert "'domain_crtsh'" in sql
@@ -77,6 +78,7 @@ def test_working_store_migration_has_independent_brreg_run_types() -> None:
     assert "'bulk_ingest'" in sql
     assert "'translate'" in sql
     assert "'discover_domains'" in sql
+    assert "'domain_results'" in sql
     assert "'domain_website_field'" in sql
     assert "'domain_duckduckgo'" in sql
     assert "'domain_crtsh'" in sql
@@ -114,6 +116,16 @@ def test_domain_discovery_dependencies_migration_updates_task_types_and_views() 
     assert "CREATE OR REPLACE VIEW dagster_brreg.v_domain_enrichment_summary" in sql
     assert "domain_search_results" in sql
     assert "domain_crawl_results" in sql
+
+
+def test_domain_results_migration_adds_single_business_result_artifact() -> None:
+    sql = (MIGRATIONS_DIR / "000013_brreg_domain_results.up.sql").read_text()
+
+    assert "CREATE TABLE IF NOT EXISTS dagster_brreg.domain_results" in sql
+    assert "status IN ('succeeded', 'not_found', 'partial', 'failed')" in sql
+    assert "domain_payload JSONB NOT NULL DEFAULT '{}'::jsonb" in sql
+    assert "idx_dagster_brreg_domain_results_raw_created" in sql
+    assert "'domain_results'" in sql
 
 
 def test_working_store_migration_creates_observability_views() -> None:

@@ -78,14 +78,10 @@ BRREG now has separate Dagster jobs for each independent stage:
 
 - `brreg_ingest_job` materializes `brreg_working_raw_records`.
 - `brreg_translate_job` materializes `brreg_translation_results`.
-- `brreg_domain_website_field_job` materializes the fast BRREG website signal.
-- `brreg_domain_duckduckgo_job` materializes DuckDuckGo/crawler signal rows.
-- `brreg_domain_crtsh_job` materializes crt.sh certificate signal rows.
-- `brreg_domain_wikidata_job` materializes Wikidata signal rows.
-- `brreg_domain_web_search_llm_job` materializes DuckDuckGo first-page search
-  triage plus candidate-domain crawl verification using an OpenAI-compatible LLM.
-- `brreg_domain_proposals_job` scores signal rows into proposed domains.
-- `brreg_domain_enrichment_job` materializes all domain signal jobs and proposals.
+- `brreg_domain_results_job` calls the crawl service and stores one
+  `dagster_brreg.domain_results` artifact per company.
+- `brreg_domain_enrichment_job` is the operator-facing alias for
+  `brreg_domain_results_job`.
 - `brreg_enhanced_records_job` builds Corpscout-compatible `brreg.enhanced.v1`
   JSON into `dagster_brreg.enhanced_records`.
 - `brreg_publish_enhanced_records_job` upserts original raw inputs and enhanced
@@ -98,23 +94,16 @@ worker, writes reusable term translations to `dagster_brreg.translation_cache`,
 and records per-row task attempts in `dagster_brreg.task_attempts`. Translation
 keeps claiming `BRREG_TRANSLATION_BATCH_SIZE` chunks until there are no pending
 translation rows left; `BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0` means drain the
-queue fully in one materialization. Domain signals are stored independently in
-`dagster_brreg.domain_candidates`; the proposal job merges those observations
-into `dagster_brreg.domain_proposals` with a score, source signals, and
-evidence. Each domain signal keeps its own batch size because DuckDuckGo/crawler,
-LLM verification, crt.sh, Wikidata, and website-field parsing have different
-speed and rate-limit profiles. The web-search LLM signal only crawls the first
-DuckDuckGo results page for each query. It asks the LLM to triage result domains
-from title/description/domain, then crawls only candidates above the triage
-threshold for separate markdown-based verification. Each domain run continues
-claiming pending batches until `BRREG_DOMAIN_MAX_BATCHES_PER_RUN` is reached or
-there are no pending records left for that signal. Default translation/domain
-jobs claim records that have not attempted that task yet; retrying failed
-attempts should be exposed as an explicit retry job/action.
+queue fully in one materialization. Domain discovery is now one Dagster business
+task, `brreg_domain_results`, backed by the standalone crawl service. The
+service owns DuckDuckGo first-page search, crawl4ai/Chromium crawling, LLM
+verification, scoring, and structured errors. Dagster claims rows, calls the
+service, stores one response artifact per company in `dagster_brreg.domain_results`,
+and leaves search/crawl/verification internals out of the Dagster asset graph.
 
-The enhanced-record job requires a successful or skipped translation task. It
-uses domain proposals when they exist; domain signal work remains best-effort
-and each signal status is preserved in Dagster task-state views. BRREG capital
+The enhanced-record job requires successful or skipped translation and domain
+result tasks. It reads the latest `dagster_brreg.domain_results.domain_payload`
+and converts accepted domain candidates into the enhanced payload. BRREG capital
 amounts are preserved in the original currency and converted to USD cents using
 ECB rates when `kapital.belop` and `kapital.valuta` are present. Set
 `BRREG_FX_RATE_DATE=YYYY-MM-DD` to use the latest ECB rate on or before a fixed

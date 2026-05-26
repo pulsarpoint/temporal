@@ -8,6 +8,7 @@ from corpscout_dagster.brreg.assets import (
     brreg_domain_duckduckgo_candidates,
     brreg_domain_duckduckgo_search_results,
     brreg_domain_proposals,
+    brreg_domain_results,
     brreg_domain_web_search_llm_candidates,
     brreg_domain_website_field_candidates,
     brreg_domain_wikidata_candidates,
@@ -16,6 +17,7 @@ from corpscout_dagster.brreg.assets import (
     brreg_translation_results,
     materialize_brreg_enhanced_records,
     materialize_brreg_publish_enhanced_records,
+    materialize_brreg_domain_results,
     materialize_brreg_domain_proposals,
     materialize_brreg_duckduckgo_search_results,
     materialize_brreg_domain_signal_candidates,
@@ -170,6 +172,41 @@ class MissingTranslator:
         return {}
 
 
+class FakeCrawlServiceClient:
+    def __init__(self, *, payload: dict | None = None, error: Exception | None = None) -> None:
+        self.payload = payload or {
+            "schema_version": "crawl-service.brreg.v1",
+            "status": "succeeded",
+            "record_id": "00000000-0000-0000-0000-000000000010",
+            "organization_number": "810202572",
+            "best_domain": "bortigard.no",
+            "candidates": [
+                {
+                    "domain": "bortigard.no",
+                    "normalized_domain": "bortigard.no",
+                    "confidence": 91,
+                    "source": "existing_website",
+                    "evidence": {"url": "https://www.bortigard.no"},
+                }
+            ],
+            "search_artifacts": [],
+            "crawl_artifacts": [],
+            "errors": [],
+            "warnings": [],
+            "provider": "fake",
+            "model": "fake-model",
+            "service_version": "0.1.0",
+        }
+        self.error = error
+        self.calls: list = []
+
+    def discover_brreg_domain(self, record):
+        self.calls.append(record)
+        if self.error is not None:
+            raise self.error
+        return self.payload
+
+
 def test_build_brreg_working_raw_record_rows_maps_valid_records() -> None:
     records = [
         BrregRawRecord.from_payload({"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"}),
@@ -191,14 +228,15 @@ def test_definitions_include_brreg_working_raw_records_asset() -> None:
 
     assert "brreg_working_raw_records" in asset_keys
     assert "brreg_translation_results" in asset_keys
-    assert "brreg_domain_website_field_candidates" in asset_keys
-    assert "brreg_domain_duckduckgo_search_results" in asset_keys
+    assert "brreg_domain_results" in asset_keys
+    assert "brreg_domain_website_field_candidates" not in asset_keys
+    assert "brreg_domain_duckduckgo_search_results" not in asset_keys
     assert "brreg_domain_duckduckgo_candidates" not in asset_keys
     assert "brreg_domain_crtsh_candidates" not in asset_keys
     assert "brreg_domain_wikidata_candidates" not in asset_keys
-    assert "brreg_domain_web_search_llm_candidates" in asset_keys
+    assert "brreg_domain_web_search_llm_candidates" not in asset_keys
     assert "brreg_domain_dns_heuristic_candidates" not in asset_keys
-    assert "brreg_domain_proposals" in asset_keys
+    assert "brreg_domain_proposals" not in asset_keys
     assert "brreg_enhanced_records" in asset_keys
     assert "brreg_publish_enhanced_records" in asset_keys
 
@@ -209,14 +247,15 @@ def test_definitions_include_independent_brreg_jobs() -> None:
     assert "brreg_ingest_job" in job_names
     assert "brreg_translate_job" in job_names
     assert "brreg_domain_enrichment_job" in job_names
-    assert "brreg_domain_website_field_job" in job_names
-    assert "brreg_domain_duckduckgo_search_job" in job_names
+    assert "brreg_domain_results_job" in job_names
+    assert "brreg_domain_website_field_job" not in job_names
+    assert "brreg_domain_duckduckgo_search_job" not in job_names
     assert "brreg_domain_duckduckgo_job" not in job_names
     assert "brreg_domain_crtsh_job" not in job_names
     assert "brreg_domain_wikidata_job" not in job_names
-    assert "brreg_domain_web_search_llm_job" in job_names
+    assert "brreg_domain_web_search_llm_job" not in job_names
     assert "brreg_domain_dns_heuristic_job" not in job_names
-    assert "brreg_domain_proposals_job" in job_names
+    assert "brreg_domain_proposals_job" not in job_names
     assert brreg_translation_results is not brreg_domain_website_field_candidates
     assert brreg_domain_proposals is not brreg_domain_duckduckgo_search_results
     assert brreg_domain_crtsh_candidates is not brreg_domain_wikidata_candidates
@@ -229,10 +268,7 @@ def test_definitions_include_independent_brreg_jobs() -> None:
 def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
     configurable_assets = [
         brreg_translation_results,
-        brreg_domain_website_field_candidates,
-        brreg_domain_duckduckgo_search_results,
-        brreg_domain_web_search_llm_candidates,
-        brreg_domain_proposals,
+        brreg_domain_results,
     ]
 
     for asset_def in configurable_assets:
@@ -241,10 +277,6 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
         assert fields["batch_size"].default_provided
         assert fields["max_batches_per_run"].default_provided
         assert fields["max_parallel_tasks"].default_provided
-
-    duckduckgo_fields = brreg_domain_duckduckgo_search_results.node_def.config_schema.config_type.fields
-    assert duckduckgo_fields["max_parallel_tasks"].default_value == 1
-
 
 def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkeypatch) -> None:
     monkeypatch.setenv("BRREG_TEST_BATCH_SIZE", "100")
@@ -608,6 +640,58 @@ def test_materialize_brreg_domain_signal_candidates_writes_independent_task_resu
     many_sql_calls = [sql for sql, _ in connection.cursor_instance.many_calls]
     assert any("INSERT INTO dagster_brreg.domain_candidates" in sql for sql in many_sql_calls)
     assert any("UPDATE dagster_brreg.task_attempts" in sql for sql in sql_calls)
+
+
+def test_materialize_brreg_domain_results_writes_single_service_artifact() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    raw_record_id = "00000000-0000-0000-0000-000000000010"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000011", raw_record_id, 1),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                "https://www.bortigard.no",
+                {"organisasjonsnummer": "810202572", "hjemmeside": "https://www.bortigard.no"},
+            )
+        ],
+        [],
+    ]
+    domain_client = FakeCrawlServiceClient()
+
+    result = materialize_brreg_domain_results(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        crawl_service_client=domain_client,
+        batch_size=500,
+        max_parallel_tasks=1,
+    )
+
+    assert result["rows_seen"] == 1
+    assert result["rows_completed"] == 1
+    assert result["rows_failed"] == 0
+    assert result["domain_results_written"] == 1
+    assert all(isinstance(value, int) for value in result.values())
+    assert len(domain_client.calls) == 1
+    sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
+    params_by_sql = connection.cursor_instance.calls
+    assert any("INSERT INTO dagster_brreg.domain_results" in sql for sql in sql_calls)
+    assert any(
+        "INSERT INTO dagster_brreg.task_attempts" in sql and params.get("task_type") == "domain_results"
+        for sql, params in params_by_sql
+    )
+    assert any(
+        "INSERT INTO dagster_brreg.domain_results" in sql
+        and params.get("status") == "succeeded"
+        and params.get("best_domain") == "bortigard.no"
+        for sql, params in params_by_sql
+    )
 
 
 def test_materialize_brreg_website_field_candidates_skips_records_without_website() -> None:
@@ -1016,9 +1100,9 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
                         }
                     ]
                 },
-                "skipped",
+                "not_found",
                 [],
-                {"translate": "succeeded", "merge_domain_proposals": "skipped"},
+                {"translate": "succeeded", "domain_results": "succeeded"},
             )
         ],
     ]
@@ -1051,6 +1135,7 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
     )
     enhanced_payload = json.loads(insert_params["enhanced_payload"])
     assert enhanced_payload["schema_version"] == "brreg.enhanced.v1"
+    assert enhanced_payload["enhancement"]["section_statuses"]["domains"] == "not_available"
     assert enhanced_payload["capital"]["amount_usd_cents"] == 886864
     assert context.metadata[-1]["rows_completed"] == 1
 

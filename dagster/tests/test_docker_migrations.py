@@ -58,7 +58,9 @@ def test_compose_uses_published_dagster_image_without_remote_build() -> None:
 
     assert "build: ." not in compose
     assert "image: ${DAGSTER_IMAGE:-ghcr.io/pulsarpoint/corpscout-dagster:latest}" in compose
-    assert "$(COMPOSE) pull dagster-webserver dagster-daemon" in makefile
+    assert "image: ${TRANSLATION_SERVICE_IMAGE:-ghcr.io/pulsarpoint/corpscout-translation-service:latest}" in compose
+    assert "image: ${CRAWL_SERVICE_IMAGE:-ghcr.io/pulsarpoint/corpscout-crawl-service:latest}" in compose
+    assert "$(COMPOSE) pull dagster-webserver dagster-daemon translation-service crawl-service" in makefile
     assert "$(COMPOSE) up -d" in makefile
     assert "--build" not in makefile
 

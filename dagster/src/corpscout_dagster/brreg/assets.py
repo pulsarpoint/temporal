@@ -17,6 +17,7 @@ from corpscout_dagster.brreg.domain_search_llm import (
     collect_duckduckgo_search_results,
     verify_domain_search_results_with_llm,
 )
+from corpscout_dagster.brreg.crawl_service import CrawlServiceClient, HttpCrawlServiceClient
 from corpscout_dagster.brreg.enhanced_payload import (
     BRREG_ENHANCED_SCHEMA_VERSION,
     build_brreg_enhanced_payload,
@@ -48,6 +49,7 @@ from corpscout_dagster.brreg.working_store import (
     IncrementEnrichmentRunProgress,
     InsertDomainCrawlResult,
     InsertDomainCandidate,
+    InsertDomainResult,
     InsertDomainProposal,
     InsertDomainSearchResult,
     InsertEnhancedRecord,
@@ -69,6 +71,7 @@ DEFAULT_DOMAIN_CRTSH_BATCH_SIZE = 10
 DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE = 25
 DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE = 10
 DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE = 500
+DEFAULT_DOMAIN_RESULT_BATCH_SIZE = 10
 DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 0
 DEFAULT_ENHANCED_RECORD_BATCH_SIZE = 500
 DEFAULT_PUBLISH_ENHANCED_RECORD_BATCH_SIZE = 250
@@ -81,6 +84,7 @@ DEFAULT_DOMAIN_CRTSH_MAX_PARALLEL_TASKS = 5
 DEFAULT_DOMAIN_WIKIDATA_MAX_PARALLEL_TASKS = 5
 DEFAULT_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS = 1
 DEFAULT_DOMAIN_PROPOSAL_MAX_PARALLEL_TASKS = 50
+DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS = 1
 
 DOMAIN_SIGNAL_ASSET_KEYS = [
     AssetKey("brreg_domain_website_field_candidates"),
@@ -206,6 +210,38 @@ def brreg_translation_results(context) -> dict[str, int]:
         max_parallel_tasks=run_config.max_parallel_tasks,
         model=os.environ.get("BRREG_TRANSLATION_MODEL") or DEFAULT_LLM_MODEL,
         prompt_version=os.environ.get("BRREG_TRANSLATION_PROMPT_VERSION") or DEFAULT_PROMPT_VERSION,
+    )
+
+
+@asset(
+    name="brreg_domain_results",
+    config_schema=brreg_batch_run_config_schema(
+        batch_size_default=_env_int("BRREG_DOMAIN_RESULT_BATCH_SIZE", DEFAULT_DOMAIN_RESULT_BATCH_SIZE),
+        max_batches_default=_env_int("BRREG_DOMAIN_RESULT_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
+        max_parallel_tasks_default=_env_int(
+            "BRREG_DOMAIN_RESULT_MAX_PARALLEL_TASKS",
+            DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS,
+        ),
+    ),
+)
+def brreg_domain_results(context) -> dict[str, int]:
+    run_config = resolve_brreg_batch_run_config(
+        context,
+        batch_size_env="BRREG_DOMAIN_RESULT_BATCH_SIZE",
+        batch_size_default=DEFAULT_DOMAIN_RESULT_BATCH_SIZE,
+        max_batches_env="BRREG_DOMAIN_RESULT_MAX_BATCHES_PER_RUN",
+        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+        max_parallel_tasks_env="BRREG_DOMAIN_RESULT_MAX_PARALLEL_TASKS",
+        max_parallel_tasks_default=DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS,
+    )
+    return materialize_brreg_domain_results(
+        context,
+        connection_factory=psycopg.connect,
+        database_url=_corpscout_database_url(),
+        crawl_service_client=HttpCrawlServiceClient.from_env(),
+        batch_size=run_config.batch_size,
+        max_batches_per_run=run_config.max_batches_per_run,
+        max_parallel_tasks=run_config.max_parallel_tasks,
     )
 
 
@@ -437,7 +473,7 @@ def brreg_domain_proposals(context) -> dict[str, int]:
     )
 
 
-@asset(name="brreg_enhanced_records", deps=[AssetKey("brreg_translation_results"), AssetKey("brreg_domain_proposals")])
+@asset(name="brreg_enhanced_records", deps=[AssetKey("brreg_translation_results"), AssetKey("brreg_domain_results")])
 def brreg_enhanced_records(context) -> dict[str, int]:
     return materialize_brreg_enhanced_records(
         context,
@@ -780,6 +816,146 @@ def materialize_brreg_domain_signal_candidates(
             **result,
             "dagster_run_id": context.run_id,
             "signal": signal,
+            "task_type": task_type,
+            "max_batches_per_run": max_batches_per_run,
+            "max_parallel_tasks": max_parallel_tasks,
+            "stopped_reason": stopped_reason,
+        }
+    )
+    return result
+
+
+def materialize_brreg_domain_results(
+    context,
+    *,
+    connection_factory,
+    database_url: str,
+    crawl_service_client: CrawlServiceClient,
+    batch_size: int,
+    max_batches_per_run: int = DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
+    max_parallel_tasks: int = DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS,
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if max_batches_per_run < 0:
+        raise ValueError("max_batches_per_run must be zero or positive")
+    if max_parallel_tasks <= 0:
+        raise ValueError("max_parallel_tasks must be positive")
+    rows_seen = 0
+    rows_completed = 0
+    rows_failed = 0
+    domain_results_written = 0
+    batches_processed = 0
+    stopped_reason = "max_batches_reached"
+    task_type = "domain_results"
+    enrichment_run_id: str | None = None
+    with connection_factory(database_url) as conn:
+        with conn.cursor() as cursor:
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=_enrichment_run_key(context, task_type),
+                    run_type=task_type,
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id, "service": "crawl-service"},
+                )
+            )
+        conn.commit()
+
+        try:
+            while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
+                with conn.cursor() as cursor:
+                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
+                        task_type=task_type,
+                        limit=batch_size,
+                        include_new_records=True,
+                        max_parallel_tasks=max_parallel_tasks,
+                        lease_seconds=DEFAULT_TASK_LEASE_SECONDS,
+                    )
+                conn.commit()
+                if not records:
+                    stopped_reason = "no_pending_records"
+                    break
+
+                batches_processed += 1
+                rows_seen += len(records)
+                for record in records:
+                    attempt = _create_task_attempt(
+                        conn=conn,
+                        enrichment_run_id=enrichment_run_id,
+                        record=record,
+                        task_type=task_type,
+                    )
+                    try:
+                        payload = crawl_service_client.discover_brreg_domain(record)
+                        task_succeeded = _write_domain_result(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            payload=payload,
+                        )
+                        domain_results_written += 1
+                        if task_succeeded:
+                            rows_completed += 1
+                        else:
+                            rows_failed += 1
+                    except Exception as exc:
+                        conn.rollback()
+                        _mark_domain_result_failed(
+                            conn=conn,
+                            enrichment_run_id=enrichment_run_id,
+                            attempt=attempt,
+                            record=record,
+                            error=str(exc),
+                        )
+                        rows_failed += 1
+                        domain_results_written += 1
+
+            context.log.info(
+                "BRREG domain result batches committed rows_seen=%s rows_completed=%s rows_failed=%s domain_results_written=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
+                rows_seen,
+                rows_completed,
+                rows_failed,
+                domain_results_written,
+                batches_processed,
+                max_batches_per_run,
+                max_parallel_tasks,
+                stopped_reason,
+            )
+
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(
+                        enrichment_run_id=enrichment_run_id,
+                        status="succeeded" if rows_failed == 0 else "failed",
+                        error=None if rows_failed == 0 else f"{rows_failed} domain result rows failed",
+                    )
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            if enrichment_run_id is not None:
+                with conn.cursor() as cursor:
+                    BrregWorkingStore(cursor).finish_enrichment_run(
+                        FinishEnrichmentRun(
+                            enrichment_run_id=enrichment_run_id,
+                            status="failed",
+                            error=str(exc),
+                        )
+                    )
+                conn.commit()
+            raise
+
+    result = {
+        "rows_seen": rows_seen,
+        "rows_completed": rows_completed,
+        "rows_failed": rows_failed,
+        "domain_results_written": domain_results_written,
+        "batches_processed": batches_processed,
+    }
+    context.add_output_metadata(
+        {
+            **result,
+            "dagster_run_id": context.run_id,
             "task_type": task_type,
             "max_batches_per_run": max_batches_per_run,
             "max_parallel_tasks": max_parallel_tasks,
@@ -1567,6 +1743,104 @@ def _write_translation_record_result(
             IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
         )
     conn.commit()
+
+
+def _write_domain_result(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: RawTaskRecord,
+    payload: dict,
+) -> bool:
+    status = str(payload.get("status") or "failed")
+    task_status = "failed" if status == "failed" else "succeeded"
+    error = _domain_result_error(payload)
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        store.insert_domain_result(
+            InsertDomainResult(
+                raw_record_id=record.id,
+                task_attempt_id=attempt.id,
+                status=status,
+                best_domain=payload.get("best_domain"),
+                domain_payload=payload,
+                error=error,
+                metadata={
+                    "source": "crawl-service",
+                    "service_version": payload.get("service_version"),
+                    "model": payload.get("model"),
+                    "provider": payload.get("provider"),
+                },
+            )
+        )
+        store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=error)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(
+                enrichment_run_id=enrichment_run_id,
+                records_seen=1,
+                records_completed=1 if task_status == "succeeded" else 0,
+                records_failed=0 if task_status == "succeeded" else 1,
+            )
+        )
+    conn.commit()
+    return task_status == "succeeded"
+
+
+def _mark_domain_result_failed(
+    *,
+    conn,
+    enrichment_run_id: str,
+    attempt: TaskAttempt,
+    record: RawTaskRecord,
+    error: str,
+) -> None:
+    payload = {
+        "schema_version": "crawl-service.brreg.v1",
+        "status": "failed",
+        "record_id": record.id,
+        "organization_number": record.organization_number,
+        "best_domain": None,
+        "candidates": [],
+        "search_artifacts": [],
+        "crawl_artifacts": [],
+        "errors": [{"code": "dagster_crawl_service_call_failed", "message": "Crawl service call failed.", "detail": {"error": error}}],
+        "warnings": [],
+    }
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        store.insert_domain_result(
+            InsertDomainResult(
+                raw_record_id=record.id,
+                task_attempt_id=attempt.id,
+                status="failed",
+                best_domain=None,
+                domain_payload=payload,
+                error=error,
+                metadata={"source": "dagster"},
+            )
+        )
+        store.finish_task_attempt(task_attempt_id=attempt.id, status="failed", error=error)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(
+                enrichment_run_id=enrichment_run_id,
+                records_seen=1,
+                records_completed=0,
+                records_failed=1,
+            )
+        )
+    conn.commit()
+
+
+def _domain_result_error(payload: dict) -> str | None:
+    errors = payload.get("errors")
+    if not isinstance(errors, list) or not errors:
+        return None
+    first = errors[0]
+    if not isinstance(first, dict):
+        return str(first)
+    message = first.get("message") or first.get("code")
+    return str(message) if message else None
 
 
 def _translate_missing_terms(

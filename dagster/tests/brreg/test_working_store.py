@@ -12,6 +12,7 @@ from corpscout_dagster.brreg.working_store import (
     FinishEnrichmentRun,
     IncrementEnrichmentRunProgress,
     InsertDomainCrawlResult,
+    InsertDomainResult,
     InsertDomainProposal,
     InsertDomainCandidate,
     InsertDomainSearchResult,
@@ -556,13 +557,13 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
                     "domain": "www.example.no",
                     "normalized_domain": "example.no",
                     "score": 95,
-                    "signals": ["website_field"],
-                    "status": "proposed",
-                    "evidence": {},
-                    "metadata": {},
+                    "signals": ["existing_website"],
+                    "status": "accepted",
+                    "evidence": {"url": "https://www.example.no"},
+                    "metadata": {"source": "crawl-service"},
                 }
             ],
-            {"translate": "succeeded", "merge_domain_proposals": "succeeded"},
+            {"translate": "succeeded", "domain_results": "succeeded"},
         )
     ]
     store = BrregWorkingStore(cursor)
@@ -589,19 +590,22 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
                     domain="www.example.no",
                     normalized_domain="example.no",
                     score=95,
-                    signals=["website_field"],
-                    status="proposed",
-                    evidence={},
-                    metadata={},
+                    signals=["existing_website"],
+                    status="accepted",
+                    evidence={"url": "https://www.example.no"},
+                    metadata={"source": "crawl-service"},
                 )
             ],
-            task_statuses={"translate": "succeeded", "merge_domain_proposals": "succeeded"},
+            task_statuses={"translate": "succeeded", "domain_results": "succeeded"},
         )
     ]
     sql, params = cursor.calls[0]
     assert "FROM dagster_brreg.raw_records rr" in sql
     assert "dagster_brreg.translation_results" in sql
-    assert "dagster_brreg.domain_proposals" in sql
+    assert "dagster_brreg.domain_results" in sql
+    assert "domain_payload->'candidates'" in sql
+    assert "dts.task_type = 'domain_results'" in sql
+    assert "merge_domain_proposals" not in sql
     assert "dagster_brreg.enhanced_records" in sql
     assert params == {"limit": 50}
 
@@ -678,3 +682,25 @@ def test_working_store_publishes_built_enhanced_records_to_corpscout_tables() ->
     assert "UPDATE dagster_brreg.enhanced_records" in update_sql
     assert "status = 'published'" in update_sql
     assert update_params["corpscout_enhanced_raw_input_id"] == enhanced_input_id
+
+
+def test_working_store_inserts_domain_result_artifact() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.insert_domain_result(
+        InsertDomainResult(
+            raw_record_id="00000000-0000-0000-0000-000000000002",
+            task_attempt_id="00000000-0000-0000-0000-000000000001",
+            status="succeeded",
+            best_domain="bortigard.no",
+            domain_payload={"status": "succeeded", "best_domain": "bortigard.no"},
+            error=None,
+            metadata={"source": "crawl-service"},
+        )
+    )
+
+    sql, params = cursor.calls[0]
+    assert "INSERT INTO dagster_brreg.domain_results" in sql
+    assert params["best_domain"] == "bortigard.no"
+    assert params["domain_payload"] == '{"best_domain":"bortigard.no","status":"succeeded"}'
