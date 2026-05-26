@@ -23,8 +23,8 @@ services:
       DAGSTER_HOME: /opt/dagster/dagster_home
       DAGSTER_WEBSERVER_HOST: 0.0.0.0
       DAGSTER_WEBSERVER_PORT: ${DAGSTER_PORT:-3000}
-      TRANSLATION_SERVICE_URL: http://translation-service:8095
-      CRAWL_SERVICE_URL: http://crawl-service:8096
+      TRANSLATION_SERVICE_URL: ${TRANSLATION_SERVICE_URL:-http://translation-service:8095}
+      CRAWL_SERVICE_URL: ${CRAWL_SERVICE_URL:-http://crawl-service:8096}
     extra_hosts:
       - companycollect:100.85.212.113
     ports:
@@ -49,8 +49,8 @@ services:
         required: false
     environment:
       DAGSTER_HOME: /opt/dagster/dagster_home
-      TRANSLATION_SERVICE_URL: http://translation-service:8095
-      CRAWL_SERVICE_URL: http://crawl-service:8096
+      TRANSLATION_SERVICE_URL: ${TRANSLATION_SERVICE_URL:-http://translation-service:8095}
+      CRAWL_SERVICE_URL: ${CRAWL_SERVICE_URL:-http://crawl-service:8096}
     extra_hosts:
       - companycollect:100.85.212.113
     volumes:

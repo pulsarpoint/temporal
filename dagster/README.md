@@ -37,8 +37,15 @@ The compose stack runs:
 - `crawl-service` on `CRAWL_SERVICE_PORT`, default `8096`.
 
 Dagster waits for the translation and crawl services to pass `/healthz` before
-starting the webserver or daemon. The services still use prebuilt GHCR images
-by default:
+starting the webserver or daemon. In Docker Compose, Dagster should use the
+service DNS names:
+
+```bash
+TRANSLATION_SERVICE_URL=http://translation-service:8095
+CRAWL_SERVICE_URL=http://crawl-service:8096
+```
+
+The services still use prebuilt GHCR images by default:
 
 ```bash
 TRANSLATION_SERVICE_IMAGE=ghcr.io/pulsarpoint/corpscout-translation-service:latest
