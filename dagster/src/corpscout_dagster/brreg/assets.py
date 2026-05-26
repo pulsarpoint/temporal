@@ -25,7 +25,7 @@ from corpscout_dagster.brreg.enhanced_payload import (
 )
 from corpscout_dagster.brreg.fx_rates import FxRateSet, load_ecb_rates_for_date, load_latest_ecb_rates
 from corpscout_dagster.brreg.models import BrregRawRecord, BrregWorkingRawRecordRow
-from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH, iter_brreg_bulk_records
+from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH
 from corpscout_dagster.brreg.translation import (
     DEFAULT_LLM_MODEL,
     DEFAULT_PROMPT_VERSION,
@@ -61,36 +61,17 @@ from corpscout_dagster.brreg.working_store import (
 
 
 BRREG_BULK_URL = f"{BRREG_API_BASE_URL}{BRREG_BULK_PATH}"
-DEFAULT_RAW_RECORD_BATCH_SIZE = 5000
 DEFAULT_TRANSLATION_RECORD_BATCH_SIZE = 50
 DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN = 0
-DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE = 5000
-DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE = 10
-DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE = 10
-DEFAULT_DOMAIN_CRTSH_BATCH_SIZE = 10
-DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE = 25
-DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE = 10
-DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE = 500
 DEFAULT_DOMAIN_RESULT_BATCH_SIZE = 10
 DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN = 0
 DEFAULT_ENHANCED_RECORD_BATCH_SIZE = 500
-DEFAULT_PUBLISH_ENHANCED_RECORD_BATCH_SIZE = 250
 DEFAULT_TASK_LEASE_SECONDS = 1800
 DEFAULT_TRANSLATION_MAX_PARALLEL_TASKS = DEFAULT_TRANSLATION_RECORD_BATCH_SIZE
-DEFAULT_DOMAIN_WEBSITE_FIELD_MAX_PARALLEL_TASKS = 50
-DEFAULT_DOMAIN_DUCKDUCKGO_MAX_PARALLEL_TASKS = 2
 DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS = 1
-DEFAULT_DOMAIN_CRTSH_MAX_PARALLEL_TASKS = 5
-DEFAULT_DOMAIN_WIKIDATA_MAX_PARALLEL_TASKS = 5
 DEFAULT_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS = 1
 DEFAULT_DOMAIN_PROPOSAL_MAX_PARALLEL_TASKS = 50
 DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS = 1
-
-DOMAIN_SIGNAL_ASSET_KEYS = [
-    AssetKey("brreg_domain_website_field_candidates"),
-    AssetKey("brreg_domain_duckduckgo_search_results"),
-    AssetKey("brreg_domain_web_search_llm_candidates"),
-]
 
 
 def _env_int(name: str, default: int) -> int:
@@ -165,17 +146,6 @@ def build_brreg_working_raw_record_rows(
     return [record.to_working_row() for record in records if record is not None]
 
 
-@asset(name="brreg_working_raw_records")
-def brreg_working_raw_records(context) -> dict[str, int]:
-    return materialize_brreg_working_raw_records(
-        context,
-        records=iter_brreg_bulk_records(),
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        batch_size=DEFAULT_RAW_RECORD_BATCH_SIZE,
-    )
-
-
 @asset(
     name="brreg_translation_results",
     config_schema=brreg_batch_run_config_schema(
@@ -214,276 +184,6 @@ def brreg_translation_results(context) -> dict[str, int]:
             or DEFAULT_LLM_MODEL
         ),
         prompt_version=os.environ.get("BRREG_TRANSLATION_PROMPT_VERSION") or DEFAULT_PROMPT_VERSION,
-    )
-
-
-@asset(
-    name="brreg_domain_results",
-    config_schema=brreg_batch_run_config_schema(
-        batch_size_default=_env_int("BRREG_DOMAIN_RESULT_BATCH_SIZE", DEFAULT_DOMAIN_RESULT_BATCH_SIZE),
-        max_batches_default=_env_int("BRREG_DOMAIN_RESULT_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-        max_parallel_tasks_default=_env_int(
-            "BRREG_DOMAIN_RESULT_MAX_PARALLEL_TASKS",
-            DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS,
-        ),
-    ),
-)
-def brreg_domain_results(context) -> dict[str, int]:
-    run_config = resolve_brreg_batch_run_config(
-        context,
-        batch_size_env="BRREG_DOMAIN_RESULT_BATCH_SIZE",
-        batch_size_default=DEFAULT_DOMAIN_RESULT_BATCH_SIZE,
-        max_batches_env="BRREG_DOMAIN_RESULT_MAX_BATCHES_PER_RUN",
-        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
-        max_parallel_tasks_env="BRREG_DOMAIN_RESULT_MAX_PARALLEL_TASKS",
-        max_parallel_tasks_default=DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS,
-    )
-    return materialize_brreg_domain_results(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        crawl_service_client=HttpCrawlServiceClient.from_env(),
-        batch_size=run_config.batch_size,
-        max_batches_per_run=run_config.max_batches_per_run,
-        max_parallel_tasks=run_config.max_parallel_tasks,
-    )
-
-
-@asset(
-    name="brreg_domain_website_field_candidates",
-    config_schema=brreg_batch_run_config_schema(
-        batch_size_default=_env_int("BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE", DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE),
-        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-        max_parallel_tasks_default=_env_int(
-            "BRREG_DOMAIN_WEBSITE_FIELD_MAX_PARALLEL_TASKS",
-            DEFAULT_DOMAIN_WEBSITE_FIELD_MAX_PARALLEL_TASKS,
-        ),
-    ),
-)
-def brreg_domain_website_field_candidates(context) -> dict[str, int]:
-    run_config = resolve_brreg_batch_run_config(
-        context,
-        batch_size_env="BRREG_DOMAIN_WEBSITE_FIELD_BATCH_SIZE",
-        batch_size_default=DEFAULT_DOMAIN_WEBSITE_FIELD_BATCH_SIZE,
-        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
-        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
-        max_parallel_tasks_env="BRREG_DOMAIN_WEBSITE_FIELD_MAX_PARALLEL_TASKS",
-        max_parallel_tasks_default=DEFAULT_DOMAIN_WEBSITE_FIELD_MAX_PARALLEL_TASKS,
-    )
-    return materialize_brreg_domain_signal_candidates(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        signal="website_field",
-        task_type="domain_website_field",
-        batch_size=run_config.batch_size,
-        max_batches_per_run=run_config.max_batches_per_run,
-        max_parallel_tasks=run_config.max_parallel_tasks,
-    )
-
-
-@asset(
-    name="brreg_domain_duckduckgo_search_results",
-    deps=[AssetKey("brreg_domain_website_field_candidates")],
-    config_schema=brreg_batch_run_config_schema(
-        batch_size_default=_env_int("BRREG_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE", DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE),
-        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-        max_parallel_tasks_default=_env_int(
-            "BRREG_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS",
-            DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS,
-        ),
-    ),
-)
-def brreg_domain_duckduckgo_search_results(context) -> dict[str, int]:
-    run_config = resolve_brreg_batch_run_config(
-        context,
-        batch_size_env="BRREG_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE",
-        batch_size_default=DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_BATCH_SIZE,
-        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
-        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
-        max_parallel_tasks_env="BRREG_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS",
-        max_parallel_tasks_default=DEFAULT_DOMAIN_DUCKDUCKGO_SEARCH_MAX_PARALLEL_TASKS,
-    )
-    return materialize_brreg_duckduckgo_search_results(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        batch_size=run_config.batch_size,
-        max_batches_per_run=run_config.max_batches_per_run,
-        max_parallel_tasks=run_config.max_parallel_tasks,
-    )
-
-
-@asset(
-    name="brreg_domain_duckduckgo_candidates",
-    config_schema=brreg_batch_run_config_schema(
-        batch_size_default=_env_int("BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE", DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE),
-        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-        max_parallel_tasks_default=_env_int(
-            "BRREG_DOMAIN_DUCKDUCKGO_MAX_PARALLEL_TASKS",
-            DEFAULT_DOMAIN_DUCKDUCKGO_MAX_PARALLEL_TASKS,
-        ),
-    ),
-)
-def brreg_domain_duckduckgo_candidates(context) -> dict[str, int]:
-    run_config = resolve_brreg_batch_run_config(
-        context,
-        batch_size_env="BRREG_DOMAIN_DUCKDUCKGO_BATCH_SIZE",
-        batch_size_default=DEFAULT_DOMAIN_DUCKDUCKGO_BATCH_SIZE,
-        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
-        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
-        max_parallel_tasks_env="BRREG_DOMAIN_DUCKDUCKGO_MAX_PARALLEL_TASKS",
-        max_parallel_tasks_default=DEFAULT_DOMAIN_DUCKDUCKGO_MAX_PARALLEL_TASKS,
-    )
-    return materialize_brreg_domain_signal_candidates(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        signal="duckduckgo",
-        task_type="domain_duckduckgo",
-        batch_size=run_config.batch_size,
-        max_batches_per_run=run_config.max_batches_per_run,
-        max_parallel_tasks=run_config.max_parallel_tasks,
-    )
-
-
-@asset(
-    name="brreg_domain_crtsh_candidates",
-    config_schema=brreg_batch_run_config_schema(
-        batch_size_default=_env_int("BRREG_DOMAIN_CRTSH_BATCH_SIZE", DEFAULT_DOMAIN_CRTSH_BATCH_SIZE),
-        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-        max_parallel_tasks_default=_env_int(
-            "BRREG_DOMAIN_CRTSH_MAX_PARALLEL_TASKS",
-            DEFAULT_DOMAIN_CRTSH_MAX_PARALLEL_TASKS,
-        ),
-    ),
-)
-def brreg_domain_crtsh_candidates(context) -> dict[str, int]:
-    run_config = resolve_brreg_batch_run_config(
-        context,
-        batch_size_env="BRREG_DOMAIN_CRTSH_BATCH_SIZE",
-        batch_size_default=DEFAULT_DOMAIN_CRTSH_BATCH_SIZE,
-        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
-        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
-        max_parallel_tasks_env="BRREG_DOMAIN_CRTSH_MAX_PARALLEL_TASKS",
-        max_parallel_tasks_default=DEFAULT_DOMAIN_CRTSH_MAX_PARALLEL_TASKS,
-    )
-    return materialize_brreg_domain_signal_candidates(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        signal="crtsh",
-        task_type="domain_crtsh",
-        batch_size=run_config.batch_size,
-        max_batches_per_run=run_config.max_batches_per_run,
-        max_parallel_tasks=run_config.max_parallel_tasks,
-    )
-
-
-@asset(
-    name="brreg_domain_wikidata_candidates",
-    config_schema=brreg_batch_run_config_schema(
-        batch_size_default=_env_int("BRREG_DOMAIN_WIKIDATA_BATCH_SIZE", DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE),
-        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-        max_parallel_tasks_default=_env_int(
-            "BRREG_DOMAIN_WIKIDATA_MAX_PARALLEL_TASKS",
-            DEFAULT_DOMAIN_WIKIDATA_MAX_PARALLEL_TASKS,
-        ),
-    ),
-)
-def brreg_domain_wikidata_candidates(context) -> dict[str, int]:
-    run_config = resolve_brreg_batch_run_config(
-        context,
-        batch_size_env="BRREG_DOMAIN_WIKIDATA_BATCH_SIZE",
-        batch_size_default=DEFAULT_DOMAIN_WIKIDATA_BATCH_SIZE,
-        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
-        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
-        max_parallel_tasks_env="BRREG_DOMAIN_WIKIDATA_MAX_PARALLEL_TASKS",
-        max_parallel_tasks_default=DEFAULT_DOMAIN_WIKIDATA_MAX_PARALLEL_TASKS,
-    )
-    return materialize_brreg_domain_signal_candidates(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        signal="wikidata",
-        task_type="domain_wikidata",
-        batch_size=run_config.batch_size,
-        max_batches_per_run=run_config.max_batches_per_run,
-        max_parallel_tasks=run_config.max_parallel_tasks,
-    )
-
-
-@asset(
-    name="brreg_domain_web_search_llm_candidates",
-    deps=[AssetKey("brreg_domain_duckduckgo_search_results")],
-    config_schema=brreg_batch_run_config_schema(
-        batch_size_default=_env_int("BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE", DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE),
-        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-        max_parallel_tasks_default=_env_int(
-            "BRREG_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS",
-            DEFAULT_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS,
-        ),
-    ),
-)
-def brreg_domain_web_search_llm_candidates(context) -> dict[str, int]:
-    run_config = resolve_brreg_batch_run_config(
-        context,
-        batch_size_env="BRREG_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE",
-        batch_size_default=DEFAULT_DOMAIN_WEB_SEARCH_LLM_BATCH_SIZE,
-        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
-        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
-        max_parallel_tasks_env="BRREG_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS",
-        max_parallel_tasks_default=DEFAULT_DOMAIN_WEB_SEARCH_LLM_MAX_PARALLEL_TASKS,
-    )
-    return materialize_brreg_web_search_llm_candidates(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        batch_size=run_config.batch_size,
-        max_batches_per_run=run_config.max_batches_per_run,
-        max_parallel_tasks=run_config.max_parallel_tasks,
-    )
-
-
-@asset(
-    name="brreg_domain_proposals",
-    deps=DOMAIN_SIGNAL_ASSET_KEYS,
-    config_schema=brreg_batch_run_config_schema(
-        batch_size_default=_env_int("BRREG_DOMAIN_PROPOSAL_BATCH_SIZE", DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE),
-        max_batches_default=_env_int("BRREG_DOMAIN_MAX_BATCHES_PER_RUN", DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN),
-        max_parallel_tasks_default=_env_int(
-            "BRREG_DOMAIN_PROPOSAL_MAX_PARALLEL_TASKS",
-            DEFAULT_DOMAIN_PROPOSAL_MAX_PARALLEL_TASKS,
-        ),
-    ),
-)
-def brreg_domain_proposals(context) -> dict[str, int]:
-    run_config = resolve_brreg_batch_run_config(
-        context,
-        batch_size_env="BRREG_DOMAIN_PROPOSAL_BATCH_SIZE",
-        batch_size_default=DEFAULT_DOMAIN_PROPOSAL_BATCH_SIZE,
-        max_batches_env="BRREG_DOMAIN_MAX_BATCHES_PER_RUN",
-        max_batches_default=DEFAULT_DOMAIN_MAX_BATCHES_PER_RUN,
-        max_parallel_tasks_env="BRREG_DOMAIN_PROPOSAL_MAX_PARALLEL_TASKS",
-        max_parallel_tasks_default=DEFAULT_DOMAIN_PROPOSAL_MAX_PARALLEL_TASKS,
-    )
-    return materialize_brreg_domain_proposals(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        batch_size=run_config.batch_size,
-        max_batches_per_run=run_config.max_batches_per_run,
-        max_parallel_tasks=run_config.max_parallel_tasks,
-    )
-
-
-@asset(name="brreg_enhanced_records", deps=[AssetKey("brreg_translation_results"), AssetKey("brreg_domain_results")])
-def brreg_enhanced_records(context) -> dict[str, int]:
-    return materialize_brreg_enhanced_records(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        batch_size=_env_int("BRREG_ENHANCED_RECORD_BATCH_SIZE", DEFAULT_ENHANCED_RECORD_BATCH_SIZE),
     )
 
 
@@ -528,16 +228,6 @@ def brreg_domain_enhanced_records(context) -> dict[str, int]:
         **{f"domain_{key}": value for key, value in domain_result.items()},
         **{f"enhanced_{key}": value for key, value in enhanced_result.items()},
     }
-
-
-@asset(name="brreg_publish_enhanced_records", deps=[AssetKey("brreg_enhanced_records")])
-def brreg_publish_enhanced_records(context) -> dict[str, int]:
-    return materialize_brreg_publish_enhanced_records(
-        context,
-        connection_factory=psycopg.connect,
-        database_url=_corpscout_database_url(),
-        batch_size=_env_int("BRREG_PUBLISH_ENHANCED_RECORD_BATCH_SIZE", DEFAULT_PUBLISH_ENHANCED_RECORD_BATCH_SIZE),
-    )
 
 
 def materialize_brreg_working_raw_records(

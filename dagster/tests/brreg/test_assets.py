@@ -4,17 +4,7 @@ import json
 
 from corpscout_dagster.brreg.assets import (
     build_brreg_working_raw_record_rows,
-    brreg_domain_crtsh_candidates,
-    brreg_domain_duckduckgo_candidates,
-    brreg_domain_duckduckgo_search_results,
     brreg_domain_enhanced_records,
-    brreg_domain_proposals,
-    brreg_domain_results,
-    brreg_domain_web_search_llm_candidates,
-    brreg_domain_website_field_candidates,
-    brreg_domain_wikidata_candidates,
-    brreg_enhanced_records,
-    brreg_publish_enhanced_records,
     brreg_translation_results,
     materialize_brreg_enhanced_records,
     materialize_brreg_publish_enhanced_records,
@@ -263,13 +253,8 @@ def test_definitions_expose_only_translation_and_domain_enhanced_jobs() -> None:
     assert "brreg_domain_web_search_llm_job" not in job_names
     assert "brreg_domain_dns_heuristic_job" not in job_names
     assert "brreg_domain_proposals_job" not in job_names
-    assert brreg_translation_results is not brreg_domain_website_field_candidates
-    assert brreg_domain_proposals is not brreg_domain_duckduckgo_search_results
-    assert brreg_domain_crtsh_candidates is not brreg_domain_wikidata_candidates
-    assert brreg_domain_web_search_llm_candidates is not brreg_domain_wikidata_candidates
     assert "brreg_enhanced_records_job" not in job_names
     assert "brreg_publish_enhanced_records_job" not in job_names
-    assert brreg_enhanced_records is not brreg_publish_enhanced_records
 
 
 def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
