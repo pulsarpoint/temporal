@@ -1,0 +1,23 @@
+{
+  "discovered_domain_count": 1,
+  "discovered_domains": [
+    {
+      "best_domain": "sandneselektriske.no",
+      "duration_ms": 35305,
+      "engine": "duckduckgo",
+      "index": 1,
+      "organization_name": "SANDNES ELEKTRISKE AS",
+      "organization_number": "810034882",
+      "record_id": "834755d3-f2fe-488d-be53-80164c36442a",
+      "status": "succeeded"
+    }
+  ],
+  "engine": "duckduckgo",
+  "error_counts": {},
+  "output_path": "test-runs/20260525-234535-brreg-100/docker-smoke-fixed/duckduckgo.jsonl",
+  "rows_failed": 0,
+  "rows_seen": 1,
+  "status_counts": {
+    "succeeded": 1
+  }
+}

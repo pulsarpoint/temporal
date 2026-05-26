@@ -1,0 +1,154 @@
+{
+  "discovered_domain_count": 2,
+  "discovered_domains": [
+    {
+      "best_domain": "sandneselektriske.no",
+      "duration_ms": 33647,
+      "engine": "yandex",
+      "index": 1,
+      "organization_name": "SANDNES ELEKTRISKE AS",
+      "organization_number": "810034882",
+      "record_id": "834755d3-f2fe-488d-be53-80164c36442a",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "autobjorn.no",
+      "duration_ms": 9733,
+      "engine": "yandex",
+      "index": 11,
+      "organization_name": "AUTOBJØRN A/S",
+      "organization_number": "810359862",
+      "record_id": "993f2710-b50c-4a27-8e43-6091310b3ab6",
+      "status": "succeeded",
+      "total": 20
+    }
+  ],
+  "engine": "yandex",
+  "error_counts": {},
+  "output_path": "test-runs/20260526-083100-brreg-20-deepseek-brreg-context/yandex.jsonl",
+  "primary_web_presence_count": 2,
+  "primary_web_presences": [
+    {
+      "engine": "yandex",
+      "index": 1,
+      "normalized_domain": "sandneselektriske.no",
+      "organization_name": "SANDNES ELEKTRISKE AS",
+      "organization_number": "810034882",
+      "owned_domain": true,
+      "record_id": "834755d3-f2fe-488d-be53-80164c36442a",
+      "relationship": "primary_web_presence",
+      "score": 95,
+      "site_type": "company_website",
+      "total": 20,
+      "url": "https://www.sandneselektriske.no/"
+    },
+    {
+      "engine": "yandex",
+      "index": 11,
+      "normalized_domain": "autobjorn.no",
+      "organization_name": "AUTOBJØRN A/S",
+      "organization_number": "810359862",
+      "owned_domain": true,
+      "record_id": "993f2710-b50c-4a27-8e43-6091310b3ab6",
+      "relationship": "primary_web_presence",
+      "score": 95,
+      "site_type": "company_website",
+      "total": 20,
+      "url": "https://www.autobjorn.no"
+    }
+  ],
+  "related_site_count": 6,
+  "related_sites": [
+    {
+      "engine": "yandex",
+      "index": 1,
+      "normalized_domain": "sandneselektriske.no",
+      "organization_name": "SANDNES ELEKTRISKE AS",
+      "organization_number": "810034882",
+      "owned_domain": true,
+      "record_id": "834755d3-f2fe-488d-be53-80164c36442a",
+      "relationship": "primary_web_presence",
+      "score": 95,
+      "site_type": "company_website",
+      "total": 20,
+      "url": "https://www.sandneselektriske.no/"
+    },
+    {
+      "engine": "yandex",
+      "index": 2,
+      "normalized_domain": "proff.no",
+      "organization_name": "AASEN & FARSTAD AS",
+      "organization_number": "810059672",
+      "owned_domain": false,
+      "record_id": "6dd08e8f-0926-4b21-8a3c-8903f426f07b",
+      "relationship": "evidence_profile",
+      "score": 95,
+      "site_type": "directory_profile",
+      "total": 20,
+      "url": "https://www.proff.no/selskap/aasen-farstad-as/eidsv%C3%A5g-i-romsdal/eiendomshandel-og-utleie/IDEAE1K10MV"
+    },
+    {
+      "engine": "yandex",
+      "index": 3,
+      "normalized_domain": "creditsafe.com",
+      "organization_name": "ALSTRAY AS",
+      "organization_number": "810094532",
+      "owned_domain": false,
+      "record_id": "087ee231-09f2-4a84-813c-3a8ec6a19684",
+      "relationship": "evidence_profile",
+      "score": 90,
+      "site_type": "directory_profile",
+      "total": 20,
+      "url": "https://creditsafe.com/business-index/en-lu/company/alstray-as-no00000008"
+    },
+    {
+      "engine": "yandex",
+      "index": 8,
+      "normalized_domain": "proff.no",
+      "organization_name": "BORTIGARD AS",
+      "organization_number": "810202572",
+      "owned_domain": false,
+      "record_id": "b56b8b89-2972-428a-b380-6cc80b5dc621",
+      "relationship": "evidence_profile",
+      "score": 95,
+      "site_type": "directory_profile",
+      "total": 20,
+      "url": "https://www.proff.no/selskap/bortigard-as/holmestrand/bygg-og-anleggsleverand%C3%B8rer/IDEDGB00CVG"
+    },
+    {
+      "engine": "yandex",
+      "index": 11,
+      "normalized_domain": "autobjorn.no",
+      "organization_name": "AUTOBJØRN A/S",
+      "organization_number": "810359862",
+      "owned_domain": true,
+      "record_id": "993f2710-b50c-4a27-8e43-6091310b3ab6",
+      "relationship": "primary_web_presence",
+      "score": 95,
+      "site_type": "company_website",
+      "total": 20,
+      "url": "https://www.autobjorn.no"
+    },
+    {
+      "engine": "yandex",
+      "index": 18,
+      "normalized_domain": "cybo.com",
+      "organization_name": "BECKMANN AS",
+      "organization_number": "810438452",
+      "owned_domain": false,
+      "record_id": "36622cb0-c9ce-406e-9989-d6ec79cfa366",
+      "relationship": "evidence_profile",
+      "score": 80,
+      "site_type": "directory_profile",
+      "total": 20,
+      "url": "https://www.cybo.com/NO-biz/beckmann-as_1d"
+    }
+  ],
+  "rows_failed": 0,
+  "rows_seen": 20,
+  "status_counts": {
+    "not_found": 14,
+    "succeeded": 6
+  }
+}

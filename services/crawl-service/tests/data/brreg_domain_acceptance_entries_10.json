@@ -1,0 +1,250 @@
+[
+  {
+    "request": {
+      "record_id": "acceptance-brreg-001",
+      "organization_number": "810202572",
+      "organization_name": "BORTIGARD AS",
+      "existing_website": "https://www.bortigard.no/",
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "810202572",
+        "navn": "BORTIGARD AS",
+        "hjemmeside": "https://www.bortigard.no/",
+        "forretningsadresse": {
+          "adresse": ["Løkkeveien 18"],
+          "postnummer": "3085",
+          "poststed": "HOLMESTRAND",
+          "kommune": "HOLMESTRAND",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Drive utleie av fast eiendom, maskiner og utstyr."]
+      }
+    },
+    "expected": {"status": "succeeded", "best_domain": "bortigard.no"}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-002",
+      "organization_number": "810034882",
+      "organization_name": "SANDNES ELEKTRISKE AS",
+      "existing_website": "https://www.sandneselektriske.no",
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "810034882",
+        "navn": "SANDNES ELEKTRISKE AS",
+        "hjemmeside": "https://www.sandneselektriske.no",
+        "forretningsadresse": {
+          "adresse": ["Strandgata 21"],
+          "postnummer": "4307",
+          "poststed": "SANDNES",
+          "kommune": "SANDNES",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Handel og installasjonsvirksomhet."]
+      }
+    },
+    "expected": {"status": "succeeded", "best_domain": "sandneselektriske.no"}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-003",
+      "organization_number": "810059672",
+      "organization_name": "AASEN & FARSTAD AS",
+      "existing_website": "www.aasenfarstad.no/kontakt",
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "810059672",
+        "navn": "AASEN & FARSTAD AS",
+        "hjemmeside": "www.aasenfarstad.no/kontakt",
+        "forretningsadresse": {
+          "adresse": ["Sjøgardsvegen 8"],
+          "postnummer": "6460",
+          "poststed": "EIDSVÅG I ROMSDAL",
+          "kommune": "MOLDE",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Utleie av forretningseiendommer."]
+      }
+    },
+    "expected": {"status": "succeeded", "best_domain": "aasenfarstad.no"}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-004",
+      "organization_number": "810094532",
+      "organization_name": "STOA HOLDING AS",
+      "existing_website": null,
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "810094532",
+        "navn": "STOA HOLDING AS",
+        "forretningsadresse": {
+          "adresse": ["Stoaveien 11"],
+          "postnummer": "4848",
+          "poststed": "ARENDAL",
+          "kommune": "ARENDAL",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Holdingselskap."]
+      }
+    },
+    "expected": {"status": "not_found", "best_domain": null}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-005",
+      "organization_number": "812345671",
+      "organization_name": "NORDIC FJORD TRANSPORT AS",
+      "existing_website": "https://nordicfjordtransport.no",
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "812345671",
+        "navn": "NORDIC FJORD TRANSPORT AS",
+        "hjemmeside": "https://nordicfjordtransport.no",
+        "forretningsadresse": {
+          "adresse": ["Havnevegen 4"],
+          "postnummer": "6006",
+          "poststed": "ÅLESUND",
+          "kommune": "ÅLESUND",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Godstransport på vei."]
+      }
+    },
+    "expected": {"status": "succeeded", "best_domain": "nordicfjordtransport.no"}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-006",
+      "organization_number": "812345672",
+      "organization_name": "OSLO TREPLEIE AS",
+      "existing_website": "https://oslotrepleie.no/kontakt",
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "812345672",
+        "navn": "OSLO TREPLEIE AS",
+        "hjemmeside": "https://oslotrepleie.no/kontakt",
+        "forretningsadresse": {
+          "adresse": ["Skogveien 12"],
+          "postnummer": "0576",
+          "poststed": "OSLO",
+          "kommune": "OSLO",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Trefelling og arboristtjenester."]
+      }
+    },
+    "expected": {"status": "succeeded", "best_domain": "oslotrepleie.no"}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-007",
+      "organization_number": "812345673",
+      "organization_name": "BERGEN VVS SERVICE AS",
+      "existing_website": "http://www.bergen-vvs.no",
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "812345673",
+        "navn": "BERGEN VVS SERVICE AS",
+        "hjemmeside": "http://www.bergen-vvs.no",
+        "forretningsadresse": {
+          "adresse": ["Møllendalsveien 8"],
+          "postnummer": "5009",
+          "poststed": "BERGEN",
+          "kommune": "BERGEN",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Rørleggertjenester og VVS-installasjon."]
+      }
+    },
+    "expected": {"status": "succeeded", "best_domain": "bergen-vvs.no"}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-008",
+      "organization_number": "812345674",
+      "organization_name": "TRONDHEIM KAFFE AS",
+      "existing_website": "https://www.trondheimkaffe.no",
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "812345674",
+        "navn": "TRONDHEIM KAFFE AS",
+        "hjemmeside": "https://www.trondheimkaffe.no",
+        "forretningsadresse": {
+          "adresse": ["Olav Tryggvasons gate 20"],
+          "postnummer": "7011",
+          "poststed": "TRONDHEIM",
+          "kommune": "TRONDHEIM",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Produksjon og salg av kaffe."]
+      }
+    },
+    "expected": {"status": "succeeded", "best_domain": "trondheimkaffe.no"}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-009",
+      "organization_number": "812345675",
+      "organization_name": "LILLEHAMMER BYGGFORNYELSE AS",
+      "existing_website": null,
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "812345675",
+        "navn": "LILLEHAMMER BYGGFORNYELSE AS",
+        "forretningsadresse": {
+          "adresse": ["Storgata 88"],
+          "postnummer": "2609",
+          "poststed": "LILLEHAMMER",
+          "kommune": "LILLEHAMMER",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Rehabilitering av boliger og næringsbygg."]
+      }
+    },
+    "expected": {"status": "not_found", "best_domain": null}
+  },
+  {
+    "request": {
+      "record_id": "acceptance-brreg-010",
+      "organization_number": "812345676",
+      "organization_name": "ALTA ARKITEKTKONTOR AS",
+      "existing_website": "altaarkitekt.no",
+      "country": "NO",
+      "llm": {"provider": "fake", "model": "fake-model"},
+      "raw_payload": {
+        "organisasjonsnummer": "812345676",
+        "navn": "ALTA ARKITEKTKONTOR AS",
+        "hjemmeside": "altaarkitekt.no",
+        "forretningsadresse": {
+          "adresse": ["Markedsgata 3"],
+          "postnummer": "9510",
+          "poststed": "ALTA",
+          "kommune": "ALTA",
+          "land": "Norge",
+          "landkode": "NO"
+        },
+        "aktivitet": ["Arkitekttjenester og prosjektering."]
+      }
+    },
+    "expected": {"status": "succeeded", "best_domain": "altaarkitekt.no"}
+  }
+]

@@ -1,0 +1,110 @@
+{
+  "base_url": "http://localhost:8096",
+  "engine_summaries": {
+    "duckduckgo": {
+      "discovered_domain_count": 1,
+      "discovered_domains": [
+        {
+          "best_domain": "fagmobler.no",
+          "duration_ms": 28276,
+          "engine": "duckduckgo",
+          "index": 7,
+          "organization_name": "FAGMØBLER HERMAN ANDERSEN AS",
+          "organization_number": "810182482",
+          "record_id": "37c4bdf6-39a9-4b81-833d-da96e57c7783",
+          "status": "succeeded",
+          "total": 20
+        }
+      ],
+      "engine": "duckduckgo",
+      "error_counts": {},
+      "output_path": "test-runs/20260526-011600-brreg-20-deepseek-direct-llm/duckduckgo.jsonl",
+      "primary_web_presence_count": 1,
+      "primary_web_presences": [
+        {
+          "engine": "duckduckgo",
+          "index": 7,
+          "normalized_domain": "fagmobler.no",
+          "organization_name": "FAGMØBLER HERMAN ANDERSEN AS",
+          "organization_number": "810182482",
+          "owned_domain": true,
+          "record_id": "37c4bdf6-39a9-4b81-833d-da96e57c7783",
+          "relationship": "primary_web_presence",
+          "score": 95,
+          "site_type": "company_website",
+          "total": 20,
+          "url": "https://fagmobler.no/"
+        }
+      ],
+      "related_site_count": 2,
+      "related_sites": [
+        {
+          "engine": "duckduckgo",
+          "index": 4,
+          "normalized_domain": "proff.no",
+          "organization_name": "ODD FELLOW HUSET BODØ AS",
+          "organization_number": "810098252",
+          "owned_domain": false,
+          "record_id": "5e3eaf49-df54-4755-87ed-b6096b9197df",
+          "relationship": "evidence_profile",
+          "score": 90,
+          "site_type": "directory_profile",
+          "total": 20,
+          "url": "https://www.proff.no/selskap/odd-fellow-huset-bodø-as/bodø/eiendomshandel-og-utleie/IDEB7T810MV"
+        },
+        {
+          "engine": "duckduckgo",
+          "index": 7,
+          "normalized_domain": "fagmobler.no",
+          "organization_name": "FAGMØBLER HERMAN ANDERSEN AS",
+          "organization_number": "810182482",
+          "owned_domain": true,
+          "record_id": "37c4bdf6-39a9-4b81-833d-da96e57c7783",
+          "relationship": "primary_web_presence",
+          "score": 95,
+          "site_type": "company_website",
+          "total": 20,
+          "url": "https://fagmobler.no/"
+        }
+      ],
+      "rows_failed": 0,
+      "rows_seen": 20,
+      "status_counts": {
+        "not_found": 18,
+        "succeeded": 2
+      }
+    },
+    "yandex": {
+      "discovered_domain_count": 0,
+      "discovered_domains": [],
+      "engine": "yandex",
+      "error_counts": {},
+      "output_path": "test-runs/20260526-011600-brreg-20-deepseek-direct-llm/yandex.jsonl",
+      "primary_web_presence_count": 0,
+      "primary_web_presences": [],
+      "related_site_count": 0,
+      "related_sites": [],
+      "rows_failed": 0,
+      "rows_seen": 20,
+      "status_counts": {
+        "not_found": 20
+      }
+    }
+  },
+  "engines": [
+    "duckduckgo",
+    "yandex"
+  ],
+  "finished_at_unix": 1779751358,
+  "input": "test-runs/20260525-234535-brreg-100/input_100.json",
+  "mode": "http",
+  "record_count": 20,
+  "settings": {
+    "domain_threshold": 70,
+    "max_search_candidates": 5,
+    "max_site_checks": 3,
+    "search_candidate_threshold": 50,
+    "timeout_seconds": 60
+  },
+  "started_at_unix": 1779750946
+}

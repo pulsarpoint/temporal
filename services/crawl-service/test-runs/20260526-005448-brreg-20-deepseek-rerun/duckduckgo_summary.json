@@ -1,0 +1,168 @@
+{
+  "discovered_domain_count": 14,
+  "discovered_domains": [
+    {
+      "best_domain": "sandneselektriske.no",
+      "duration_ms": 22930,
+      "engine": "duckduckgo",
+      "index": 1,
+      "organization_name": "SANDNES ELEKTRISKE AS",
+      "organization_number": "810034882",
+      "record_id": "834755d3-f2fe-488d-be53-80164c36442a",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "21st.ai",
+      "duration_ms": 69277,
+      "engine": "duckduckgo",
+      "index": 2,
+      "organization_name": "AASEN & FARSTAD AS",
+      "organization_number": "810059672",
+      "record_id": "6dd08e8f-0926-4b21-8a3c-8903f426f07b",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "firmadatabasen.no",
+      "duration_ms": 33296,
+      "engine": "duckduckgo",
+      "index": 5,
+      "organization_name": "SØRLANDSPORTEN EIENDOM AS",
+      "organization_number": "810105372",
+      "record_id": "032c478d-0570-465b-a223-8590d2d4aed6",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "facebook.com",
+      "duration_ms": 21609,
+      "engine": "duckduckgo",
+      "index": 6,
+      "organization_name": "ALSTRA AS",
+      "organization_number": "810130822",
+      "record_id": "121012ff-22e6-45a7-9065-0a0b7b3ed420",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "dnb.com",
+      "duration_ms": 16526,
+      "engine": "duckduckgo",
+      "index": 8,
+      "organization_name": "BORTIGARD AS",
+      "organization_number": "810202572",
+      "record_id": "b56b8b89-2972-428a-b380-6cc80b5dc621",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "largestcompanies.com",
+      "duration_ms": 24296,
+      "engine": "duckduckgo",
+      "index": 7,
+      "organization_name": "FAGMØBLER HERMAN ANDERSEN AS",
+      "organization_number": "810182482",
+      "record_id": "37c4bdf6-39a9-4b81-833d-da96e57c7783",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "servi.no",
+      "duration_ms": 5496,
+      "engine": "duckduckgo",
+      "index": 10,
+      "organization_name": "SERVI GROUP AS",
+      "organization_number": "810324562",
+      "record_id": "2f60a02a-9e80-43cb-aa6d-8641816f4e0b",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "autobjorn.no",
+      "duration_ms": 3586,
+      "engine": "duckduckgo",
+      "index": 11,
+      "organization_name": "AUTOBJØRN A/S",
+      "organization_number": "810359862",
+      "record_id": "993f2710-b50c-4a27-8e43-6091310b3ab6",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "dnb.com",
+      "duration_ms": 21383,
+      "engine": "duckduckgo",
+      "index": 9,
+      "organization_name": "ARNESEN EIENDOM AS",
+      "organization_number": "810274042",
+      "record_id": "c7b23380-1c8f-4a62-9740-7df645de1f1a",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "europages.co.uk",
+      "duration_ms": 22889,
+      "engine": "duckduckgo",
+      "index": 12,
+      "organization_name": "BJØRNSTJERNE BJØRNSONSGATE AS",
+      "organization_number": "810363142",
+      "record_id": "7c621bee-bde1-4077-8438-646d4680c99f",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "metallco.com",
+      "duration_ms": 24960,
+      "engine": "duckduckgo",
+      "index": 13,
+      "organization_name": "METALLCO AS",
+      "organization_number": "810392312",
+      "record_id": "adacf1b5-7390-4b0f-9ec3-c41f1702d84f",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "beckmann-norway.com",
+      "duration_ms": 19794,
+      "engine": "duckduckgo",
+      "index": 18,
+      "organization_name": "BECKMANN AS",
+      "organization_number": "810438452",
+      "record_id": "36622cb0-c9ce-406e-9989-d6ec79cfa366",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "creditsafe.com",
+      "duration_ms": 22470,
+      "engine": "duckduckgo",
+      "index": 19,
+      "organization_name": "FIDUCIA NORWAY AS",
+      "organization_number": "810441682",
+      "record_id": "6ee3c6e8-8910-4c29-994c-ea29020eb775",
+      "status": "succeeded",
+      "total": 20
+    },
+    {
+      "best_domain": "dnb.com",
+      "duration_ms": 24002,
+      "engine": "duckduckgo",
+      "index": 20,
+      "organization_name": "E BERENTSEN AS",
+      "organization_number": "810463902",
+      "record_id": "b7cb56c9-6410-4251-b79b-286c59544012",
+      "status": "succeeded",
+      "total": 20
+    }
+  ],
+  "engine": "duckduckgo",
+  "error_counts": {},
+  "output_path": "test-runs/20260526-005448-brreg-20-deepseek-rerun/duckduckgo.jsonl",
+  "rows_failed": 0,
+  "rows_seen": 20,
+  "status_counts": {
+    "not_found": 6,
+    "succeeded": 14
+  }
+}

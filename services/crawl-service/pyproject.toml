@@ -1,0 +1,29 @@
+[project]
+name = "corpscout-crawl-service"
+version = "0.1.0"
+description = "Crawl and web analysis service for Corpscout enrichment pipelines"
+readme = "README.md"
+authors = [
+    { name = "Goran Raovic", email = "goran.raovic@pulsarpoint.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "crawl4ai>=0.8.6",
+    "fastapi>=0.136.3",
+    "httpx>=0.28.1",
+    "json-repair>=0.59.10",
+    "uvicorn[standard]>=0.48.0",
+]
+
+[project.scripts]
+corpscout-crawl-service = "corpscout_crawl_service:main"
+
+[build-system]
+requires = ["uv_build>=0.11.7,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+]

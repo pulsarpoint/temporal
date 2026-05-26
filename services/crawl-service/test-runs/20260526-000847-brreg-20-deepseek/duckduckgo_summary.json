@@ -1,0 +1,12 @@
+{
+  "discovered_domain_count": 0,
+  "discovered_domains": [],
+  "engine": "duckduckgo",
+  "error_counts": {},
+  "output_path": "test-runs/20260526-000847-brreg-20-deepseek/duckduckgo.jsonl",
+  "rows_failed": 0,
+  "rows_seen": 20,
+  "status_counts": {
+    "not_found": 20
+  }
+}

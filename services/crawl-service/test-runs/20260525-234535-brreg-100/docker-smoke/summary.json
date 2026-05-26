@@ -1,0 +1,45 @@
+{
+  "base_url": "http://localhost:8096",
+  "engine_summaries": {
+    "duckduckgo": {
+      "discovered_domain_count": 0,
+      "discovered_domains": [],
+      "engine": "duckduckgo",
+      "error_counts": {},
+      "output_path": "test-runs/20260525-234535-brreg-100/docker-smoke/duckduckgo.jsonl",
+      "rows_failed": 0,
+      "rows_seen": 1,
+      "status_counts": {
+        "not_found": 1
+      }
+    },
+    "yandex": {
+      "discovered_domain_count": 0,
+      "discovered_domains": [],
+      "engine": "yandex",
+      "error_counts": {},
+      "output_path": "test-runs/20260525-234535-brreg-100/docker-smoke/yandex.jsonl",
+      "rows_failed": 0,
+      "rows_seen": 1,
+      "status_counts": {
+        "not_found": 1
+      }
+    }
+  },
+  "engines": [
+    "duckduckgo",
+    "yandex"
+  ],
+  "finished_at_unix": 1779745808,
+  "input": "test-runs/20260525-234535-brreg-100/input_100.json",
+  "mode": "http",
+  "record_count": 1,
+  "settings": {
+    "domain_threshold": 70,
+    "max_search_candidates": 5,
+    "max_site_checks": 3,
+    "search_candidate_threshold": 50,
+    "timeout_seconds": 60
+  },
+  "started_at_unix": 1779745757
+}

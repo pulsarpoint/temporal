@@ -1,0 +1,16 @@
+{
+  "discovered_domain_count": 0,
+  "discovered_domains": [],
+  "engine": "yandex",
+  "error_counts": {},
+  "output_path": "test-runs/20260526-011600-brreg-20-deepseek-direct-llm/yandex.jsonl",
+  "primary_web_presence_count": 0,
+  "primary_web_presences": [],
+  "related_site_count": 0,
+  "related_sites": [],
+  "rows_failed": 0,
+  "rows_seen": 20,
+  "status_counts": {
+    "not_found": 20
+  }
+}
