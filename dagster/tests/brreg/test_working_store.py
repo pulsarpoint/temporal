@@ -8,17 +8,12 @@ from corpscout_dagster.brreg.working_store import (
     CreateTaskAttempt,
     DomainProposalRow,
     EnhancedBuildRecord,
-    EnhancedPublishRecord,
     FinishEnrichmentRun,
     IncrementEnrichmentRunProgress,
-    InsertDomainCrawlResult,
     InsertDomainResult,
-    InsertDomainProposal,
-    InsertDomainCandidate,
-    InsertDomainSearchResult,
     InsertEnhancedRecord,
+    InsertFinancialResult,
     InsertTranslationResult,
-    DomainCandidateRow,
     RawTaskRecord,
     TaskAttempt,
     UpsertCachedTranslation,
@@ -303,239 +298,6 @@ def test_working_store_upserts_translation_cache_and_results() -> None:
     assert result_params["translated_payload"] == '{"terms":[]}'
 
 
-def test_working_store_inserts_domain_candidates_and_marks_attempts() -> None:
-    cursor = FakeCursor()
-    store = BrregWorkingStore(cursor)
-
-    store.insert_domain_candidates(
-        [
-            InsertDomainCandidate(
-                raw_record_id="00000000-0000-0000-0000-000000000002",
-                task_attempt_id="00000000-0000-0000-0000-000000000001",
-                domain="www.example.no",
-                normalized_domain="example.no",
-                signal="website_field",
-                confidence=95,
-                evidence={"website": "https://www.example.no"},
-                metadata={"source_field": "hjemmeside"},
-            )
-        ]
-    )
-    store.finish_task_attempt(
-        task_attempt_id="00000000-0000-0000-0000-000000000001",
-        status="succeeded",
-        error=None,
-    )
-
-    domain_sql, domain_params_seq = cursor.many_calls[0]
-    assert "INSERT INTO dagster_brreg.domain_candidates" in domain_sql
-    assert "ON CONFLICT (raw_record_id, normalized_domain, signal) DO UPDATE" in domain_sql
-    assert domain_params_seq[0]["normalized_domain"] == "example.no"
-
-    attempt_sql, attempt_params = cursor.calls[0]
-    assert "UPDATE dagster_brreg.task_attempts" in attempt_sql
-    assert "finished_at = now()" in attempt_sql
-    assert attempt_params["status"] == "succeeded"
-    state_sql, state_params = cursor.calls[1]
-    assert "UPDATE dagster_brreg.raw_record_task_states rts" in state_sql
-    assert "failed_retryable" in state_sql
-    assert "failed_terminal" in state_sql
-    assert state_params["status"] == "succeeded"
-
-
-def test_working_store_inserts_domain_search_results() -> None:
-    cursor = FakeCursor()
-    store = BrregWorkingStore(cursor)
-
-    store.insert_domain_search_results(
-        [
-            InsertDomainSearchResult(
-                raw_record_id="00000000-0000-0000-0000-000000000002",
-                task_attempt_id="00000000-0000-0000-0000-000000000001",
-                provider="duckduckgo",
-                query='"BORTIGARD AS" Norway official website',
-                rank=1,
-                url="https://www.bortigard.no/",
-                domain="www.bortigard.no",
-                normalized_domain="bortigard.no",
-                title="Bortigard AS",
-                description="Norwegian property company.",
-                metadata={"source": "first_page"},
-            )
-        ]
-    )
-
-    sql, params_seq = cursor.many_calls[-1]
-    assert "INSERT INTO dagster_brreg.domain_search_results" in sql
-    assert "ON CONFLICT (raw_record_id, provider, query, rank, url) DO UPDATE" in sql
-    assert params_seq[0]["provider"] == "duckduckgo"
-    assert params_seq[0]["normalized_domain"] == "bortigard.no"
-
-
-def test_working_store_inserts_domain_crawl_results() -> None:
-    cursor = FakeCursor()
-    store = BrregWorkingStore(cursor)
-
-    store.insert_domain_crawl_results(
-        [
-            InsertDomainCrawlResult(
-                raw_record_id="00000000-0000-0000-0000-000000000002",
-                search_result_id="00000000-0000-0000-0000-000000000003",
-                task_attempt_id="00000000-0000-0000-0000-000000000001",
-                url="https://www.bortigard.no/",
-                domain="www.bortigard.no",
-                normalized_domain="bortigard.no",
-                status="succeeded",
-                markdown="BORTIGARD AS",
-                markdown_hash="hash",
-                llm_confidence=84,
-                llm_decision="accepted",
-                llm_reason="Exact legal name matched.",
-                llm_evidence={"matched": ["BORTIGARD AS"]},
-                metadata={"prompt_version": "v1"},
-            )
-        ]
-    )
-
-    sql, params_seq = cursor.many_calls[-1]
-    assert "INSERT INTO dagster_brreg.domain_crawl_results" in sql
-    assert "ON CONFLICT (raw_record_id, url) DO UPDATE" in sql
-    assert params_seq[0]["llm_confidence"] == 84
-    assert params_seq[0]["llm_decision"] == "accepted"
-
-
-def test_working_store_fetches_pending_duckduckgo_search_records_after_website_check() -> None:
-    cursor = FakeCursor()
-    cursor.fetchone_values = []
-    cursor.fetchall_values = []
-    store = BrregWorkingStore(cursor)
-
-    rows = store.fetch_pending_duckduckgo_search_records(
-        limit=10,
-        max_parallel_tasks=2,
-        lease_seconds=1800,
-    )
-
-    assert rows == []
-    sql, params = cursor.calls[-1]
-    assert params["task_type"] == "domain_duckduckgo_search"
-    assert "wts.task_type = 'domain_website_field'" in sql
-    assert "dc.signal = 'website_field'" in sql
-    assert "NOT EXISTS" in sql
-    assert "lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval" in sql
-
-
-def test_working_store_fetches_pending_web_search_llm_records_after_search_results() -> None:
-    cursor = FakeCursor()
-    cursor.fetchone_values = []
-    cursor.fetchall_values = []
-    store = BrregWorkingStore(cursor)
-
-    rows = store.fetch_pending_web_search_llm_records(
-        limit=10,
-        max_parallel_tasks=1,
-        lease_seconds=1800,
-    )
-
-    assert rows == []
-    sql, params = cursor.calls[-1]
-    assert params["task_type"] == "domain_web_search_llm"
-    assert "dagster_brreg.domain_search_results dsr" in sql
-    assert "dc.signal = 'website_field'" in sql
-    assert "dc.signal = 'web_search_llm'" in sql
-    assert "lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval" in sql
-
-
-def test_working_store_fetches_domain_proposal_records_when_merge_missing_or_candidates_changed() -> None:
-    cursor = FakeCursor()
-    cursor.fetchone_values = []
-    cursor.fetchall_values = [
-        (
-            "00000000-0000-0000-0000-000000000002",
-            "810202572",
-            "BORTIGARD AS",
-            "https://bortigard.no",
-            {"organisasjonsnummer": "810202572"},
-        )
-    ]
-    store = BrregWorkingStore(cursor)
-
-    rows = store.fetch_pending_domain_proposal_records(
-        task_type="merge_domain_proposals",
-        limit=100,
-        max_parallel_tasks=10,
-        lease_seconds=900,
-    )
-
-    assert len(rows) == 1
-    sql, params = cursor.calls[0]
-    assert "FROM dagster_brreg.raw_records rr" in sql
-    assert "LEFT JOIN dagster_brreg.raw_record_task_states ts" in sql
-    assert "dc.updated_at > coalesce(ts.last_finished_at" in sql
-    assert "FOR UPDATE OF mts SKIP LOCKED" in sql
-    assert "UPDATE dagster_brreg.raw_record_task_states mts" in sql
-    assert "status = 'running'" in sql
-    assert "lease_until = now() + (%(lease_seconds)s::text || ' seconds')::interval" in sql
-    assert params == {
-        "task_type": "merge_domain_proposals",
-        "limit": 100,
-        "max_parallel_tasks": 10,
-        "lease_seconds": 900,
-    }
-
-
-def test_working_store_fetches_domain_candidates_and_upserts_proposals() -> None:
-    cursor = FakeCursor()
-    cursor.fetchall_values = [
-        ("example.no", "www.example.no", "website_field", 95, {"website": "https://www.example.no"}, {}),
-        ("example.no", "example.no", "wikidata", 85, {"url": "https://www.example.no"}, {}),
-    ]
-    store = BrregWorkingStore(cursor)
-
-    rows = store.fetch_domain_candidates_for_raw_record(raw_record_id="00000000-0000-0000-0000-000000000002")
-    store.upsert_domain_proposals(
-        [
-            InsertDomainProposal(
-                raw_record_id="00000000-0000-0000-0000-000000000002",
-                task_attempt_id="00000000-0000-0000-0000-000000000001",
-                domain="www.example.no",
-                normalized_domain="example.no",
-                score=100,
-                signals=["website_field", "wikidata"],
-                evidence={"signals": ["website_field", "wikidata"]},
-                metadata={"source": "dagster"},
-            )
-        ]
-    )
-
-    assert rows == [
-        DomainCandidateRow(
-            normalized_domain="example.no",
-            domain="www.example.no",
-            signal="website_field",
-            confidence=95,
-            evidence={"website": "https://www.example.no"},
-            metadata={},
-        ),
-        DomainCandidateRow(
-            normalized_domain="example.no",
-            domain="example.no",
-            signal="wikidata",
-            confidence=85,
-            evidence={"url": "https://www.example.no"},
-            metadata={},
-        ),
-    ]
-    fetch_sql, fetch_params = cursor.calls[0]
-    assert "FROM dagster_brreg.domain_candidates" in fetch_sql
-    assert fetch_params["raw_record_id"] == "00000000-0000-0000-0000-000000000002"
-
-    proposal_sql, proposal_params_seq = cursor.many_calls[0]
-    assert "INSERT INTO dagster_brreg.domain_proposals" in proposal_sql
-    assert "ON CONFLICT (raw_record_id, normalized_domain) DO UPDATE" in proposal_sql
-    assert proposal_params_seq[0]["score"] == 100
-
-
 def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
     cursor = FakeCursor()
     cursor.fetchone_values = []
@@ -563,7 +325,20 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
                     "metadata": {"source": "crawl-service"},
                 }
             ],
-            {"translate": "succeeded", "domain_results": "succeeded"},
+            "succeeded",
+            {"capital": {"original_amount": 81870.0, "original_currency": "NOK"}},
+            {"capital": {"amount_usd": 8868.64, "amount_usd_cents": 886864}},
+            {
+                "source": "ECB",
+                "rate_date": "2026-05-21",
+                "capital": {
+                    "source_currency": "NOK",
+                    "target_currency": "USD",
+                    "source_rate_per_eur": 10.7075,
+                    "target_rate_per_eur": 1.1599,
+                },
+            },
+            {"translate": "succeeded", "domain_results": "succeeded", "currency_conversion": "succeeded"},
         )
     ]
     store = BrregWorkingStore(cursor)
@@ -596,15 +371,30 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
                     metadata={"source": "crawl-service"},
                 )
             ],
-            task_statuses={"translate": "succeeded", "domain_results": "succeeded"},
+            currency_status="succeeded",
+            financial_payload={"capital": {"original_amount": 81870.0, "original_currency": "NOK"}},
+            usd_payload={"capital": {"amount_usd": 8868.64, "amount_usd_cents": 886864}},
+            fx_metadata={
+                "source": "ECB",
+                "rate_date": "2026-05-21",
+                "capital": {
+                    "source_currency": "NOK",
+                    "target_currency": "USD",
+                    "source_rate_per_eur": 10.7075,
+                    "target_rate_per_eur": 1.1599,
+                },
+            },
+            task_statuses={"translate": "succeeded", "domain_results": "succeeded", "currency_conversion": "succeeded"},
         )
     ]
     sql, params = cursor.calls[0]
     assert "FROM dagster_brreg.raw_records rr" in sql
     assert "dagster_brreg.translation_results" in sql
     assert "dagster_brreg.domain_results" in sql
+    assert "dagster_brreg.financial_results" in sql
     assert "domain_payload->'candidates'" in sql
     assert "dts.task_type = 'domain_results'" in sql
+    assert "fts.task_type = 'currency_conversion'" in sql
     assert "merge_domain_proposals" not in sql
     assert "dagster_brreg.enhanced_records" in sql
     assert params == {"limit": 50}
@@ -633,57 +423,6 @@ def test_working_store_upserts_enhanced_records_and_returns_id() -> None:
     assert params["enhanced_payload_hash"] == "enhanced-hash"
 
 
-def test_working_store_publishes_built_enhanced_records_to_corpscout_tables() -> None:
-    cursor = FakeCursor()
-    cursor.fetchone_values = [
-        ("00000000-0000-0000-0000-000000000101",),
-        ("00000000-0000-0000-0000-000000000201",),
-    ]
-    store = BrregWorkingStore(cursor)
-    record = EnhancedPublishRecord(
-        enhanced_record_id="00000000-0000-0000-0000-000000000010",
-        raw_record_id="00000000-0000-0000-0000-000000000002",
-        organization_number="810202572",
-        organization_name="BORTIGARD AS",
-        registration_status="active",
-        website=None,
-        country_iso2="NO",
-        raw_payload={"organisasjonsnummer": "810202572"},
-        payload_hash="raw-payload-hash",
-        schema_version="brreg.enhanced.v1",
-        enhanced_payload={"schema_version": "brreg.enhanced.v1", "enhancement": {"status": "partial"}},
-        enhanced_payload_hash="enhanced-hash",
-    )
-
-    raw_input_id = store.upsert_corpscout_raw_input(record=record, run_id="dagster-run-1")
-    enhanced_input_id = store.upsert_corpscout_enhanced_raw_input(
-        record=record,
-        raw_input_id=raw_input_id,
-        dagster_run_id="dagster-run-1",
-        dagster_asset_key="brreg_publish_enhanced_records",
-    )
-    store.mark_enhanced_record_published(
-        enhanced_record_id=record.enhanced_record_id,
-        corpscout_raw_input_id=raw_input_id,
-        corpscout_enhanced_raw_input_id=enhanced_input_id,
-    )
-
-    assert raw_input_id == "00000000-0000-0000-0000-000000000101"
-    assert enhanced_input_id == "00000000-0000-0000-0000-000000000201"
-    raw_sql, raw_params = cursor.calls[0]
-    assert "INSERT INTO brreg_company_raw_inputs" in raw_sql
-    assert "RETURNING id" in raw_sql
-    assert raw_params["payload_hash"] == "raw-payload-hash"
-    enhanced_sql, enhanced_params = cursor.calls[1]
-    assert "INSERT INTO brreg_enhanced_raw_inputs" in enhanced_sql
-    assert "ON CONFLICT (raw_input_id, payload_hash, enhancement_version, attempt)" in enhanced_sql
-    assert enhanced_params["status"] == "partial"
-    update_sql, update_params = cursor.calls[2]
-    assert "UPDATE dagster_brreg.enhanced_records" in update_sql
-    assert "status = 'published'" in update_sql
-    assert update_params["corpscout_enhanced_raw_input_id"] == enhanced_input_id
-
-
 def test_working_store_inserts_domain_result_artifact() -> None:
     cursor = FakeCursor()
     store = BrregWorkingStore(cursor)
@@ -704,3 +443,29 @@ def test_working_store_inserts_domain_result_artifact() -> None:
     assert "INSERT INTO dagster_brreg.domain_results" in sql
     assert params["best_domain"] == "bortigard.no"
     assert params["domain_payload"] == '{"best_domain":"bortigard.no","status":"succeeded"}'
+
+
+def test_working_store_inserts_currency_result_artifact() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.insert_financial_result(
+        InsertFinancialResult(
+            raw_record_id="00000000-0000-0000-0000-000000000002",
+            task_attempt_id="00000000-0000-0000-0000-000000000001",
+            status="succeeded",
+            original_currency="NOK",
+            financial_payload={"capital": {"original_amount": 81870.0, "original_currency": "NOK"}},
+            usd_payload={"capital": {"amount_usd": 8868.64, "amount_usd_cents": 886864}},
+            fx_metadata={"source": "ECB", "rate_date": "2026-05-21"},
+            source_uri=None,
+            error=None,
+            metadata={"source": "dagster"},
+        )
+    )
+
+    sql, params = cursor.calls[0]
+    assert "INSERT INTO dagster_brreg.financial_results" in sql
+    assert params["status"] == "succeeded"
+    assert params["original_currency"] == "NOK"
+    assert params["usd_payload"] == '{"capital":{"amount_usd":8868.64,"amount_usd_cents":886864}}'

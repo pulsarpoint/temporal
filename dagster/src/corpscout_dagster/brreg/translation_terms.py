@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -11,7 +9,6 @@ from typing import Any, Protocol
 import httpx
 
 
-DEFAULT_LLM_BASE_URL = "http://100.77.62.33:8888"
 DEFAULT_LLM_MODEL = "qwen3:6b"
 DEFAULT_PROMPT_VERSION = "v1"
 DEFAULT_TRANSLATION_SERVICE_URL = "http://translation-service:8095"
@@ -141,86 +138,6 @@ class HttpTranslationServiceTermTranslator:
             return response
 
 
-class DirectLLMTermTranslator:
-    def __init__(
-        self,
-        *,
-        base_url: str | None = None,
-        api_key: str | None = None,
-        timeout_seconds: float = 120,
-    ) -> None:
-        self._base_url = _openai_api_base(base_url or os.environ.get("LLM_BASE_URL") or DEFAULT_LLM_BASE_URL)
-        self._api_key = api_key or os.environ.get("LLM_API_KEY") or "local"
-        self._timeout_seconds = timeout_seconds
-
-    def translate_terms(
-        self,
-        *,
-        category: str,
-        items: list[TranslationItem],
-        source_lang: str,
-        target_lang: str,
-        model: str,
-        prompt_version: str,
-    ) -> dict[str, str]:
-        if not items:
-            return {}
-        translated_by_id = self._translate_once(
-            category=category,
-            items=items,
-            source_lang=source_lang,
-            target_lang=target_lang,
-            model=model,
-            prompt_version=prompt_version,
-        )
-
-        missing_items = [item for item in items if not translated_by_id.get(translation_item_id(item), "").strip()]
-        if missing_items and len(missing_items) < len(items):
-            translated_by_id.update(
-                self._translate_once(
-                    category=category,
-                    items=missing_items,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    model=model,
-                    prompt_version=prompt_version,
-                )
-            )
-        return translated_by_id
-
-    def _translate_once(
-        self,
-        *,
-        category: str,
-        items: list[TranslationItem],
-        source_lang: str,
-        target_lang: str,
-        model: str,
-        prompt_version: str,
-    ) -> dict[str, str]:
-        response = httpx.post(
-            f"{self._base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {self._api_key}"},
-            json={
-                "model": model,
-                "messages": build_translation_messages(
-                    category=category,
-                    items=items,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    prompt_version=prompt_version,
-                ),
-                "temperature": 0,
-                "max_tokens": translation_max_tokens(items),
-                "chat_template_kwargs": {"enable_thinking": False},
-            },
-            timeout=self._timeout_seconds,
-        )
-        response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
-        return parse_translation_response(str(content), {translation_item_id(item) for item in items})
-
-
 def extract_translation_items(raw_payload: dict[str, Any]) -> list[TranslationItem]:
     items: list[TranslationItem] = []
     for key, category in [
@@ -297,93 +214,9 @@ def build_translation_payload(
     }
 
 
-def build_translation_messages(
-    *,
-    category: str,
-    items: list[TranslationItem],
-    source_lang: str,
-    target_lang: str,
-    prompt_version: str,
-) -> list[dict[str, str]]:
-    item_payload = [
-        {"id": translation_item_id(item), "text": item.text, "category": item.category}
-        for item in items
-    ]
-    items_json = json.dumps(item_payload, ensure_ascii=False, separators=(",", ":"))
-    if any(item.category for item in items):
-        instruction = (
-            f"Translate {source_lang} business registry text to {target_lang}.\n"
-            "Use each item's category as context."
-        )
-    else:
-        instruction = f"Translate {source_lang} business registry {category} text to {target_lang}."
-    return [
-        {
-            "role": "user",
-            "content": (
-                "/no_think\n"
-                f"{instruction}\n"
-                'Return only JSON: {"translations":[{"id":"...","translation":"..."}]}\n'
-                "Preserve every input id exactly. Include one translation per input item.\n"
-                f"Items: {items_json}"
-            ),
-        }
-    ]
-
-
 def translation_item_id(item: TranslationItem) -> str:
     key = translation_cache_key(item)
     return f"{key.category}:{key.original_hash}"
-
-
-def translation_max_tokens(items: list[TranslationItem]) -> int:
-    return min(4096, max(512, len(items) * 96))
-
-
-def parse_translation_response(content: str, allowed_ids: set[str]) -> dict[str, str]:
-    parsed = _load_json_with_repairs(_clean_json_content(content))
-    if isinstance(parsed, dict):
-        values = parsed.get("translations") or parsed.get("items")
-        if isinstance(values, list):
-            return _translations_from_list(values, allowed_ids)
-        inner = parsed.get("translations_json")
-        if isinstance(inner, str):
-            try:
-                inner = json.loads(inner)
-            except json.JSONDecodeError:
-                pass
-        if isinstance(inner, list):
-            return _translations_from_list(inner, allowed_ids)
-        return {
-            key: str(value).strip()
-            for key, value in parsed.items()
-            if key in allowed_ids and str(value).strip()
-        }
-    if isinstance(parsed, list):
-        return _translations_from_list(parsed, allowed_ids)
-    return {}
-
-
-def _load_json_with_repairs(content: str) -> Any:
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        repaired = _repair_missing_translation_keys(content)
-        if repaired != content:
-            return json.loads(repaired)
-        try:
-            from json_repair import repair_json
-        except ImportError:
-            raise
-        return json.loads(repair_json(content))
-
-
-def _repair_missing_translation_keys(content: str) -> str:
-    return re.sub(
-        r'\{"id"\s*:\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\}',
-        r'{"id":"\1","translation":"\2"}',
-        content,
-    )
 
 
 def _append_text(items: list[TranslationItem], category: str, value: Any) -> None:
@@ -401,36 +234,6 @@ def _deduplicate_items(items: list[TranslationItem]) -> list[TranslationItem]:
         seen.add(key)
         unique.append(item)
     return unique
-
-
-def _translations_from_list(values: list[Any], allowed_ids: set[str]) -> dict[str, str]:
-    translated: dict[str, str] = {}
-    for value in values:
-        if not isinstance(value, dict):
-            continue
-        item_id = str(value.get("id") or "")
-        text = str(value.get("translation") or value.get("text") or "").strip()
-        if item_id in allowed_ids and text:
-            translated[item_id] = text
-    return translated
-
-
-def _clean_json_content(content: str) -> str:
-    cleaned = content.strip()
-    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json|JSON)?", "", cleaned).strip()
-        cleaned = re.sub(r"```$", "", cleaned).strip()
-    return cleaned
-
-
-def _openai_api_base(base_url: str) -> str:
-    trimmed = base_url.strip().rstrip("/")
-    if trimmed.endswith("/v1/chat/completions"):
-        trimmed = trimmed[: -len("/v1/chat/completions")]
-    if trimmed.endswith("/v1"):
-        trimmed = trimmed[: -len("/v1")]
-    return trimmed.rstrip("/") + "/v1"
 
 
 def _translation_service_error_message(payload: dict[str, Any]) -> str:

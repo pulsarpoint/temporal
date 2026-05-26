@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import httpx
 
-from corpscout_dagster.brreg.translation import (
+from corpscout_dagster.brreg.translation_terms import (
     CachedTermTranslation,
     HttpTranslationServiceTermTranslator,
     TranslationItem,
-    build_translation_messages,
     build_translation_payload,
     extract_translation_items,
-    parse_translation_response,
     translation_cache_key,
     translation_item_id,
 )
@@ -98,57 +96,6 @@ def test_build_translation_payload_uses_cached_terms() -> None:
             },
         ],
     }
-
-
-def test_build_translation_messages_uses_item_categories_for_mixed_batches() -> None:
-    activity = TranslationItem(category="activity", text="Eie aksjer")
-    capital = TranslationItem(category="capital_type", text="Aksjekapital")
-    messages = build_translation_messages(
-        category="mixed",
-        items=[activity, capital],
-        source_lang="no",
-        target_lang="en",
-        prompt_version="v1",
-    )
-
-    assert messages == [
-        {
-            "role": "user",
-            "content": (
-                "/no_think\n"
-                "Translate no business registry text to en.\n"
-                "Use each item's category as context.\n"
-                'Return only JSON: {"translations":[{"id":"...","translation":"..."}]}\n'
-                "Preserve every input id exactly. Include one translation per input item.\n"
-                f'Items: [{{"id":"{translation_item_id(activity)}","text":"Eie aksjer","category":"activity"}},'
-                f'{{"id":"{translation_item_id(capital)}","text":"Aksjekapital","category":"capital_type"}}]'
-            ),
-        }
-    ]
-    assert '"category":"activity"' in messages[0]["content"]
-    assert '"category":"capital_type"' in messages[0]["content"]
-
-
-def test_parse_translation_response_repairs_missing_translation_key() -> None:
-    content = (
-        '{"translations":[{"id":"t0","translation":"Providing accounting services."},'
-        '{"id":"t1","Information technology consulting services."}]}'
-    )
-
-    result = parse_translation_response(content, {"t0", "t1"})
-
-    assert result == {
-        "t0": "Providing accounting services.",
-        "t1": "Information technology consulting services.",
-    }
-
-
-def test_parse_translation_response_repairs_malformed_llm_json() -> None:
-    content = '{"translations":[{"id":"t0","translation":"Limited liability company",},]}'
-
-    result = parse_translation_response(content, {"t0"})
-
-    assert result == {"t0": "Limited liability company"}
 
 
 def test_http_translation_service_term_translator_calls_external_service() -> None:

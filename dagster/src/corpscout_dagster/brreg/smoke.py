@@ -6,8 +6,8 @@ from typing import Callable
 
 import psycopg
 
-from corpscout_dagster.brreg.assets import BRREG_BULK_URL
 from corpscout_dagster.brreg.models import BrregRawRecord, BrregWorkingRawRecordRow
+from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH
 from corpscout_dagster.brreg.working_store import (
     BrregWorkingStore,
     CreateBulkSnapshot,
@@ -17,6 +17,7 @@ from corpscout_dagster.brreg.working_store import (
 SMOKE_ORG_NUMBER = "999999991"
 SMOKE_RUN_ID = "dagster-smoke"
 SMOKE_NAME = "CORPSCOUT DAGSTER SMOKE AS"
+BRREG_BULK_URL = f"{BRREG_API_BASE_URL}{BRREG_BULK_PATH}"
 
 
 @dataclass(frozen=True)
