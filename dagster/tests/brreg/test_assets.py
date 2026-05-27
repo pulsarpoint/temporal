@@ -258,6 +258,7 @@ def test_definitions_expose_only_operational_brreg_jobs() -> None:
         "brreg_currency_job",
         "brreg_build_enhanced_job",
         "brreg_full_enrichment_job",
+        "brreg_live_table_checks_job",
         "brreg_retry_translation_invalid_llm_output_job",
         "brreg_retry_translation_transient_external_job",
         "brreg_retry_translation_rate_limited_job",
