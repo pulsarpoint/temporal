@@ -29,6 +29,12 @@ def retry_brreg_task_failures(
 ) -> dict:
     if limit <= 0:
         raise ValueError("limit must be positive")
+    context.log.info(
+        "BRREG retry task failures started task_type=%s error_category=%s limit=%s",
+        task_type or "any",
+        error_category,
+        limit,
+    )
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
             retried_rows = BrregWorkingStore(cursor).retry_task_failures(
@@ -44,6 +50,13 @@ def retry_brreg_task_failures(
         "task_type": task_type or "any",
     }
     context.add_output_metadata(result)
+    context.log.info(
+        "BRREG retry task failures completed task_type=%s error_category=%s limit=%s retried_rows=%s",
+        task_type or "any",
+        error_category,
+        limit,
+        retried_rows,
+    )
     return result
 
 

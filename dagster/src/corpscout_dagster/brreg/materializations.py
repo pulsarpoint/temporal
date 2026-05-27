@@ -136,6 +136,12 @@ def materialize_brreg_raw_records(
                 )
             )
         conn.commit()
+        context.log.info(
+            "BRREG raw ingest run started source_url=%s batch_size=%s limit=%s",
+            source_url,
+            batch_size,
+            limit,
+        )
 
         try:
             batch = []
@@ -147,6 +153,15 @@ def materialize_brreg_raw_records(
                 batch.append(record.to_working_row())
                 if len(batch) < batch_size:
                     continue
+                next_batch = batches_processed + 1
+                context.log.info(
+                    "BRREG raw ingest batch writing batch=%s records=%s source_rows_seen=%s total_rows_seen_before_batch=%s total_rows_written_before_batch=%s",
+                    next_batch,
+                    len(batch),
+                    source_rows_seen,
+                    rows_seen,
+                    rows_written,
+                )
                 result = _write_raw_record_batch(
                     conn=conn,
                     enrichment_run_id=enrichment_run_id,
@@ -159,9 +174,29 @@ def materialize_brreg_raw_records(
                 rows_existing_unchanged += result.rows_existing_unchanged
                 rows_new_versions += result.rows_new_versions
                 batches_processed += 1
+                context.log.info(
+                    "BRREG raw ingest batch committed batch=%s rows_seen=%s rows_written=%s rows_inserted_new=%s rows_existing_unchanged=%s rows_new_versions=%s total_rows_seen=%s total_rows_written=%s",
+                    batches_processed,
+                    result.rows_seen,
+                    result.rows_written,
+                    result.rows_inserted_new,
+                    result.rows_existing_unchanged,
+                    result.rows_new_versions,
+                    rows_seen,
+                    rows_written,
+                )
                 batch = []
 
             if batch:
+                next_batch = batches_processed + 1
+                context.log.info(
+                    "BRREG raw ingest batch writing batch=%s records=%s source_rows_seen=%s total_rows_seen_before_batch=%s total_rows_written_before_batch=%s",
+                    next_batch,
+                    len(batch),
+                    source_rows_seen,
+                    rows_seen,
+                    rows_written,
+                )
                 result = _write_raw_record_batch(
                     conn=conn,
                     enrichment_run_id=enrichment_run_id,
@@ -174,12 +209,33 @@ def materialize_brreg_raw_records(
                 rows_existing_unchanged += result.rows_existing_unchanged
                 rows_new_versions += result.rows_new_versions
                 batches_processed += 1
+                context.log.info(
+                    "BRREG raw ingest batch committed batch=%s rows_seen=%s rows_written=%s rows_inserted_new=%s rows_existing_unchanged=%s rows_new_versions=%s total_rows_seen=%s total_rows_written=%s",
+                    batches_processed,
+                    result.rows_seen,
+                    result.rows_written,
+                    result.rows_inserted_new,
+                    result.rows_existing_unchanged,
+                    result.rows_new_versions,
+                    rows_seen,
+                    rows_written,
+                )
 
             with conn.cursor() as cursor:
                 BrregWorkingStore(cursor).finish_enrichment_run(
                     FinishEnrichmentRun(enrichment_run_id=enrichment_run_id, status="succeeded", error=None)
                 )
             conn.commit()
+            context.log.info(
+                "BRREG raw ingest run committed rows_seen=%s rows_written=%s rows_inserted_new=%s rows_existing_unchanged=%s rows_new_versions=%s batches_processed=%s source_rows_seen=%s",
+                rows_seen,
+                rows_written,
+                rows_inserted_new,
+                rows_existing_unchanged,
+                rows_new_versions,
+                batches_processed,
+                source_rows_seen,
+            )
         except Exception as exc:
             conn.rollback()
             with conn.cursor() as cursor:
@@ -187,6 +243,13 @@ def materialize_brreg_raw_records(
                     FinishEnrichmentRun(enrichment_run_id=enrichment_run_id, status="failed", error=str(exc))
                 )
             conn.commit()
+            context.log.info(
+                "BRREG raw ingest run failed rows_seen=%s rows_written=%s batches_processed=%s error=%s",
+                rows_seen,
+                rows_written,
+                batches_processed,
+                _task_error_message(exc),
+            )
             raise
 
     result = {
@@ -251,6 +314,15 @@ def materialize_brreg_translation_results(
                 prompt_version=prompt_version,
             )
         conn.commit()
+        context.log.info(
+            "BRREG translation run started model=%s prompt_version=%s batch_size=%s max_batches_per_run=%s max_parallel_tasks=%s reconciled_translation_tasks=%s",
+            model,
+            prompt_version,
+            batch_size,
+            max_batches_per_run,
+            max_parallel_tasks,
+            reconciled_translation_tasks,
+        )
 
         try:
             while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
@@ -267,9 +339,24 @@ def materialize_brreg_translation_results(
 
                 if not records:
                     stopped_reason = "no_claimable_records"
+                    context.log.info(
+                        "BRREG translation run has no claimable records rows_seen=%s rows_completed=%s rows_failed=%s batches_processed=%s",
+                        rows_seen,
+                        rows_completed,
+                        rows_failed,
+                        batches_processed,
+                    )
                     break
 
                 batches_processed += 1
+                context.log.info(
+                    "BRREG translation batch claimed batch=%s records=%s total_rows_seen_before_batch=%s total_rows_completed_before_batch=%s total_rows_failed_before_batch=%s",
+                    batches_processed,
+                    len(records),
+                    rows_seen,
+                    rows_completed,
+                    rows_failed,
+                )
                 completed, failed = _translate_record_batch(
                     conn=conn,
                     enrichment_run_id=enrichment_run_id,
@@ -281,6 +368,16 @@ def materialize_brreg_translation_results(
                 rows_seen += len(records)
                 rows_completed += completed
                 rows_failed += failed
+                context.log.info(
+                    "BRREG translation batch completed batch=%s records=%s batch_completed=%s batch_failed=%s total_rows_seen=%s total_rows_completed=%s total_rows_failed=%s",
+                    batches_processed,
+                    len(records),
+                    completed,
+                    failed,
+                    rows_seen,
+                    rows_completed,
+                    rows_failed,
+                )
 
             context.log.info(
                 "BRREG translation batches committed rows_seen=%s rows_completed=%s rows_failed=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
@@ -507,6 +604,12 @@ def materialize_brreg_domain_results(
                 )
             )
         conn.commit()
+        context.log.info(
+            "BRREG domain result run started batch_size=%s max_batches_per_run=%s max_parallel_tasks=%s",
+            batch_size,
+            max_batches_per_run,
+            max_parallel_tasks,
+        )
 
         try:
             while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
@@ -521,11 +624,33 @@ def materialize_brreg_domain_results(
                 conn.commit()
                 if not records:
                     stopped_reason = "no_claimable_records"
+                    context.log.info(
+                        "BRREG domain result run has no claimable records rows_seen=%s rows_completed=%s rows_failed=%s batches_processed=%s",
+                        rows_seen,
+                        rows_completed,
+                        rows_failed,
+                        batches_processed,
+                    )
                     break
 
                 batches_processed += 1
                 rows_seen += len(records)
-                for record in records:
+                context.log.info(
+                    "BRREG domain result batch claimed batch=%s records=%s total_rows_seen=%s total_rows_completed_before_batch=%s total_rows_failed_before_batch=%s",
+                    batches_processed,
+                    len(records),
+                    rows_seen,
+                    rows_completed,
+                    rows_failed,
+                )
+                for index, record in enumerate(records, start=1):
+                    context.log.info(
+                        "BRREG domain result record started batch=%s batch_index=%s records_in_batch=%s organization_number=%s",
+                        batches_processed,
+                        index,
+                        len(records),
+                        record.organization_number,
+                    )
                     attempt = _create_task_attempt(
                         conn=conn,
                         enrichment_run_id=enrichment_run_id,
@@ -544,8 +669,19 @@ def materialize_brreg_domain_results(
                         domain_results_written += 1
                         if task_succeeded:
                             rows_completed += 1
+                            record_status = "succeeded"
                         else:
                             rows_failed += 1
+                            record_status = "failed"
+                        context.log.info(
+                            "BRREG domain result record completed batch=%s batch_index=%s organization_number=%s status=%s total_rows_completed=%s total_rows_failed=%s",
+                            batches_processed,
+                            index,
+                            record.organization_number,
+                            record_status,
+                            rows_completed,
+                            rows_failed,
+                        )
                     except Exception as exc:
                         conn.rollback()
                         _mark_domain_result_failed(
@@ -557,6 +693,24 @@ def materialize_brreg_domain_results(
                         )
                         rows_failed += 1
                         domain_results_written += 1
+                        context.log.info(
+                            "BRREG domain result record failed batch=%s batch_index=%s organization_number=%s total_rows_completed=%s total_rows_failed=%s error=%s",
+                            batches_processed,
+                            index,
+                            record.organization_number,
+                            rows_completed,
+                            rows_failed,
+                            _task_error_message(exc),
+                        )
+                context.log.info(
+                    "BRREG domain result batch completed batch=%s records=%s total_rows_seen=%s total_rows_completed=%s total_rows_failed=%s domain_results_written=%s",
+                    batches_processed,
+                    len(records),
+                    rows_seen,
+                    rows_completed,
+                    rows_failed,
+                    domain_results_written,
+                )
 
             context.log.info(
                 "BRREG domain result batches committed rows_seen=%s rows_completed=%s rows_failed=%s domain_results_written=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
@@ -671,6 +825,13 @@ def materialize_brreg_currency_results(
                 )
             )
         conn.commit()
+        context.log.info(
+            "BRREG currency run started batch_size=%s max_batches_per_run=%s max_parallel_tasks=%s fx_rate_date=%s",
+            batch_size,
+            max_batches_per_run,
+            max_parallel_tasks,
+            fx_rate_date or "",
+        )
 
         try:
             while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
@@ -685,10 +846,25 @@ def materialize_brreg_currency_results(
                 conn.commit()
                 if not records:
                     stopped_reason = "no_claimable_records"
+                    context.log.info(
+                        "BRREG currency run has no claimable records rows_seen=%s rows_completed=%s rows_failed=%s batches_processed=%s",
+                        rows_seen,
+                        rows_completed,
+                        rows_failed,
+                        batches_processed,
+                    )
                     break
 
                 batches_processed += 1
                 rows_seen += len(records)
+                context.log.info(
+                    "BRREG currency batch claimed batch=%s records=%s total_rows_seen=%s total_rows_completed_before_batch=%s total_rows_failed_before_batch=%s",
+                    batches_processed,
+                    len(records),
+                    rows_seen,
+                    rows_completed,
+                    rows_failed,
+                )
                 for record in records:
                     attempt = _create_task_attempt(
                         conn=conn,
@@ -720,6 +896,15 @@ def materialize_brreg_currency_results(
                         )
                         rows_failed += 1
                         currency_results_written += 1
+                context.log.info(
+                    "BRREG currency batch completed batch=%s records=%s total_rows_seen=%s total_rows_completed=%s total_rows_failed=%s currency_results_written=%s",
+                    batches_processed,
+                    len(records),
+                    rows_seen,
+                    rows_completed,
+                    rows_failed,
+                    currency_results_written,
+                )
 
             context.log.info(
                 "BRREG currency batches committed rows_seen=%s rows_completed=%s rows_failed=%s currency_results_written=%s batches_processed=%s max_batches_per_run=%s max_parallel_tasks=%s stopped_reason=%s",
@@ -823,10 +1008,18 @@ def materialize_brreg_enhanced_records(
                 )
             )
         conn.commit()
+        context.log.info(
+            "BRREG enhanced record run started batch_size=%s",
+            batch_size,
+        )
 
         try:
             with conn.cursor() as cursor:
                 records = BrregWorkingStore(cursor).fetch_pending_enhanced_build_records(limit=batch_size)
+            context.log.info(
+                "BRREG enhanced record batch claimed records=%s",
+                len(records),
+            )
 
             for build_record in records:
                 rows_seen += 1
@@ -857,6 +1050,13 @@ def materialize_brreg_enhanced_records(
                         error=exc,
                     )
                     rows_failed += 1
+            context.log.info(
+                "BRREG enhanced record batch completed rows_seen=%s rows_completed=%s rows_failed=%s enhanced_records_built=%s",
+                rows_seen,
+                rows_completed,
+                rows_failed,
+                enhanced_records_built,
+            )
 
             context.log.info(
                 "BRREG enhanced record batch committed rows_seen=%s rows_completed=%s rows_failed=%s enhanced_records_built=%s",

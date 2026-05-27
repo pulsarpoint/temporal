@@ -411,6 +411,10 @@ def test_materialize_brreg_raw_records_ingests_bulk_records_into_working_table()
     assert any("finished_at = now()" in sql for sql in sql_calls)
     assert sum("INSERT INTO dagster_brreg.raw_records" in sql for sql in sql_calls) == 2
     assert context.metadata[-1]["rows_written"] == 2
+    assert any("BRREG raw ingest run started" in message for message in context.log.messages)
+    assert any("BRREG raw ingest batch writing batch=1 records=1" in message for message in context.log.messages)
+    assert any("BRREG raw ingest batch committed batch=2" in message for message in context.log.messages)
+    assert any("BRREG raw ingest run committed" in message for message in context.log.messages)
 
 
 def test_materialize_brreg_translation_results_writes_task_cache_and_result() -> None:
@@ -611,6 +615,10 @@ def test_materialize_brreg_translation_results_drains_multiple_batches_until_emp
     assert "rows_claimed_this_run" not in metadata
     assert "rows_completed" not in metadata
     assert "translation_artifact_missing" not in metadata
+    assert any("BRREG translation run started" in message for message in context.log.messages)
+    assert any("BRREG translation batch claimed batch=1 records=2" in message for message in context.log.messages)
+    assert any("BRREG translation batch completed batch=2 records=1" in message for message in context.log.messages)
+    assert any("BRREG translation run has no claimable records" in message for message in context.log.messages)
     fetch_calls = [
         params
         for sql, params in connection.cursor_instance.calls
@@ -797,6 +805,14 @@ def test_materialize_brreg_domain_results_writes_single_service_artifact() -> No
     assert "live_domain_results_succeeded" in metadata
     assert "live_domain_failures_total" in metadata
     assert "rows_completed" not in metadata
+    assert any("BRREG domain result run started" in message for message in context.log.messages)
+    assert any("BRREG domain result batch claimed batch=1 records=1" in message for message in context.log.messages)
+    assert any(
+        "BRREG domain result record started batch=1 batch_index=1 records_in_batch=1 organization_number=810202572"
+        in message
+        for message in context.log.messages
+    )
+    assert any("BRREG domain result record completed batch=1 batch_index=1" in message for message in context.log.messages)
 
 
 def test_materialize_brreg_currency_results_writes_single_currency_artifact() -> None:
@@ -868,6 +884,9 @@ def test_materialize_brreg_currency_results_writes_single_currency_artifact() ->
     assert "live_currency_results_succeeded" in metadata
     assert "live_currency_failures_total" in metadata
     assert "rows_completed" not in metadata
+    assert any("BRREG currency run started" in message for message in context.log.messages)
+    assert any("BRREG currency batch claimed batch=1 records=1" in message for message in context.log.messages)
+    assert any("BRREG currency batch completed batch=1 records=1" in message for message in context.log.messages)
 
 
 def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() -> None:
@@ -964,4 +983,7 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
     assert metadata["run_enhanced_records_built"] == 1
     assert "live_enhanced_records_built" in metadata
     assert "live_enhanced_failures_total" in metadata
+    assert any("BRREG enhanced record run started" in message for message in context.log.messages)
+    assert any("BRREG enhanced record batch claimed records=1" in message for message in context.log.messages)
+    assert any("BRREG enhanced record batch completed rows_seen=1" in message for message in context.log.messages)
     assert "rows_completed" not in metadata
