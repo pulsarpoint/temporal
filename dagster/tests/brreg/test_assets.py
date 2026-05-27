@@ -575,6 +575,8 @@ def test_materialize_brreg_translation_results_drains_multiple_batches_until_emp
     assert "live_translate_task_pending" in metadata
     assert "live_translation_results_current_model_succeeded" in metadata
     assert "live_translation_artifacts_current_model_missing" in metadata
+    assert metadata["live_translate_failures_total"] == 0
+    assert metadata["live_translate_failures_invalid_llm_output"] == 0
     assert "rows_claimed_this_run" not in metadata
     assert "rows_completed" not in metadata
     assert "translation_artifact_missing" not in metadata
@@ -650,6 +652,14 @@ def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -
     assert all(isinstance(value, int) for value in result.values())
     assert sum("INSERT INTO dagster_brreg.task_attempts" in sql for sql in sql_calls) == 1
     assert any("INSERT INTO dagster_brreg.translation_results" in sql for sql in sql_calls)
+    failure_params = [
+        params
+        for sql, params in connection.cursor_instance.calls
+        if "UPDATE dagster_brreg.task_attempts" in sql
+    ][0]
+    assert failure_params["error_category"] == "invalid_llm_output"
+    assert failure_params["error_code"] == "missing_translation_terms"
+    assert failure_params["retry_strategy"] == "change_model_or_prompt"
 
 
 def test_materialize_brreg_domain_results_writes_single_service_artifact() -> None:

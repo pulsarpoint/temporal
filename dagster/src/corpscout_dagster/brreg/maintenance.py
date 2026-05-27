@@ -62,7 +62,10 @@ cancelled_attempts AS (
     SET
         status = 'cancelled',
         finished_at = now(),
-        error = %(reason)s
+        error = %(reason)s,
+        error_category = 'interrupted',
+        error_code = 'stale_enrichment_run',
+        retry_strategy = 'automatic'
     FROM stale_runs sr
     WHERE ta.enrichment_run_id = sr.id
       AND ta.status = 'running'
@@ -75,6 +78,9 @@ reset_states AS (
         last_finished_at = now(),
         next_retry_at = now(),
         last_error = %(reason)s,
+        error_category = 'interrupted',
+        error_code = 'stale_enrichment_run',
+        retry_strategy = 'automatic',
         updated_at = now()
     FROM cancelled_attempts ca
     WHERE rts.last_attempt_id = ca.id

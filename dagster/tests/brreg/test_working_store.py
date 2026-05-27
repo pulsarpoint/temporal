@@ -376,6 +376,56 @@ def test_working_store_creates_task_attempts_with_next_attempt_number() -> None:
     assert state_params["attempt_count"] == 1
 
 
+def test_working_store_finishes_failed_task_attempt_with_structured_failure_fields() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.finish_task_attempt(
+        task_attempt_id="00000000-0000-0000-0000-000000000001",
+        status="failed",
+        error="translation service response is missing translations",
+        error_category="invalid_llm_output",
+        error_code="missing_translations",
+        retry_strategy="change_model_or_prompt",
+    )
+
+    attempt_sql, attempt_params = cursor.calls[0]
+    assert "UPDATE dagster_brreg.task_attempts" in attempt_sql
+    assert "error_category = %(error_category)s" in attempt_sql
+    assert attempt_params["error_category"] == "invalid_llm_output"
+    assert attempt_params["error_code"] == "missing_translations"
+    assert attempt_params["retry_strategy"] == "change_model_or_prompt"
+
+    state_sql, state_params = cursor.calls[1]
+    assert "UPDATE dagster_brreg.raw_record_task_states" in state_sql
+    assert "error_category = %(error_category)s" in state_sql
+    assert state_params["error_category"] == "invalid_llm_output"
+    assert state_params["error_code"] == "missing_translations"
+    assert state_params["retry_strategy"] == "change_model_or_prompt"
+
+
+def test_working_store_fetches_task_failure_summary_by_category() -> None:
+    cursor = FakeCursor()
+    cursor.fetchall_values = [
+        ("invalid_llm_output", 12),
+        ("transient_external", 3),
+        (None, 2),
+    ]
+    store = BrregWorkingStore(cursor)
+
+    summary = store.fetch_task_failure_summary(task_type="translate")
+
+    assert summary == {
+        "invalid_llm_output": 12,
+        "transient_external": 3,
+        "unknown": 2,
+    }
+    sql, params = cursor.calls[0]
+    assert "error_category" in sql
+    assert "status IN ('failed_retryable', 'failed_terminal')" in sql
+    assert params == {"task_type": "translate"}
+
+
 def test_working_store_upserts_translation_cache_and_results() -> None:
     cursor = FakeCursor()
     store = BrregWorkingStore(cursor)

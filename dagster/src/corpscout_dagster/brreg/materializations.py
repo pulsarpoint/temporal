@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from datetime import date
 
 from corpscout_dagster.brreg.crawl_service import CrawlServiceClient
@@ -56,6 +57,24 @@ DEFAULT_TASK_LEASE_SECONDS = 1800
 DEFAULT_TRANSLATION_MAX_PARALLEL_TASKS = DEFAULT_TRANSLATION_RECORD_BATCH_SIZE
 DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS = 1
 DEFAULT_CURRENCY_RESULT_MAX_PARALLEL_TASKS = 100
+ERROR_CATEGORIES = (
+    "transient_external",
+    "rate_limited",
+    "invalid_llm_output",
+    "invalid_input",
+    "blocked_by_config",
+    "not_found",
+    "internal_error",
+    "interrupted",
+    "unknown",
+)
+
+
+@dataclass(frozen=True)
+class TaskFailureClassification:
+    error_category: str
+    error_code: str
+    retry_strategy: str
 
 
 def materialize_brreg_raw_records(
@@ -201,6 +220,7 @@ def materialize_brreg_translation_results(
     reconciled_translation_tasks = 0
     task_summary: dict[str, int] = {}
     artifact_summary: dict[str, int] = {}
+    failure_summary: dict[str, int] = {}
     enrichment_run_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
@@ -274,6 +294,7 @@ def materialize_brreg_translation_results(
                 )
                 task_summary = store.fetch_raw_task_state_summary(task_type="translate")
                 artifact_summary = store.fetch_translation_artifact_summary(model=model, prompt_version=prompt_version)
+                failure_summary = store.fetch_task_failure_summary(task_type="translate")
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -312,6 +333,7 @@ def materialize_brreg_translation_results(
             stopped_reason=stopped_reason,
             task_summary=task_summary,
             artifact_summary=artifact_summary,
+            failure_summary=failure_summary,
         )
     )
     return result
@@ -332,10 +354,15 @@ def _build_translation_asset_metadata(
     stopped_reason: str,
     task_summary: dict[str, int],
     artifact_summary: dict[str, int],
+    failure_summary: dict[str, int],
 ) -> dict[str, int | str]:
     live_translation_succeeded = artifact_summary.get("translation_result_succeeded", 0)
     live_translation_skipped = artifact_summary.get("translation_result_skipped", 0)
     live_translation_failed = artifact_summary.get("translation_result_failed", 0)
+    live_failure_metadata = {
+        f"live_translate_failures_{category}": failure_summary.get(category, 0)
+        for category in ERROR_CATEGORIES
+    }
     return {
         "run_dagster_run_id": run_id,
         "run_rows_claimed": rows_claimed,
@@ -373,6 +400,8 @@ def _build_translation_asset_metadata(
             "translation_artifact_missing",
             0,
         ),
+        "live_translate_failures_total": sum(failure_summary.values()),
+        **live_failure_metadata,
     }
 
 
@@ -925,6 +954,10 @@ def _write_translation_record_result(
         status = "skipped"
         metadata = {"reason": "no_translatable_terms"}
     else:
+        _raise_if_missing_translation_terms(
+            items=items,
+            cached_translations=cached_translations,
+        )
         payload = build_translation_payload(
             raw_payload=record.raw_payload,
             items=items,
@@ -956,6 +989,20 @@ def _write_translation_record_result(
     conn.commit()
 
 
+def _raise_if_missing_translation_terms(
+    *,
+    items: list[TranslationItem],
+    cached_translations: dict[TranslationCacheKey, CachedTermTranslation],
+) -> None:
+    missing_items = [
+        item
+        for item in items
+        if translation_cache_key(item) not in cached_translations
+    ]
+    if missing_items:
+        raise RuntimeError("translation service did not return translations for all requested terms")
+
+
 def _write_domain_result(
     *,
     conn,
@@ -985,7 +1032,15 @@ def _write_domain_result(
                 },
             )
         )
-        store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=error)
+        if task_status == "failed":
+            _finish_failed_task_attempt(
+                store=store,
+                attempt=attempt,
+                task_type="domain_results",
+                error=error or "domain service returned failed status",
+            )
+        else:
+            store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=error)
         store.increment_enrichment_run_progress(
             IncrementEnrichmentRunProgress(
                 enrichment_run_id=enrichment_run_id,
@@ -1031,7 +1086,12 @@ def _mark_domain_result_failed(
                 metadata={"source": "dagster"},
             )
         )
-        store.finish_task_attempt(task_attempt_id=attempt.id, status="failed", error=error)
+        _finish_failed_task_attempt(
+            store=store,
+            attempt=attempt,
+            task_type="domain_results",
+            error=error or "domain service returned failed status",
+        )
         store.increment_enrichment_run_progress(
             IncrementEnrichmentRunProgress(
                 enrichment_run_id=enrichment_run_id,
@@ -1132,6 +1192,59 @@ def _build_currency_result(
     )
 
 
+def classify_task_error(*, task_type: str, error: str | None) -> TaskFailureClassification:
+    text = str(error or "").strip()
+    normalized = text.lower()
+    if not normalized:
+        return TaskFailureClassification("unknown", "unknown_error", "automatic")
+    if "rate limit" in normalized or "rate_limited" in normalized or "429" in normalized:
+        return TaskFailureClassification("rate_limited", "rate_limited", "automatic")
+    if "missing translations" in normalized or "did not return translations" in normalized:
+        return TaskFailureClassification(
+            "invalid_llm_output",
+            "missing_translation_terms",
+            "change_model_or_prompt",
+        )
+    if "non-object response" in normalized or "invalid json" in normalized or "malformed" in normalized:
+        return TaskFailureClassification(
+            "invalid_llm_output",
+            "malformed_llm_response",
+            "change_model_or_prompt",
+        )
+    if "api key" in normalized or "unauthorized" in normalized or "401" in normalized or "403" in normalized:
+        return TaskFailureClassification("blocked_by_config", "auth_or_config_error", "manual_config")
+    if "timeout" in normalized or "timed out" in normalized or "temporarily unavailable" in normalized:
+        return TaskFailureClassification("transient_external", "external_timeout", "automatic")
+    if "connection refused" in normalized or "connection reset" in normalized or "502" in normalized or "503" in normalized:
+        return TaskFailureClassification("transient_external", "external_service_unavailable", "automatic")
+    if "not found" in normalized:
+        return TaskFailureClassification("not_found", "not_found", "not_retryable")
+    if "invalid input" in normalized or "missing required" in normalized:
+        return TaskFailureClassification("invalid_input", "invalid_input", "manual_input")
+    if task_type == "translate":
+        return TaskFailureClassification("unknown", "translation_failed", "automatic")
+    return TaskFailureClassification("unknown", "task_failed", "automatic")
+
+
+def _finish_failed_task_attempt(
+    *,
+    store: BrregWorkingStore,
+    attempt: TaskAttempt,
+    task_type: str,
+    error: str,
+) -> TaskFailureClassification:
+    classification = classify_task_error(task_type=task_type, error=error)
+    store.finish_task_attempt(
+        task_attempt_id=attempt.id,
+        status="failed",
+        error=error,
+        error_category=classification.error_category,
+        error_code=classification.error_code,
+        retry_strategy=classification.retry_strategy,
+    )
+    return classification
+
+
 def _mark_currency_result_failed(
     *,
     conn,
@@ -1156,7 +1269,12 @@ def _mark_currency_result_failed(
                 metadata={"source": "dagster"},
             )
         )
-        store.finish_task_attempt(task_attempt_id=attempt.id, status="failed", error=error)
+        _finish_failed_task_attempt(
+            store=store,
+            attempt=attempt,
+            task_type="currency_conversion",
+            error=error,
+        )
         store.increment_enrichment_run_progress(
             IncrementEnrichmentRunProgress(
                 enrichment_run_id=enrichment_run_id,
@@ -1301,7 +1419,12 @@ def _mark_record_task_failed(
 ) -> None:
     with conn.cursor() as cursor:
         store = BrregWorkingStore(cursor)
-        store.finish_task_attempt(task_attempt_id=attempt.id, status="failed", error=error)
+        classification = _finish_failed_task_attempt(
+            store=store,
+            attempt=attempt,
+            task_type=task_type,
+            error=error,
+        )
         if task_type == "translate":
             store.insert_translation_result(
                 InsertTranslationResult(
@@ -1312,7 +1435,11 @@ def _mark_record_task_failed(
                     model=None,
                     prompt_version=None,
                     error=error,
-                    metadata={},
+                    metadata={
+                        "error_category": classification.error_category,
+                        "error_code": classification.error_code,
+                        "retry_strategy": classification.retry_strategy,
+                    },
                 )
             )
         store.increment_enrichment_run_progress(

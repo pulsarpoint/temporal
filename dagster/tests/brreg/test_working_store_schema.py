@@ -64,6 +64,12 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "ON dagster_brreg.raw_records (last_seen_at, id)" in sql
     assert "idx_dagster_brreg_task_states_pending_retry_queue" in sql
     assert "idx_dagster_brreg_task_states_running_stale_queue" in sql
+    assert "error_category TEXT" in sql
+    assert "error_code TEXT" in sql
+    assert "retry_strategy TEXT" in sql
+    assert "chk_dagster_brreg_task_attempts_error_category" in sql
+    assert "chk_dagster_brreg_task_states_error_category" in sql
+    assert "idx_dagster_brreg_task_states_failure_retry" in sql
 
 
 def test_working_store_migration_has_independent_brreg_run_types() -> None:
@@ -101,6 +107,7 @@ def test_working_store_migration_creates_observability_views() -> None:
     for view_name in [
         "v_enrichment_run_summary",
         "v_task_state_summary",
+        "v_task_failure_summary",
         "v_failed_task_states",
         "v_raw_record_task_overview",
     ]:
@@ -110,6 +117,8 @@ def test_working_store_migration_creates_observability_views() -> None:
     assert "rts.task_type" in sql
     assert "best_domain" in sql
     assert "next_retry_at <= now()" in sql
+    assert "'error_category', rts.error_category" in sql
+    assert "'retry_strategy', rts.retry_strategy" in sql
 
 
 def test_working_store_migration_down_drops_schema() -> None:

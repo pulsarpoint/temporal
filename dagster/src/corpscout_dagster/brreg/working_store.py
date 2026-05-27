@@ -393,13 +393,25 @@ class BrregWorkingStore:
         )
         return attempt
 
-    def finish_task_attempt(self, *, task_attempt_id: str, status: str, error: str | None) -> None:
+    def finish_task_attempt(
+        self,
+        *,
+        task_attempt_id: str,
+        status: str,
+        error: str | None,
+        error_category: str | None = None,
+        error_code: str | None = None,
+        retry_strategy: str | None = None,
+    ) -> None:
         self._cursor.execute(
             FINISH_TASK_ATTEMPT_SQL,
             {
                 "task_attempt_id": task_attempt_id,
                 "status": status,
                 "error": error,
+                "error_category": error_category,
+                "error_code": error_code,
+                "retry_strategy": retry_strategy,
             },
         )
         self._cursor.execute(
@@ -408,8 +420,18 @@ class BrregWorkingStore:
                 "task_attempt_id": task_attempt_id,
                 "status": status,
                 "error": error,
+                "error_category": error_category,
+                "error_code": error_code,
+                "retry_strategy": retry_strategy,
             },
         )
+
+    def fetch_task_failure_summary(self, *, task_type: str) -> dict[str, int]:
+        self._cursor.execute(FETCH_TASK_FAILURE_SUMMARY_SQL, {"task_type": task_type})
+        return {
+            str(row[0] or "unknown"): int(row[1] or 0)
+            for row in self._cursor.fetchall()
+        }
 
     def fetch_cached_translations(
         self,
@@ -901,6 +923,19 @@ FROM raw_counts
 CROSS JOIN task_counts
 """
 
+FETCH_TASK_FAILURE_SUMMARY_SQL = """
+SELECT
+    coalesce(rts.error_category, 'unknown') AS error_category,
+    count(*)::int AS failure_count
+FROM dagster_brreg.raw_record_task_states rts
+JOIN dagster_brreg.raw_records rr ON rr.id = rts.raw_record_id
+WHERE rts.task_type = %(task_type)s
+  AND rr.is_current = true
+  AND rts.status IN ('failed_retryable', 'failed_terminal')
+GROUP BY coalesce(rts.error_category, 'unknown')
+ORDER BY error_category
+"""
+
 FETCH_TRANSLATION_ARTIFACT_SUMMARY_SQL = """
 -- fetch_translation_artifact_summary
 WITH current_raw AS (
@@ -1109,6 +1144,9 @@ INSERT INTO dagster_brreg.raw_record_task_states (
     next_retry_at,
     lease_until,
     last_error,
+    error_category,
+    error_code,
+    retry_strategy,
     result_summary
 ) VALUES (
     %(raw_record_id)s,
@@ -1117,6 +1155,9 @@ INSERT INTO dagster_brreg.raw_record_task_states (
     %(attempt_count)s,
     %(last_attempt_id)s,
     now(),
+    NULL,
+    NULL,
+    NULL,
     NULL,
     NULL,
     NULL,
@@ -1133,6 +1174,9 @@ SET
     next_retry_at = NULL,
     lease_until = dagster_brreg.raw_record_task_states.lease_until,
     last_error = NULL,
+    error_category = NULL,
+    error_code = NULL,
+    retry_strategy = NULL,
     updated_at = now()
 """
 
@@ -1141,7 +1185,10 @@ UPDATE dagster_brreg.task_attempts
 SET
     status = %(status)s,
     finished_at = now(),
-    error = %(error)s
+    error = %(error)s,
+    error_category = %(error_category)s,
+    error_code = %(error_code)s,
+    retry_strategy = %(retry_strategy)s
 WHERE id = %(task_attempt_id)s
 """
 
@@ -1168,6 +1215,9 @@ SET
         ELSE now() + interval '1 day'
     END,
     last_error = %(error)s,
+    error_category = %(error_category)s,
+    error_code = %(error_code)s,
+    retry_strategy = %(retry_strategy)s,
     updated_at = now()
 FROM dagster_brreg.task_attempts ta
 WHERE ta.id = %(task_attempt_id)s

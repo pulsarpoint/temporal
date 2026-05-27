@@ -88,6 +88,8 @@ def test_cleanup_stale_brreg_runs_cancels_attempts_and_resets_task_state() -> No
     assert "UPDATE dagster_brreg.raw_record_task_states rts" in sql
     assert "status = 'failed_retryable'" in sql
     assert "next_retry_at = now()" in sql
+    assert "error_category = 'interrupted'" in sql
+    assert "error_code = 'stale_enrichment_run'" in sql
     assert "UPDATE dagster_brreg.enrichment_runs er" in sql
     assert "coalesce(er.metadata->>'dagster_run_id', er.dagster_run_id) = ANY(%(dagster_run_ids)s::text[])" in sql
     assert params["older_than_minutes"] == 45
