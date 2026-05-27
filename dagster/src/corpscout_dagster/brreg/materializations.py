@@ -44,6 +44,7 @@ from corpscout_dagster.brreg.working_store import (
 
 
 DEFAULT_RAW_RECORD_BATCH_SIZE = 5000
+DEFAULT_RAW_RECORD_LIMIT = 1000
 DEFAULT_TRANSLATION_RECORD_BATCH_SIZE = 50
 DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN = 0
 DEFAULT_DOMAIN_RESULT_BATCH_SIZE = 10
@@ -64,11 +65,17 @@ def materialize_brreg_raw_records(
     database_url: str,
     bulk_client: BrregBulkRecordClient,
     batch_size: int = DEFAULT_RAW_RECORD_BATCH_SIZE,
+    limit: int = DEFAULT_RAW_RECORD_LIMIT,
 ) -> dict[str, int]:
     if batch_size <= 0:
         raise ValueError("batch_size must be positive")
+    if limit < 0:
+        raise ValueError("limit must be zero or positive")
     rows_seen = 0
     rows_written = 0
+    rows_inserted_new = 0
+    rows_existing_unchanged = 0
+    rows_new_versions = 0
     batches_processed = 0
     source_url = f"{BRREG_API_BASE_URL}{BRREG_BULK_PATH}"
     with connection_factory(database_url) as conn:
@@ -78,7 +85,12 @@ def materialize_brreg_raw_records(
                 CreateEnrichmentRun(
                     dagster_run_id=_enrichment_run_key(context, "bulk_ingest"),
                     run_type="bulk_ingest",
-                    metadata={"source": "brreg", "dagster_run_id": context.run_id},
+                    metadata={
+                        "source": "brreg",
+                        "dagster_run_id": context.run_id,
+                        "source_mode": "bulk",
+                        "limit": limit or None,
+                    },
                 )
             )
             bulk_snapshot_id = store.create_bulk_snapshot(
@@ -88,14 +100,23 @@ def materialize_brreg_raw_records(
                     content_length_bytes=None,
                     compressed_payload_hash=None,
                     storage_uri=None,
-                    metadata={"format": "gzip-json", "source": "brreg"},
+                    metadata={
+                        "format": "gzip-json",
+                        "source": "brreg",
+                        "source_mode": "bulk",
+                        "limit": limit or None,
+                    },
                 )
             )
         conn.commit()
 
         try:
             batch = []
+            source_rows_seen = 0
             for record in iter_brreg_bulk_records(client=bulk_client):
+                if limit and source_rows_seen >= limit:
+                    break
+                source_rows_seen += 1
                 batch.append(record.to_working_row())
                 if len(batch) < batch_size:
                     continue
@@ -107,6 +128,9 @@ def materialize_brreg_raw_records(
                 )
                 rows_seen += result.rows_seen
                 rows_written += result.rows_written
+                rows_inserted_new += result.rows_inserted_new
+                rows_existing_unchanged += result.rows_existing_unchanged
+                rows_new_versions += result.rows_new_versions
                 batches_processed += 1
                 batch = []
 
@@ -119,6 +143,9 @@ def materialize_brreg_raw_records(
                 )
                 rows_seen += result.rows_seen
                 rows_written += result.rows_written
+                rows_inserted_new += result.rows_inserted_new
+                rows_existing_unchanged += result.rows_existing_unchanged
+                rows_new_versions += result.rows_new_versions
                 batches_processed += 1
 
             with conn.cursor() as cursor:
@@ -138,7 +165,11 @@ def materialize_brreg_raw_records(
     result = {
         "rows_seen": rows_seen,
         "rows_written": rows_written,
+        "rows_inserted_new": rows_inserted_new,
+        "rows_existing_unchanged": rows_existing_unchanged,
+        "rows_new_versions": rows_new_versions,
         "batches_processed": batches_processed,
+        "source_limit": limit,
     }
     context.add_output_metadata({**result, "dagster_run_id": context.run_id, "source_url": source_url})
     return result
@@ -267,17 +298,82 @@ def materialize_brreg_translation_results(
         "reconciled_translation_tasks": reconciled_translation_tasks,
     }
     context.add_output_metadata(
-        {
-            **result,
-            **task_summary,
-            **artifact_summary,
-            "dagster_run_id": context.run_id,
-            "max_batches_per_run": max_batches_per_run,
-            "max_parallel_tasks": max_parallel_tasks,
-            "stopped_reason": stopped_reason,
-        }
+        _build_translation_asset_metadata(
+            run_id=context.run_id,
+            model=model,
+            prompt_version=prompt_version,
+            rows_claimed=rows_seen,
+            rows_succeeded=rows_completed,
+            rows_failed=rows_failed,
+            batches_processed=batches_processed,
+            reconciled_translation_tasks=reconciled_translation_tasks,
+            max_batches_per_run=max_batches_per_run,
+            max_parallel_tasks=max_parallel_tasks,
+            stopped_reason=stopped_reason,
+            task_summary=task_summary,
+            artifact_summary=artifact_summary,
+        )
     )
     return result
+
+
+def _build_translation_asset_metadata(
+    *,
+    run_id: str,
+    model: str,
+    prompt_version: str,
+    rows_claimed: int,
+    rows_succeeded: int,
+    rows_failed: int,
+    batches_processed: int,
+    reconciled_translation_tasks: int,
+    max_batches_per_run: int,
+    max_parallel_tasks: int,
+    stopped_reason: str,
+    task_summary: dict[str, int],
+    artifact_summary: dict[str, int],
+) -> dict[str, int | str]:
+    live_translation_succeeded = artifact_summary.get("translation_result_succeeded", 0)
+    live_translation_skipped = artifact_summary.get("translation_result_skipped", 0)
+    live_translation_failed = artifact_summary.get("translation_result_failed", 0)
+    return {
+        "run_dagster_run_id": run_id,
+        "run_rows_claimed": rows_claimed,
+        "run_rows_succeeded": rows_succeeded,
+        "run_rows_failed": rows_failed,
+        "run_batches_processed": batches_processed,
+        "run_reconciled_translation_tasks": reconciled_translation_tasks,
+        "run_max_batches_per_run": max_batches_per_run,
+        "run_max_parallel_tasks": max_parallel_tasks,
+        "run_stopped_reason": stopped_reason,
+        "live_translation_model": model,
+        "live_translation_prompt_version": prompt_version,
+        "live_raw_records_total": task_summary.get("raw_records_total", 0),
+        "live_raw_records_current": task_summary.get("raw_records_current", 0),
+        "live_raw_records_not_current": task_summary.get("raw_records_not_current", 0),
+        "live_translate_task_no_state": task_summary.get("task_no_state", 0),
+        "live_translate_task_pending": task_summary.get("task_pending", 0),
+        "live_translate_task_running": task_summary.get("task_running", 0),
+        "live_translate_task_running_active": task_summary.get("task_running_active", 0),
+        "live_translate_task_running_stale": task_summary.get("task_running_stale", 0),
+        "live_translate_task_failed_retryable": task_summary.get("task_failed_retryable", 0),
+        "live_translate_task_failed_terminal": task_summary.get("task_failed_terminal", 0),
+        "live_translate_task_succeeded": task_summary.get("task_succeeded", 0),
+        "live_translate_task_skipped": task_summary.get("task_skipped", 0),
+        "live_translate_task_cancelled": task_summary.get("task_cancelled", 0),
+        "live_translate_task_eligible_now": task_summary.get("task_eligible_now", 0),
+        "live_translation_results_current_model_total": (
+            live_translation_succeeded + live_translation_skipped + live_translation_failed
+        ),
+        "live_translation_results_current_model_succeeded": live_translation_succeeded,
+        "live_translation_results_current_model_skipped": live_translation_skipped,
+        "live_translation_results_current_model_failed": live_translation_failed,
+        "live_translation_results_current_model_missing": artifact_summary.get("translation_result_missing", 0),
+        "live_translation_artifacts_current_model_missing": artifact_summary.get(
+            "translation_artifact_missing",
+            0,
+        ),
+    }
 
 
 def materialize_brreg_domain_results(

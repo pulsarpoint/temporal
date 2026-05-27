@@ -255,8 +255,10 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
 def test_brreg_raw_asset_exposes_batch_size_control() -> None:
     fields = brreg_raw_records.node_def.config_schema.config_type.fields
 
-    assert set(fields) == {"batch_size"}
+    assert set(fields) == {"batch_size", "limit"}
     assert fields["batch_size"].default_provided
+    assert fields["limit"].default_provided
+    assert fields["limit"].default_value_as_json_str == "1000"
 
 
 def test_brreg_assets_use_dagster_resources_for_external_dependencies() -> None:
@@ -346,6 +348,8 @@ def test_materialize_brreg_raw_records_ingests_bulk_records_into_working_table()
     connection.cursor_instance.fetchone_values = [
         ("00000000-0000-0000-0000-000000000001",),
         ("00000000-0000-0000-0000-000000000002",),
+        (1, 1, 0, 0),
+        (1, 1, 0, 0),
     ]
     first = BrregRawRecord.from_payload({"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"})
     second = BrregRawRecord.from_payload({"organisasjonsnummer": "910202572", "navn": "NEXT AS"})
@@ -356,22 +360,25 @@ def test_materialize_brreg_raw_records_ingests_bulk_records_into_working_table()
         context,
         connection_factory=lambda _: connection,
         database_url="postgresql://example.invalid/corpscout",
-        bulk_client=FakeBulkClient([first, None, second]),
+        bulk_client=FakeBulkClient([first, None, second, first]),
         batch_size=1,
+        limit=2,
     )
 
     assert result["rows_seen"] == 2
     assert result["rows_written"] == 2
     assert result["batches_processed"] == 2
+    assert result["source_limit"] == 2
+    assert result["rows_inserted_new"] == 2
+    assert result["rows_existing_unchanged"] == 0
+    assert result["rows_new_versions"] == 0
     assert all(isinstance(value, int) for value in result.values())
     sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
     assert any("run_type" in sql and "INSERT INTO dagster_brreg.enrichment_runs" in sql for sql in sql_calls)
     assert any("INSERT INTO dagster_brreg.bulk_snapshots" in sql for sql in sql_calls)
     assert any("records_seen = records_seen + %(records_seen)s" in sql for sql in sql_calls)
     assert any("finished_at = now()" in sql for sql in sql_calls)
-    many_sql_calls = [sql for sql, _ in connection.cursor_instance.many_calls]
-    assert sum("UPDATE dagster_brreg.raw_records" in sql for sql in many_sql_calls) == 2
-    assert sum("INSERT INTO dagster_brreg.raw_records" in sql for sql in many_sql_calls) == 2
+    assert sum("INSERT INTO dagster_brreg.raw_records" in sql for sql in sql_calls) == 2
     assert context.metadata[-1]["rows_written"] == 2
 
 
@@ -418,7 +425,7 @@ def test_materialize_brreg_translation_results_writes_task_cache_and_result() ->
     assert any("run_type" in sql and "INSERT INTO dagster_brreg.enrichment_runs" in sql for sql in sql_calls)
     assert any("INSERT INTO dagster_brreg.translation_results" in sql for sql in sql_calls)
     assert any("INSERT INTO dagster_brreg.translation_cache" in sql for sql in many_sql_calls)
-    assert context.metadata[-1]["rows_completed"] == 1
+    assert context.metadata[-1]["run_rows_succeeded"] == 1
 
 
 def test_materialize_brreg_translation_results_translates_unique_batch_misses_in_one_mixed_call() -> None:
@@ -557,9 +564,20 @@ def test_materialize_brreg_translation_results_drains_multiple_batches_until_emp
     assert result["rows_completed"] == 3
     assert result["rows_failed"] == 0
     assert result["batches_processed"] == 2
-    assert context.metadata[-1]["stopped_reason"] == "no_claimable_records"
-    assert context.metadata[-1]["rows_claimed_this_run"] == 3
-    assert "translation_artifact_missing" in context.metadata[-1]
+    metadata = context.metadata[-1]
+    assert metadata["run_stopped_reason"] == "no_claimable_records"
+    assert metadata["run_rows_claimed"] == 3
+    assert metadata["run_rows_succeeded"] == 3
+    assert metadata["run_rows_failed"] == 0
+    assert metadata["live_translation_model"] == "qwen3:6b"
+    assert metadata["live_translation_prompt_version"] == "v1"
+    assert "live_raw_records_total" in metadata
+    assert "live_translate_task_pending" in metadata
+    assert "live_translation_results_current_model_succeeded" in metadata
+    assert "live_translation_artifacts_current_model_missing" in metadata
+    assert "rows_claimed_this_run" not in metadata
+    assert "rows_completed" not in metadata
+    assert "translation_artifact_missing" not in metadata
     fetch_calls = [
         params
         for sql, params in connection.cursor_instance.calls

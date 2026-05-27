@@ -43,6 +43,9 @@ class CreateBulkSnapshot:
 class UpsertResult:
     rows_seen: int
     rows_written: int
+    rows_inserted_new: int = 0
+    rows_existing_unchanged: int = 0
+    rows_new_versions: int = 0
 
 
 @dataclass(frozen=True)
@@ -222,10 +225,27 @@ class BrregWorkingStore:
             }
             for row in rows
         ]
-        if params_seq:
-            self._cursor.executemany(SUPERSEDE_CURRENT_RAW_RECORD_SQL, params_seq)
-            self._cursor.executemany(UPSERT_RAW_RECORD_SQL, params_seq)
-        return UpsertResult(rows_seen=len(rows), rows_written=len(rows))
+        rows_written = 0
+        rows_inserted_new = 0
+        rows_existing_unchanged = 0
+        rows_new_versions = 0
+        for params in params_seq:
+            self._cursor.execute(UPSERT_RAW_RECORD_SQL, params)
+            row = self._cursor.fetchone()
+            if row is None:
+                rows_written += 1
+                continue
+            rows_written += int(row[0] or 0)
+            rows_inserted_new += int(row[1] or 0)
+            rows_existing_unchanged += int(row[2] or 0)
+            rows_new_versions += int(row[3] or 0)
+        return UpsertResult(
+            rows_seen=len(rows),
+            rows_written=rows_written,
+            rows_inserted_new=rows_inserted_new,
+            rows_existing_unchanged=rows_existing_unchanged,
+            rows_new_versions=rows_new_versions,
+        )
 
     def increment_enrichment_run_progress(self, command: IncrementEnrichmentRunProgress) -> None:
         self._cursor.execute(
@@ -651,53 +671,82 @@ INSERT INTO dagster_brreg.bulk_snapshots (
 RETURNING id
 """
 
-SUPERSEDE_CURRENT_RAW_RECORD_SQL = """
-UPDATE dagster_brreg.raw_records
-SET
-    is_current = false,
-    last_seen_at = now()
-WHERE organization_number = %(organization_number)s
-  AND payload_hash <> %(payload_hash)s
-  AND is_current = true
-"""
-
 UPSERT_RAW_RECORD_SQL = """
-INSERT INTO dagster_brreg.raw_records (
-    bulk_snapshot_id,
-    source_native_id,
-    organization_number,
-    organization_name,
-    registration_status,
-    website,
-    country_iso2,
-    raw_payload,
-    payload_hash,
-    is_current,
-    metadata
-) VALUES (
-    %(bulk_snapshot_id)s,
-    %(source_native_id)s,
-    %(organization_number)s,
-    %(organization_name)s,
-    %(registration_status)s,
-    %(website)s,
-    %(country_iso2)s,
-    %(raw_payload)s::jsonb,
-    %(payload_hash)s,
-    true,
-    %(metadata)s::jsonb
+WITH existing_current AS (
+    SELECT payload_hash
+    FROM dagster_brreg.raw_records
+    WHERE organization_number = %(organization_number)s
+      AND is_current = true
+),
+superseded_current AS (
+    UPDATE dagster_brreg.raw_records
+    SET
+        is_current = false,
+        last_seen_at = now()
+    WHERE organization_number = %(organization_number)s
+      AND payload_hash <> %(payload_hash)s
+      AND is_current = true
+    RETURNING id
+),
+supersede_done AS (
+    SELECT count(*) AS rows_superseded
+    FROM superseded_current
+),
+upserted AS (
+    INSERT INTO dagster_brreg.raw_records (
+        bulk_snapshot_id,
+        source_native_id,
+        organization_number,
+        organization_name,
+        registration_status,
+        website,
+        country_iso2,
+        raw_payload,
+        payload_hash,
+        is_current,
+        metadata
+    )
+    SELECT
+        %(bulk_snapshot_id)s,
+        %(source_native_id)s,
+        %(organization_number)s,
+        %(organization_name)s,
+        %(registration_status)s,
+        %(website)s,
+        %(country_iso2)s,
+        %(raw_payload)s::jsonb,
+        %(payload_hash)s,
+        true,
+        %(metadata)s::jsonb
+    FROM supersede_done
+    ON CONFLICT (organization_number, payload_hash) DO UPDATE
+    SET
+        bulk_snapshot_id = EXCLUDED.bulk_snapshot_id,
+        organization_name = EXCLUDED.organization_name,
+        registration_status = EXCLUDED.registration_status,
+        website = EXCLUDED.website,
+        country_iso2 = EXCLUDED.country_iso2,
+        raw_payload = EXCLUDED.raw_payload,
+        is_current = true,
+        last_seen_at = now(),
+        metadata = EXCLUDED.metadata
+    RETURNING 1
 )
-ON CONFLICT (organization_number, payload_hash) DO UPDATE
-SET
-    bulk_snapshot_id = EXCLUDED.bulk_snapshot_id,
-    organization_name = EXCLUDED.organization_name,
-    registration_status = EXCLUDED.registration_status,
-    website = EXCLUDED.website,
-    country_iso2 = EXCLUDED.country_iso2,
-    raw_payload = EXCLUDED.raw_payload,
-    is_current = true,
-    last_seen_at = now(),
-    metadata = EXCLUDED.metadata
+SELECT
+    (SELECT count(*)::int FROM upserted) AS rows_written,
+    CASE WHEN NOT EXISTS (SELECT 1 FROM existing_current) THEN 1 ELSE 0 END AS rows_inserted_new,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM existing_current WHERE payload_hash = %(payload_hash)s
+        ) THEN 1
+        ELSE 0
+    END AS rows_existing_unchanged,
+    CASE
+        WHEN EXISTS (
+            SELECT 1 FROM existing_current WHERE payload_hash <> %(payload_hash)s
+        ) THEN 1
+        ELSE 0
+    END AS rows_new_versions
 """
 
 INCREMENT_ENRICHMENT_RUN_PROGRESS_SQL = """

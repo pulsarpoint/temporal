@@ -82,6 +82,7 @@ def test_working_store_creates_enrichment_run_and_snapshot() -> None:
 
 def test_working_store_upserts_raw_records_as_current_working_rows() -> None:
     cursor = FakeCursor()
+    cursor.fetchone_values = [(1, 0, 0, 0)]
     store = BrregWorkingStore(cursor)
     record = BrregRawRecord.from_payload(
         {
@@ -97,19 +98,20 @@ def test_working_store_upserts_raw_records_as_current_working_rows() -> None:
         bulk_snapshot_id="00000000-0000-0000-0000-000000000002",
     )
 
-    assert result == UpsertResult(rows_seen=1, rows_written=1)
-    assert len(cursor.many_calls) == 2
-    supersede_sql, supersede_params_seq = cursor.many_calls[0]
-    assert "UPDATE dagster_brreg.raw_records" in supersede_sql
-    assert "is_current = false" in supersede_sql
-    supersede_params = supersede_params_seq[0]
-    assert supersede_params["organization_number"] == "810202572"
-
-    upsert_sql, upsert_params_seq = cursor.many_calls[1]
+    assert result == UpsertResult(
+        rows_seen=1,
+        rows_written=1,
+        rows_inserted_new=0,
+        rows_existing_unchanged=0,
+        rows_new_versions=0,
+    )
+    assert len(cursor.calls) == 1
+    upsert_sql, upsert_params = cursor.calls[0]
+    assert "existing_current AS" in upsert_sql
+    assert "superseded_current AS" in upsert_sql
     assert "INSERT INTO dagster_brreg.raw_records" in upsert_sql
     assert "ON CONFLICT (organization_number, payload_hash) DO UPDATE" in upsert_sql
     assert "is_current = true" in upsert_sql
-    upsert_params = upsert_params_seq[0]
     assert upsert_params["bulk_snapshot_id"] == "00000000-0000-0000-0000-000000000002"
     assert upsert_params["raw_payload"] == (
         '{"hjemmeside":"https://bortigard.no","navn":"BORTIGARD AS",'
@@ -123,9 +125,44 @@ def test_working_store_ignores_empty_raw_record_batches() -> None:
 
     result = store.upsert_raw_records([], bulk_snapshot_id="00000000-0000-0000-0000-000000000002")
 
-    assert result == UpsertResult(rows_seen=0, rows_written=0)
+    assert result == UpsertResult(
+        rows_seen=0,
+        rows_written=0,
+        rows_inserted_new=0,
+        rows_existing_unchanged=0,
+        rows_new_versions=0,
+    )
     assert cursor.calls == []
     assert cursor.many_calls == []
+
+
+def test_working_store_summarizes_raw_upsert_row_outcomes() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = [
+        (1, 1, 0, 0),
+        (1, 0, 1, 0),
+        (1, 0, 0, 1),
+    ]
+    store = BrregWorkingStore(cursor)
+    rows = [
+        BrregRawRecord.from_payload({"organisasjonsnummer": "810202572", "navn": "NEW AS"}),
+        BrregRawRecord.from_payload({"organisasjonsnummer": "910202572", "navn": "UNCHANGED AS"}),
+        BrregRawRecord.from_payload({"organisasjonsnummer": "710202572", "navn": "CHANGED AS"}),
+    ]
+    assert all(row is not None for row in rows)
+
+    result = store.upsert_raw_records(
+        [row.to_working_row() for row in rows if row is not None],
+        bulk_snapshot_id="00000000-0000-0000-0000-000000000002",
+    )
+
+    assert result == UpsertResult(
+        rows_seen=3,
+        rows_written=3,
+        rows_inserted_new=1,
+        rows_existing_unchanged=1,
+        rows_new_versions=1,
+    )
 
 
 def test_working_store_updates_enrichment_run_progress_and_completion() -> None:

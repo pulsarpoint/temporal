@@ -10,6 +10,7 @@ class FakeCursor:
         self.fetchone_values = [
             ("00000000-0000-0000-0000-000000000001",),
             ("00000000-0000-0000-0000-000000000002",),
+            (1, 1, 0, 0),
             ("CORPSCOUT DAGSTER SMOKE AS",),
         ]
 
@@ -67,10 +68,10 @@ def test_run_smoke_upserts_verifies_and_rolls_back() -> None:
     assert result.organization_number == SMOKE_ORG_NUMBER
     assert result.rolled_back is True
     assert connection.rolled_back is True
-    assert len(connection.cursor_instance.calls) == 3
-    assert len(connection.cursor_instance.many_calls) == 2
+    assert len(connection.cursor_instance.calls) == 4
+    assert connection.cursor_instance.many_calls == []
     assert "INSERT INTO dagster_brreg.enrichment_runs" in connection.cursor_instance.calls[0][0]
     assert "INSERT INTO dagster_brreg.bulk_snapshots" in connection.cursor_instance.calls[1][0]
-    assert "UPDATE dagster_brreg.raw_records" in connection.cursor_instance.many_calls[0][0]
-    assert "INSERT INTO dagster_brreg.raw_records" in connection.cursor_instance.many_calls[1][0]
-    assert "SELECT organization_name" in connection.cursor_instance.calls[2][0]
+    assert "superseded_current AS" in connection.cursor_instance.calls[2][0]
+    assert "INSERT INTO dagster_brreg.raw_records" in connection.cursor_instance.calls[2][0]
+    assert "SELECT organization_name" in connection.cursor_instance.calls[3][0]

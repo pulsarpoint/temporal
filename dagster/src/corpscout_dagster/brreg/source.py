@@ -5,7 +5,6 @@ import io
 from collections.abc import Iterable, Iterator
 from typing import Protocol
 
-import dlt
 import httpx
 import ijson
 
@@ -64,12 +63,6 @@ def iter_brreg_bulk_records(
     for record in (client or BrregBulkClient()).iter_records():
         if record is not None:
             yield record
-
-
-@dlt.resource(name="brreg_raw_records", write_disposition="append")
-def brreg_raw_records() -> Iterator[dict]:
-    for record in iter_brreg_bulk_records():
-        yield record.payload
 
 
 class _BytesIteratorReader(io.RawIOBase):
