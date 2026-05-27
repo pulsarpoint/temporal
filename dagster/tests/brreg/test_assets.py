@@ -738,6 +738,14 @@ def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -
     assert all(isinstance(value, int) for value in result.values())
     assert sum("INSERT INTO dagster_brreg.task_attempts" in sql for sql in sql_calls) == 1
     assert any("INSERT INTO dagster_brreg.translation_results" in sql for sql in sql_calls)
+    failure_result_params = [
+        params
+        for sql, params in connection.cursor_instance.calls
+        if "INSERT INTO dagster_brreg.translation_results" in sql
+    ][0]
+    assert failure_result_params["model"] == "qwen3:6b"
+    assert failure_result_params["prompt_version"] == "v1"
+    assert failure_result_params["status"] == "failed"
     failure_params = [
         params
         for sql, params in connection.cursor_instance.calls
@@ -746,6 +754,12 @@ def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -
     assert failure_params["error_category"] == "invalid_llm_output"
     assert failure_params["error_code"] == "missing_translation_terms"
     assert failure_params["retry_strategy"] == "change_model_or_prompt"
+    assert any(
+        "BRREG translation batch failure reason batch=1 error_category=invalid_llm_output "
+        "error_code=missing_translation_terms retry_strategy=change_model_or_prompt count=1"
+        in message
+        for message in context.log.messages
+    )
 
 
 def test_materialize_brreg_domain_results_writes_single_service_artifact() -> None:

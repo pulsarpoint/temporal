@@ -77,6 +77,17 @@ class TaskFailureClassification:
     retry_strategy: str
 
 
+@dataclass(frozen=True)
+class TaskFailureLogKey:
+    error_category: str
+    error_code: str
+    retry_strategy: str
+    sample_error: str
+
+
+TaskFailureLogSummary = dict[TaskFailureLogKey, int]
+
+
 class StructuredTaskError(RuntimeError):
     def __init__(self, message: str, classification: TaskFailureClassification) -> None:
         super().__init__(message)
@@ -357,7 +368,7 @@ def materialize_brreg_translation_results(
                     rows_completed,
                     rows_failed,
                 )
-                completed, failed = _translate_record_batch(
+                completed, failed, batch_failure_summary = _translate_record_batch(
                     conn=conn,
                     enrichment_run_id=enrichment_run_id,
                     records=records,
@@ -377,6 +388,12 @@ def materialize_brreg_translation_results(
                     rows_seen,
                     rows_completed,
                     rows_failed,
+                )
+                _log_batch_failure_summary(
+                    context,
+                    task_label="translation",
+                    batch=batches_processed,
+                    failure_summary=batch_failure_summary,
                 )
 
             context.log.info(
@@ -1177,9 +1194,10 @@ def _translate_record_batch(
     translator: TermTranslator,
     model: str,
     prompt_version: str,
-) -> tuple[int, int]:
+) -> tuple[int, int, TaskFailureLogSummary]:
     attempts_by_record_id: dict[str, TaskAttempt] = {}
     items_by_record_id: dict[str, list[TranslationItem]] = {}
+    failure_log_summary: TaskFailureLogSummary = {}
     for record in records:
         attempts_by_record_id[record.id] = _create_task_attempt(
             conn=conn,
@@ -1218,15 +1236,22 @@ def _translate_record_batch(
     except Exception as exc:
         conn.rollback()
         for record in records:
-            _mark_record_task_failed(
+            classification = _mark_record_task_failed(
                 conn=conn,
                 enrichment_run_id=enrichment_run_id,
                 attempt=attempts_by_record_id[record.id],
                 record=record,
                 task_type="translate",
                 error=exc,
+                translation_model=model,
+                translation_prompt_version=prompt_version,
             )
-        return 0, len(records)
+            _add_failure_log_entry(
+                failure_log_summary,
+                classification=classification,
+                error=exc,
+            )
+        return 0, len(records), failure_log_summary
 
     for row in new_cache_rows:
         key = TranslationCacheKey(
@@ -1260,16 +1285,23 @@ def _translate_record_batch(
             rows_completed += 1
         except Exception as exc:
             conn.rollback()
-            _mark_record_task_failed(
+            classification = _mark_record_task_failed(
                 conn=conn,
                 enrichment_run_id=enrichment_run_id,
                 attempt=attempts_by_record_id[record.id],
                 record=record,
                 task_type="translate",
                 error=exc,
+                translation_model=model,
+                translation_prompt_version=prompt_version,
+            )
+            _add_failure_log_entry(
+                failure_log_summary,
+                classification=classification,
+                error=exc,
             )
             rows_failed += 1
-    return rows_completed, rows_failed
+    return rows_completed, rows_failed, failure_log_summary
 
 
 def _write_translation_record_result(
@@ -1613,6 +1645,51 @@ def _task_error_message(error: object | None) -> str:
     return str(error or "").strip()
 
 
+def _add_failure_log_entry(
+    failure_summary: TaskFailureLogSummary,
+    *,
+    classification: TaskFailureClassification,
+    error: object,
+) -> None:
+    key = TaskFailureLogKey(
+        error_category=classification.error_category,
+        error_code=classification.error_code,
+        retry_strategy=classification.retry_strategy,
+        sample_error=_safe_log_error_message(error),
+    )
+    failure_summary[key] = failure_summary.get(key, 0) + 1
+
+
+def _log_batch_failure_summary(
+    context,
+    *,
+    task_label: str,
+    batch: int,
+    failure_summary: TaskFailureLogSummary,
+) -> None:
+    for failure, count in sorted(
+        failure_summary.items(),
+        key=lambda item: (-item[1], item[0].error_category, item[0].error_code, item[0].retry_strategy),
+    ):
+        context.log.info(
+            "BRREG %s batch failure reason batch=%s error_category=%s error_code=%s retry_strategy=%s count=%s sample_error=%s",
+            task_label,
+            batch,
+            failure.error_category,
+            failure.error_code,
+            failure.retry_strategy,
+            count,
+            failure.sample_error,
+        )
+
+
+def _safe_log_error_message(error: object | None, *, max_length: int = 240) -> str:
+    message = " ".join(_task_error_message(error).split())
+    if len(message) <= max_length:
+        return message
+    return message[: max_length - 3] + "..."
+
+
 def _finish_failed_task_attempt(
     *,
     store: BrregWorkingStore,
@@ -1804,7 +1881,9 @@ def _mark_record_task_failed(
     record: RawTaskRecord,
     task_type: str,
     error: object,
-) -> None:
+    translation_model: str | None = None,
+    translation_prompt_version: str | None = None,
+) -> TaskFailureClassification:
     with conn.cursor() as cursor:
         store = BrregWorkingStore(cursor)
         classification = _finish_failed_task_attempt(
@@ -1821,8 +1900,8 @@ def _mark_record_task_failed(
                     task_attempt_id=attempt.id,
                     status="failed",
                     translated_payload=None,
-                    model=None,
-                    prompt_version=None,
+                    model=translation_model,
+                    prompt_version=translation_prompt_version,
                     error=error_message,
                     metadata={
                         "error_category": classification.error_category,
@@ -1840,6 +1919,7 @@ def _mark_record_task_failed(
             )
         )
     conn.commit()
+    return classification
 
 
 def _enrichment_run_key(context, run_type: str) -> str:
