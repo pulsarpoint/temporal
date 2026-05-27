@@ -409,6 +409,9 @@ def materialize_brreg_translation_results(
 
             with conn.cursor() as cursor:
                 store = BrregWorkingStore(cursor)
+                task_summary = store.fetch_raw_task_state_summary(task_type="translate")
+                artifact_summary = store.fetch_translation_artifact_summary(model=model, prompt_version=prompt_version)
+                failure_summary = store.fetch_task_failure_summary(task_type="translate")
                 store.finish_enrichment_run(
                     FinishEnrichmentRun(
                         enrichment_run_id=enrichment_run_id,
@@ -416,9 +419,6 @@ def materialize_brreg_translation_results(
                         error=None if rows_failed == 0 else f"{rows_failed} translation rows failed",
                     )
                 )
-                task_summary = store.fetch_raw_task_state_summary(task_type="translate")
-                artifact_summary = store.fetch_translation_artifact_summary(model=model, prompt_version=prompt_version)
-                failure_summary = store.fetch_task_failure_summary(task_type="translate")
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -466,6 +466,12 @@ def materialize_brreg_translation_results(
         )
     )
     _raise_if_materialization_rows_failed(task_label="translation", rows_failed=rows_failed)
+    _raise_if_live_artifacts_incomplete(
+        task_label="translation",
+        artifact_summary=artifact_summary,
+        missing_key="translation_result_missing",
+        failed_key="translation_result_failed",
+    )
     return result
 
 
@@ -588,6 +594,21 @@ def _build_standard_task_asset_metadata(
 def _raise_if_materialization_rows_failed(*, task_label: str, rows_failed: int) -> None:
     if rows_failed > 0:
         raise RuntimeError(f"BRREG {task_label} materialization failed with {rows_failed} failed rows")
+
+
+def _raise_if_live_artifacts_incomplete(
+    *,
+    task_label: str,
+    artifact_summary: dict[str, int],
+    missing_key: str,
+    failed_key: str,
+) -> None:
+    missing = int(artifact_summary.get(missing_key, 0) or 0)
+    failed = int(artifact_summary.get(failed_key, 0) or 0)
+    if missing > 0 or failed > 0:
+        raise RuntimeError(
+            f"BRREG {task_label} materialization live table incomplete: missing={missing}, failed={failed}"
+        )
 
 
 def materialize_brreg_domain_results(
@@ -749,6 +770,9 @@ def materialize_brreg_domain_results(
 
             with conn.cursor() as cursor:
                 store = BrregWorkingStore(cursor)
+                task_summary = store.fetch_raw_task_state_summary(task_type=task_type)
+                artifact_summary = store.fetch_domain_result_summary()
+                failure_summary = store.fetch_task_failure_summary(task_type=task_type)
                 store.finish_enrichment_run(
                     FinishEnrichmentRun(
                         enrichment_run_id=enrichment_run_id,
@@ -756,9 +780,6 @@ def materialize_brreg_domain_results(
                         error=None if rows_failed == 0 else f"{rows_failed} domain result rows failed",
                     )
                 )
-                task_summary = store.fetch_raw_task_state_summary(task_type=task_type)
-                artifact_summary = store.fetch_domain_result_summary()
-                failure_summary = store.fetch_task_failure_summary(task_type=task_type)
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -807,6 +828,12 @@ def materialize_brreg_domain_results(
         )
     )
     _raise_if_materialization_rows_failed(task_label="domain result", rows_failed=rows_failed)
+    _raise_if_live_artifacts_incomplete(
+        task_label="domain result",
+        artifact_summary=artifact_summary,
+        missing_key="domain_result_missing",
+        failed_key="domain_result_failed",
+    )
     return result
 
 
@@ -944,6 +971,9 @@ def materialize_brreg_currency_results(
 
             with conn.cursor() as cursor:
                 store = BrregWorkingStore(cursor)
+                task_summary = store.fetch_raw_task_state_summary(task_type=task_type)
+                artifact_summary = store.fetch_currency_result_summary()
+                failure_summary = store.fetch_task_failure_summary(task_type=task_type)
                 store.finish_enrichment_run(
                     FinishEnrichmentRun(
                         enrichment_run_id=enrichment_run_id,
@@ -951,9 +981,6 @@ def materialize_brreg_currency_results(
                         error=None if rows_failed == 0 else f"{rows_failed} currency rows failed",
                     )
                 )
-                task_summary = store.fetch_raw_task_state_summary(task_type=task_type)
-                artifact_summary = store.fetch_currency_result_summary()
-                failure_summary = store.fetch_task_failure_summary(task_type=task_type)
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -1002,6 +1029,12 @@ def materialize_brreg_currency_results(
         )
     )
     _raise_if_materialization_rows_failed(task_label="currency", rows_failed=rows_failed)
+    _raise_if_live_artifacts_incomplete(
+        task_label="currency",
+        artifact_summary=artifact_summary,
+        missing_key="currency_result_missing",
+        failed_key="currency_result_failed",
+    )
     return result
 
 

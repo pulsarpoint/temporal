@@ -128,6 +128,22 @@ class FailingTaskAttemptConnection(FakeConnection):
         self.rollbacks = 0
 
 
+class MissingCurrencyArtifactCursor(FakeCursor):
+    def fetchone(self):
+        if "fetch_raw_task_state_summary" in self.last_sql:
+            return (1000, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0)
+        if "fetch_currency_result_summary" in self.last_sql:
+            return (0, 0, 0, 0, 1000)
+        return super().fetchone()
+
+
+class MissingCurrencyArtifactConnection(FakeConnection):
+    def __init__(self) -> None:
+        self.cursor_instance = MissingCurrencyArtifactCursor()
+        self.commits = 0
+        self.rollbacks = 0
+
+
 class FakeTranslator:
     def translate_terms(
         self,
@@ -902,6 +918,43 @@ def test_materialize_brreg_currency_results_writes_single_currency_artifact() ->
     assert any("BRREG currency run started" in message for message in context.log.messages)
     assert any("BRREG currency batch claimed batch=1 records=1" in message for message in context.log.messages)
     assert any("BRREG currency batch completed batch=1 records=1" in message for message in context.log.messages)
+
+
+def test_materialize_brreg_currency_results_fails_when_artifacts_are_missing_after_no_claimable_records() -> None:
+    context = FakeContext()
+    connection = MissingCurrencyArtifactConnection()
+    connection.cursor_instance.fetchall_values = [[]]
+
+    with pytest.raises(RuntimeError, match="BRREG currency materialization live table incomplete"):
+        materialize_brreg_currency_results(
+            context,
+            connection_factory=lambda _: connection,
+            database_url="postgresql://example.invalid/corpscout",
+            batch_size=500,
+            max_parallel_tasks=100,
+            fx_rate_loader=lambda _: FxRateSet(
+                source="ECB",
+                rate_date="2026-05-21",
+                eur_per={
+                    "EUR": 1.0,
+                    "NOK": 10.7075,
+                    "USD": 1.1599,
+                },
+            ),
+        )
+
+    metadata = context.metadata[-1]
+    assert metadata["run_rows_claimed"] == 0
+    assert metadata["run_rows_failed"] == 0
+    assert metadata["run_stopped_reason"] == "no_claimable_records"
+    assert metadata["live_currency_conversion_task_succeeded"] == 1000
+    assert metadata["live_currency_results_missing"] == 1000
+    assert any(
+        "UPDATE dagster_brreg.enrichment_runs" in sql
+        and params.get("status") == "succeeded"
+        and params.get("error") is None
+        for sql, params in connection.cursor_instance.calls
+    )
 
 
 def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() -> None:
