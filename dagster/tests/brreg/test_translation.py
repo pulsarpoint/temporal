@@ -114,6 +114,7 @@ def test_http_translation_service_term_translator_calls_external_service() -> No
         assert body["prompt_version"] == "v2"
         assert body["source_lang"] == "no"
         assert body["target_lang"] == "en"
+        assert body["max_retries"] == 3
         assert body["items"] == [
             {
                 "id": translation_item_id(item),

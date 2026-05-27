@@ -3,7 +3,13 @@ from __future__ import annotations
 import pytest
 
 from corpscout_translation_service.brreg import extract_translation_items, translation_item_id
-from corpscout_translation_service.models import BrregRecord, BrregTranslateRequest, LLMSelection
+from corpscout_translation_service.models import (
+    BrregRecord,
+    BrregTranslateRequest,
+    LLMSelection,
+    LLMTranslationItem,
+    LLMTranslationRequest,
+)
 from corpscout_translation_service.service import TranslationService
 
 from tests.fakes import FakeLLMClient
@@ -56,6 +62,56 @@ async def test_translation_service_retries_missing_terms_in_smaller_chunks() -> 
     assert response.results[0].status == "succeeded"
     assert len(llm_client.calls) == 2
     assert [item.id for item in llm_client.calls[1].items] == [missing_once_id]
+
+
+@pytest.mark.asyncio
+async def test_term_translation_retries_missing_ids_before_returning_success() -> None:
+    llm_client = FakeLLMClient(missing_once_ids={"activity:one"})
+    service = TranslationService(llm_client=llm_client, max_llm_items_per_request=50)
+
+    response = await service.translate_terms(
+        LLMTranslationRequest(
+            provider="fake",
+            model="fake-fast",
+            prompt_version="v1",
+            source_lang="no",
+            target_lang="en",
+            items=[LLMTranslationItem(id="activity:one", category="activity", text="Drive utleie")],
+        )
+    )
+
+    assert response.status == "succeeded"
+    assert response.missing_ids == []
+    assert len(llm_client.calls) == 2
+    assert [item.id for item in llm_client.calls[1].items] == ["activity:one"]
+
+
+@pytest.mark.asyncio
+async def test_term_translation_logs_and_returns_failure_after_three_missing_id_retries(caplog) -> None:
+    llm_client = FakeLLMClient(always_missing_ids={"activity:one"})
+    service = TranslationService(
+        llm_client=llm_client,
+        max_llm_items_per_request=50,
+    )
+
+    with caplog.at_level("WARNING", logger="corpscout_translation_service.service"):
+        response = await service.translate_terms(
+            LLMTranslationRequest(
+                provider="fake",
+                model="fake-fast",
+                prompt_version="v1",
+                source_lang="no",
+                target_lang="en",
+                items=[LLMTranslationItem(id="activity:one", category="activity", text="Drive utleie")],
+            )
+        )
+
+    assert response.status == "failed"
+    assert response.missing_ids == ["activity:one"]
+    assert response.error is not None
+    assert response.error.code == "missing_translations"
+    assert len(llm_client.calls) == 4
+    assert "LLM response missed translation terms after retries" in [record.message for record in caplog.records]
 
 
 @pytest.mark.asyncio

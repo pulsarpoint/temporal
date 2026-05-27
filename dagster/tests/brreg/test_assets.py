@@ -722,20 +722,20 @@ def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -
         [],
     ]
 
-    result = materialize_brreg_translation_results(
-        context,
-        connection_factory=lambda _: connection,
-        database_url="postgresql://example.invalid/corpscout",
-        translator=MissingTranslator(),
-        batch_size=50,
-        model="qwen3:6b",
-        prompt_version="v1",
-    )
+    with pytest.raises(RuntimeError, match="BRREG translation materialization failed with 1 failed rows"):
+        materialize_brreg_translation_results(
+            context,
+            connection_factory=lambda _: connection,
+            database_url="postgresql://example.invalid/corpscout",
+            translator=MissingTranslator(),
+            batch_size=50,
+            model="qwen3:6b",
+            prompt_version="v1",
+        )
 
     sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
-    assert result["rows_completed"] == 0
-    assert result["rows_failed"] == 1
-    assert all(isinstance(value, int) for value in result.values())
+    assert context.metadata[-1]["run_rows_succeeded"] == 0
+    assert context.metadata[-1]["run_rows_failed"] == 1
     assert sum("INSERT INTO dagster_brreg.task_attempts" in sql for sql in sql_calls) == 1
     assert any("INSERT INTO dagster_brreg.translation_results" in sql for sql in sql_calls)
     failure_result_params = [
@@ -981,6 +981,7 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
     assert result["rows_completed"] == 1
     assert result["rows_failed"] == 0
     sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
+    assert any("REFRESH MATERIALIZED VIEW dagster_brreg.mv_brreg_enhanced_ready_records" in sql for sql in sql_calls)
     assert any("INSERT INTO dagster_brreg.enhanced_records" in sql for sql in sql_calls)
     insert_params = next(
         params

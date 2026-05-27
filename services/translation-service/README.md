@@ -53,6 +53,9 @@ TRANSLATION_PROVIDER_DEEPSEEK_API_KEY=...
 
 Never pass API keys in query parameters.
 
+Both translation endpoints accept `max_retries`; the default is `3`. Retries
+only resend missing term IDs, so already translated terms are kept.
+
 ## Tests
 
 Normal test suite uses fake LLMs:

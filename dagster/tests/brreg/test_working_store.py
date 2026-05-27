@@ -583,15 +583,20 @@ def test_working_store_fetches_records_ready_for_enhanced_build() -> None:
         )
     ]
     sql, params = cursor.calls[0]
-    assert "FROM dagster_brreg.raw_records rr" in sql
-    assert "dagster_brreg.translation_results" in sql
-    assert "dagster_brreg.domain_results" in sql
-    assert "dagster_brreg.currency_results" in sql
-    assert "domain_payload->'candidates'" in sql
-    assert "dts.task_type = 'domain_results'" in sql
-    assert "fts.task_type = 'currency_conversion'" in sql
-    assert "dagster_brreg.enhanced_records" in sql
+    assert "FROM dagster_brreg.mv_brreg_enhanced_ready_records" in sql
+    assert "dagster_brreg.translation_results" not in sql
+    assert "dagster_brreg.domain_results" not in sql
+    assert "dagster_brreg.currency_results" not in sql
     assert params == {"limit": 50}
+
+
+def test_working_store_refreshes_enhanced_ready_records_materialized_view() -> None:
+    cursor = FakeCursor()
+    store = BrregWorkingStore(cursor)
+
+    store.refresh_enhanced_ready_records()
+
+    assert cursor.calls == [("REFRESH MATERIALIZED VIEW dagster_brreg.mv_brreg_enhanced_ready_records", {})]
 
 
 def test_working_store_upserts_enhanced_records_and_returns_id() -> None:

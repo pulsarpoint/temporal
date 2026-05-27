@@ -12,6 +12,7 @@ def _postgres_resource(context):
 @asset_check(
     asset="brreg_raw_records",
     name="live_table_state",
+    blocking=True,
     required_resource_keys={"postgres"},
     description="Checks the live dagster_brreg.raw_records table, not historical Dagster materialization metadata.",
 )
@@ -22,6 +23,7 @@ def brreg_raw_records_live_table_state(context) -> AssetCheckResult:
 @asset_check(
     asset="brreg_translation_results",
     name="live_table_state",
+    blocking=True,
     required_resource_keys={"postgres", "translation_service"},
     description="Checks the live dagster_brreg.translation_results table for the configured model and prompt.",
 )
@@ -32,6 +34,7 @@ def brreg_translation_results_live_table_state(context) -> AssetCheckResult:
 @asset_check(
     asset="brreg_domain_results",
     name="live_table_state",
+    blocking=True,
     required_resource_keys={"postgres"},
     description="Checks the live dagster_brreg.domain_results table, not historical Dagster materialization metadata.",
 )
@@ -42,6 +45,7 @@ def brreg_domain_results_live_table_state(context) -> AssetCheckResult:
 @asset_check(
     asset="brreg_currency_results",
     name="live_table_state",
+    blocking=True,
     required_resource_keys={"postgres"},
     description="Checks the live dagster_brreg.currency_results table, not historical Dagster materialization metadata.",
 )
@@ -52,6 +56,7 @@ def brreg_currency_results_live_table_state(context) -> AssetCheckResult:
 @asset_check(
     asset="brreg_enhanced_records",
     name="live_table_state",
+    blocking=True,
     required_resource_keys={"postgres"},
     description="Checks the live dagster_brreg.enhanced_records table, not historical Dagster materialization metadata.",
 )

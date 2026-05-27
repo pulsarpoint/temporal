@@ -115,7 +115,7 @@ class TranslationService:
             return self._mock_controller.translate_terms_response(llm_request)
 
         try:
-            translated_by_id = await self._translate_terms(llm_request)
+            translated_by_id = await self._translate_terms_with_missing_retries(llm_request)
         except Exception as exc:
             logger.exception("Term translation request failed")
             return LLMTranslateResponse(
@@ -144,6 +144,19 @@ class TranslationService:
         translated_ids = {item.id for item in translations}
         missing_ids = [item.id for item in request.items if item.id not in translated_ids]
         status = "succeeded" if not missing_ids else "partial" if translations else "failed"
+        error = None
+        if missing_ids:
+            error = TranslationError(
+                code="missing_translations",
+                message="LLM response missed translation terms after retries",
+                category="invalid_llm_output",
+                retry_strategy="change_model_or_prompt",
+                detail={
+                    "missing_count": len(missing_ids),
+                    "missing_ids_sample": missing_ids[:20],
+                    "max_retries": request.max_retries,
+                },
+            )
         return LLMTranslateResponse(
             status=status,
             provider=provider,
@@ -154,7 +167,7 @@ class TranslationService:
             items_failed=len(missing_ids),
             translations=translations,
             missing_ids=missing_ids,
-            error=None,
+            error=error,
             duration_ms=_elapsed_ms(started),
         )
 
@@ -215,6 +228,51 @@ class TranslationService:
                 raise RuntimeError(message)
             return {item.id: item.translation for item in response.translations}
         return await self._llm_client.translate_terms(request)
+
+    async def _translate_terms_with_missing_retries(self, request: LLMTranslationRequest) -> dict[str, str]:
+        translated_by_id: dict[str, str] = {}
+        pending = request.items
+        for attempt in range(request.max_retries + 1):
+            if not pending:
+                break
+            chunks = list(_chunks(pending, self._max_llm_items_per_request))
+            for chunk_index, chunk in enumerate(chunks, start=1):
+                logger.info(
+                    "Translating term batch with LLM",
+                    extra={
+                        "attempt": attempt + 1,
+                        "chunk_index": chunk_index,
+                        "chunk_count": len(chunks),
+                        "chunk_items": len(chunk),
+                        "pending_items": len(pending),
+                        "model": request.model,
+                        "provider": request.provider,
+                    },
+                )
+                chunk_request = request.model_copy(update={"items": chunk})
+                translated_by_id.update(await self._translate_terms(chunk_request))
+            pending = [item for item in request.items if item.id not in translated_by_id]
+            if pending and attempt < request.max_retries:
+                logger.warning(
+                    "LLM response missed translation terms; retrying",
+                    extra={
+                        "missing_terms": len(pending),
+                        "attempt": attempt + 1,
+                        "next_attempt": attempt + 2,
+                        "max_retries": request.max_retries,
+                    },
+                )
+            elif pending:
+                logger.error(
+                    "LLM response missed translation terms after retries",
+                    extra={
+                        "missing_terms": len(pending),
+                        "attempts": attempt + 1,
+                        "max_retries": request.max_retries,
+                        "missing_ids_sample": [item.id for item in pending[:20]],
+                    },
+                )
+        return translated_by_id
 
     def _build_record_result(
         self,

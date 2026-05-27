@@ -12,6 +12,7 @@ import httpx
 DEFAULT_LLM_MODEL = "qwen3:6b"
 DEFAULT_PROMPT_VERSION = "v1"
 DEFAULT_TRANSLATION_SERVICE_URL = "http://translation-service:8095"
+DEFAULT_TRANSLATION_SERVICE_MAX_RETRIES = 3
 TRANSLATION_PAYLOAD_SCHEMA_VERSION = "brreg.translation_terms.v1"
 
 
@@ -87,11 +88,13 @@ class HttpTranslationServiceTermTranslator:
         base_url: str,
         provider: str = "default",
         timeout_seconds: float = 300,
+        max_retries: int = DEFAULT_TRANSLATION_SERVICE_MAX_RETRIES,
         http_client: httpx.Client | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._provider = provider
         self._timeout_seconds = timeout_seconds
+        self._max_retries = max_retries
         self._http_client = http_client
 
     @classmethod
@@ -104,6 +107,9 @@ class HttpTranslationServiceTermTranslator:
                 or "default"
             ),
             timeout_seconds=float(os.environ.get("TRANSLATION_SERVICE_TIMEOUT_SECONDS", "300")),
+            max_retries=int(
+                os.environ.get("TRANSLATION_SERVICE_MAX_RETRIES", str(DEFAULT_TRANSLATION_SERVICE_MAX_RETRIES))
+            ),
         )
 
     def translate_terms(
@@ -133,6 +139,7 @@ class HttpTranslationServiceTermTranslator:
                     }
                     for item in items
                 ],
+                "max_retries": self._max_retries,
             }
         )
         payload = response.json()

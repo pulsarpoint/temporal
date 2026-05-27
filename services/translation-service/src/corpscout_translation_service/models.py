@@ -26,7 +26,7 @@ class BrregTranslateRequest(BaseModel):
     prompt_version: str = Field(default="v1", min_length=1)
     source_lang: str = Field(default="no", min_length=2)
     target_lang: str = Field(default="en", min_length=2)
-    max_retries: int = Field(default=2, ge=0, le=5)
+    max_retries: int = Field(default=3, ge=0, le=5)
 
 
 class LLMTranslationItem(BaseModel):
@@ -42,6 +42,7 @@ class LLMTranslationRequest(BaseModel):
     source_lang: str
     target_lang: str
     items: list[LLMTranslationItem] = Field(min_length=1)
+    max_retries: int = Field(default=3, ge=0, le=5)
 
 
 class LLMTermTranslation(BaseModel):

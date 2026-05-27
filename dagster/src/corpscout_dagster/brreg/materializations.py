@@ -465,6 +465,7 @@ def materialize_brreg_translation_results(
             failure_summary=failure_summary,
         )
     )
+    _raise_if_materialization_rows_failed(task_label="translation", rows_failed=rows_failed)
     return result
 
 
@@ -582,6 +583,11 @@ def _build_standard_task_asset_metadata(
         **live_failure_metadata,
         **live_metadata,
     }
+
+
+def _raise_if_materialization_rows_failed(*, task_label: str, rows_failed: int) -> None:
+    if rows_failed > 0:
+        raise RuntimeError(f"BRREG {task_label} materialization failed with {rows_failed} failed rows")
 
 
 def materialize_brreg_domain_results(
@@ -800,6 +806,7 @@ def materialize_brreg_domain_results(
             },
         )
     )
+    _raise_if_materialization_rows_failed(task_label="domain result", rows_failed=rows_failed)
     return result
 
 
@@ -994,6 +1001,7 @@ def materialize_brreg_currency_results(
             },
         )
     )
+    _raise_if_materialization_rows_failed(task_label="currency", rows_failed=rows_failed)
     return result
 
 
@@ -1032,7 +1040,10 @@ def materialize_brreg_enhanced_records(
 
         try:
             with conn.cursor() as cursor:
-                records = BrregWorkingStore(cursor).fetch_pending_enhanced_build_records(limit=batch_size)
+                store = BrregWorkingStore(cursor)
+                store.refresh_enhanced_ready_records()
+                records = store.fetch_pending_enhanced_build_records(limit=batch_size)
+            conn.commit()
             context.log.info(
                 "BRREG enhanced record batch claimed records=%s",
                 len(records),
@@ -1141,6 +1152,7 @@ def materialize_brreg_enhanced_records(
             },
         )
     )
+    _raise_if_materialization_rows_failed(task_label="enhanced record", rows_failed=rows_failed)
     return result
 
 

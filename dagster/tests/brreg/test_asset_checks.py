@@ -85,6 +85,7 @@ def test_definitions_expose_live_table_asset_checks() -> None:
         (AssetKey("brreg_currency_results"), "live_table_state"),
         (AssetKey("brreg_enhanced_records"), "live_table_state"),
     }
+    assert all(spec.blocking for spec in check_specs)
 
 
 def test_operational_asset_jobs_do_not_run_live_table_checks() -> None:

@@ -101,6 +101,17 @@ def test_currency_results_migration_adds_currency_task_type_and_indexes() -> Non
     assert "idx_dagster_brreg_currency_results_status" in sql
 
 
+def test_enhanced_ready_records_migration_adds_materialized_view() -> None:
+    sql = ALL_UP_SQL
+
+    assert "CREATE MATERIALIZED VIEW IF NOT EXISTS dagster_brreg.mv_brreg_enhanced_ready_records" in sql
+    assert "status IN ('succeeded', 'skipped')" in sql
+    assert "status IN ('succeeded', 'not_found', 'partial')" in sql
+    assert "status IN ('succeeded', 'skipped', 'not_available')" in sql
+    assert "idx_dagster_brreg_mv_enhanced_ready_records_raw" in sql
+    assert "idx_dagster_brreg_mv_enhanced_ready_records_queue" in sql
+
+
 def test_working_store_migration_creates_observability_views() -> None:
     sql = ALL_UP_SQL
 
