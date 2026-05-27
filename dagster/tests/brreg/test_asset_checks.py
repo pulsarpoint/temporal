@@ -14,7 +14,8 @@ from corpscout_dagster.brreg.asset_checks import (
 from corpscout_dagster.definitions import defs
 
 
-RAW_SUMMARY_READY = (1000, 1000, 0, 0, 0, 0, 0, 0, 0, 0, 1000, 0, 0, 0)
+RAW_STATE_READY = (1000, 1000, 0, True)
+ASSET_STATE_READY = (1000, 0, 0, 0, 0, 1000, 0, 0, 0, True, False)
 
 
 class FakeCursor:
@@ -106,7 +107,7 @@ def test_live_table_checks_job_runs_only_checks() -> None:
 
 
 def test_raw_records_live_table_check_fails_without_current_rows() -> None:
-    context = _context({"fetch_raw_task_state_summary": (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)})
+    context = _context({"v_raw_records_asset_state": (0, 0, 0, False)})
 
     result = evaluate_brreg_raw_records_live_table_state(context)
 
@@ -117,8 +118,8 @@ def test_raw_records_live_table_check_fails_without_current_rows() -> None:
 def test_translation_results_live_table_check_fails_when_table_rows_are_deleted() -> None:
     context = _context(
         {
-            "fetch_raw_task_state_summary": RAW_SUMMARY_READY,
-            "fetch_translation_artifact_summary": (0, 0, 0, 1000, 1000),
+            "v_raw_records_asset_state": RAW_STATE_READY,
+            "v_translation_asset_state": (1000, 0, 0, 0, 0, 0, 0, 1000, 1000, False, False),
         }
     )
 
@@ -132,8 +133,8 @@ def test_translation_results_live_table_check_fails_when_table_rows_are_deleted(
 def test_translation_results_live_table_check_passes_when_every_current_row_has_success_or_skip() -> None:
     context = _context(
         {
-            "fetch_raw_task_state_summary": RAW_SUMMARY_READY,
-            "fetch_translation_artifact_summary": (950, 50, 0, 0, 0),
+            "v_raw_records_asset_state": RAW_STATE_READY,
+            "v_translation_asset_state": (1000, 0, 0, 0, 0, 950, 50, 0, 0, True, False),
         }
     )
 
@@ -148,24 +149,21 @@ def test_artifact_live_table_checks_fail_on_missing_or_failed_latest_rows() -> N
     domain = evaluate_brreg_domain_results_live_table_state(
         _context(
             {
-                "fetch_raw_task_state_summary": RAW_SUMMARY_READY,
-                "fetch_domain_result_summary": (900, 0, 0, 10, 90),
+                "v_domain_asset_state": (1000, 0, 0, 0, 0, 900, 10, 90, 0, False, False),
             }
         )
     )
     currency = evaluate_brreg_currency_results_live_table_state(
         _context(
             {
-                "fetch_raw_task_state_summary": RAW_SUMMARY_READY,
-                "fetch_currency_result_summary": (900, 0, 0, 10, 90),
+                "v_financial_asset_state": (1000, 0, 0, 10, 0, 900, 0, 90, 0, False, True),
             }
         )
     )
     enhanced = evaluate_brreg_enhanced_records_live_table_state(
         _context(
             {
-                "fetch_raw_task_state_summary": RAW_SUMMARY_READY,
-                "fetch_enhanced_record_summary": (900, 0, 10, 0, 90),
+                "v_enhanced_asset_state": (1000, 0, 0, 10, 0, 900, 0, 90, 0, False, True),
             }
         )
     )

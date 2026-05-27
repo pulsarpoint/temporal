@@ -9,11 +9,7 @@ import psycopg
 from corpscout_dagster.brreg.models import BrregRawRecord
 from corpscout_dagster.db_brreg.models import BrregWorkingRawRecordRow
 from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH
-from corpscout_dagster.db_brreg.store import (
-    BrregWorkingStore,
-    CreateBulkSnapshot,
-    CreateEnrichmentRun,
-)
+from corpscout_dagster.db_brreg import BrregAssetGateway, SmokeIngestRawRecordCommand
 
 SMOKE_ORG_NUMBER = "999999991"
 SMOKE_RUN_ID = "dagster-smoke"
@@ -50,26 +46,15 @@ def run_smoke(
 ) -> SmokeResult:
     row = build_smoke_row()
     with connection_factory(database_url) as conn:
+        BrregAssetGateway(conn).smoke_ingest_raw_record(
+            SmokeIngestRawRecordCommand(
+                dagster_run_id=SMOKE_RUN_ID,
+                source_url=BRREG_BULK_URL,
+                row=row,
+                metadata={"smoke": True},
+            )
+        )
         with conn.cursor() as cursor:
-            store = BrregWorkingStore(cursor)
-            enrichment_run_id = store.create_enrichment_run(
-                CreateEnrichmentRun(
-                    dagster_run_id=SMOKE_RUN_ID,
-                    run_type="bulk_ingest",
-                    metadata={"smoke": True},
-                )
-            )
-            bulk_snapshot_id = store.create_bulk_snapshot(
-                CreateBulkSnapshot(
-                    enrichment_run_id=enrichment_run_id,
-                    source_url=BRREG_BULK_URL,
-                    content_length_bytes=None,
-                    compressed_payload_hash=None,
-                    storage_uri=None,
-                    metadata={"smoke": True},
-                )
-            )
-            store.upsert_raw_records([row], bulk_snapshot_id=bulk_snapshot_id)
             cursor.execute(
                 """
                 SELECT organization_name

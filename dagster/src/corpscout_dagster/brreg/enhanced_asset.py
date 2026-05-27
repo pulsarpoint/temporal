@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-from dagster import AssetKey, Field, Int, asset
+from dagster import AssetKey, asset
 
-from corpscout_dagster.brreg.asset_config import env_int
-from corpscout_dagster.brreg.materializations import (
-    DEFAULT_ENHANCED_RECORD_BATCH_SIZE,
-    materialize_brreg_enhanced_records,
-)
+from corpscout_dagster.brreg.materializations import materialize_brreg_enhanced_records
 
 
 @asset(
@@ -16,27 +12,12 @@ from corpscout_dagster.brreg.materializations import (
         AssetKey("brreg_domain_results"),
         AssetKey("brreg_currency_results"),
     ],
-    config_schema={
-        "batch_size": Field(
-            Int,
-            default_value=env_int("BRREG_ENHANCED_RECORD_BATCH_SIZE", DEFAULT_ENHANCED_RECORD_BATCH_SIZE),
-            description="Number of BRREG rows assembled into enhanced records in this run.",
-        )
-    },
     required_resource_keys={"postgres"},
 )
 def brreg_enhanced_records(context) -> dict[str, int]:
-    op_config = getattr(context, "op_config", None) or {}
-    batch_size = int(
-        op_config.get(
-            "batch_size",
-            env_int("BRREG_ENHANCED_RECORD_BATCH_SIZE", DEFAULT_ENHANCED_RECORD_BATCH_SIZE),
-        )
-    )
     postgres = context.resources.postgres
     return materialize_brreg_enhanced_records(
         context,
         connection_factory=postgres.connection_factory,
         database_url=postgres.database_url,
-        batch_size=batch_size,
     )

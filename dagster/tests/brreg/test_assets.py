@@ -362,11 +362,8 @@ def test_definitions_register_brreg_resources() -> None:
     }
 
 
-def test_brreg_enhanced_asset_exposes_batch_size_control() -> None:
-    fields = brreg_enhanced_records.node_def.config_schema.config_type.fields
-
-    assert set(fields) == {"batch_size"}
-    assert fields["batch_size"].default_provided
+def test_brreg_enhanced_asset_has_no_public_batch_limit() -> None:
+    assert brreg_enhanced_records.node_def.config_schema.config_type.kind.name == "ANY"
 
 
 def test_resolve_brreg_batch_run_config_prefers_launchpad_config_over_env(monkeypatch) -> None:
@@ -853,27 +850,21 @@ def test_materialize_brreg_domain_results_writes_single_service_artifact() -> No
     assert any("BRREG domain result record completed batch=1 batch_index=1" in message for message in context.log.messages)
 
 
-def test_materialize_brreg_domain_results_reports_active_task_slot_blocking_incomplete_artifacts() -> None:
+def test_materialize_brreg_domain_results_reports_live_incomplete_artifacts_without_failing_run() -> None:
     context = FakeContext()
     connection = BlockedDomainArtifactConnection()
     connection.cursor_instance.fetchall_values = [[]]
 
-    with pytest.raises(
-        RuntimeError,
-        match=(
-            "BRREG domain result materialization blocked by active tasks: "
-            "active_running=1, max_parallel_tasks=1, eligible_now=706, missing=707, failed=0"
-        ),
-    ):
-        materialize_brreg_domain_results(
-            context,
-            connection_factory=lambda _: connection,
-            database_url="postgresql://example.invalid/corpscout",
-            crawl_service_client=FakeCrawlServiceClient(),
-            batch_size=10,
-            max_parallel_tasks=1,
-        )
+    result = materialize_brreg_domain_results(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        crawl_service_client=FakeCrawlServiceClient(),
+        batch_size=10,
+        max_parallel_tasks=1,
+    )
 
+    assert result["rows_seen"] == 0
     metadata = context.metadata[-1]
     assert metadata["run_rows_claimed"] == 0
     assert metadata["run_stopped_reason"] == "no_claimable_records"
@@ -958,29 +949,29 @@ def test_materialize_brreg_currency_results_writes_single_currency_artifact() ->
     assert any("BRREG currency batch completed batch=1 records=1" in message for message in context.log.messages)
 
 
-def test_materialize_brreg_currency_results_fails_when_artifacts_are_missing_after_no_claimable_records() -> None:
+def test_materialize_brreg_currency_results_reports_missing_artifacts_after_no_claimable_records() -> None:
     context = FakeContext()
     connection = MissingCurrencyArtifactConnection()
     connection.cursor_instance.fetchall_values = [[]]
 
-    with pytest.raises(RuntimeError, match="BRREG currency materialization live table incomplete"):
-        materialize_brreg_currency_results(
-            context,
-            connection_factory=lambda _: connection,
-            database_url="postgresql://example.invalid/corpscout",
-            batch_size=500,
-            max_parallel_tasks=100,
-            fx_rate_loader=lambda _: FxRateSet(
-                source="ECB",
-                rate_date="2026-05-21",
-                eur_per={
-                    "EUR": 1.0,
-                    "NOK": 10.7075,
-                    "USD": 1.1599,
-                },
-            ),
-        )
+    result = materialize_brreg_currency_results(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        batch_size=500,
+        max_parallel_tasks=100,
+        fx_rate_loader=lambda _: FxRateSet(
+            source="ECB",
+            rate_date="2026-05-21",
+            eur_per={
+                "EUR": 1.0,
+                "NOK": 10.7075,
+                "USD": 1.1599,
+            },
+        ),
+    )
 
+    assert result["rows_seen"] == 0
     metadata = context.metadata[-1]
     assert metadata["run_rows_claimed"] == 0
     assert metadata["run_rows_failed"] == 0
@@ -1065,12 +1056,12 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
         context,
         connection_factory=lambda _: connection,
         database_url="postgresql://example.invalid/corpscout",
-        batch_size=50,
     )
 
     assert result["rows_seen"] == 1
     assert result["rows_completed"] == 1
     assert result["rows_failed"] == 0
+    assert result["batches_processed"] == 1
     sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
     assert any("REFRESH MATERIALIZED VIEW dagster_brreg.mv_brreg_enhanced_ready_records" in sql for sql in sql_calls)
     assert any("INSERT INTO dagster_brreg.enhanced_records" in sql for sql in sql_calls)
@@ -1091,6 +1082,6 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
     assert "live_enhanced_records_built" in metadata
     assert "live_enhanced_failures_total" in metadata
     assert any("BRREG enhanced record run started" in message for message in context.log.messages)
-    assert any("BRREG enhanced record batch claimed records=1" in message for message in context.log.messages)
-    assert any("BRREG enhanced record batch completed rows_seen=1" in message for message in context.log.messages)
+    assert any("BRREG enhanced record batch claimed batch=1 records=1" in message for message in context.log.messages)
+    assert any("BRREG enhanced record batch completed batch=1 rows_seen=1" in message for message in context.log.messages)
     assert "rows_completed" not in metadata

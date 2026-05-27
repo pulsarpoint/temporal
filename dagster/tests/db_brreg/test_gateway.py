@@ -5,11 +5,8 @@ import json
 import pytest
 
 from corpscout_dagster.db_brreg.gateway import (
-    AssetBlockedByActiveTasksError,
-    AssetIncompleteError,
     BrregAssetGateway,
     BrregAssetName,
-    BrregAssetState,
     BrregTaskStatus,
     ClaimEnhancedBatchCommand,
     ClaimTaskBatchCommand,
@@ -18,8 +15,12 @@ from corpscout_dagster.db_brreg.gateway import (
     SubmitEnhancedRecordCommand,
     SubmitTaskFailureCommand,
     SubmitTranslationResultCommand,
+    FetchCachedTranslationsCommand,
+    RetryTaskFailuresCommand,
+    UpsertCachedTranslationsCommand,
 )
-from corpscout_dagster.db_brreg.store import EnhancedBuildRecord, RawTaskRecord
+from corpscout_dagster.db_brreg.store import EnhancedBuildRecord, RawTaskRecord, UpsertCachedTranslation
+from corpscout_dagster.brreg.translation_terms import TranslationCacheKey
 
 
 class FakeCursor:
@@ -43,6 +44,8 @@ class FakeCursor:
         self.calls.append((sql, {"many": params_seq}))
 
     def fetchone(self):
+        if "retried AS" in self.last_sql:
+            return (1,)
         if "fetch_raw_task_state_summary" in self.last_sql:
             return (1000, 1000, 0, 706, 0, 1, 1, 0, 0, 0, 293, 0, 0, 706)
         if "fetch_domain_result_summary" in self.last_sql:
@@ -111,7 +114,6 @@ def test_gateway_claims_domain_batch_with_typed_asset_api() -> None:
     assert record.raw_record_id == raw_record_id
     assert record.task_attempt_id == "00000000-0000-0000-0000-000000000011"
     assert record.attempt == 2
-    assert batch.state.asset is BrregAssetName.DOMAIN_RESULTS
     assert connection.commits == 1
     assert any(
         "pending_task_ids AS" in sql and params["task_type"] == "domain_results"
@@ -253,57 +255,58 @@ def test_gateway_submit_failure_writes_translation_failure_artifact_and_retry_st
     )
 
 
-def test_gateway_asset_state_and_completeness_errors_are_dagster_independent() -> None:
-    gateway = BrregAssetGateway(FakeConnection())
+def test_gateway_retries_task_failures() -> None:
+    connection = FakeConnection()
+    gateway = BrregAssetGateway(connection)
 
-    state = gateway.get_asset_state(BrregAssetName.DOMAIN_RESULTS)
-
-    assert state == BrregAssetState(
-        asset=BrregAssetName.DOMAIN_RESULTS,
-        raw_records_current=1000,
-        task_no_state=706,
-        task_pending=0,
-        task_running_active=1,
-        task_running_stale=0,
-        task_failed_retryable=0,
-        task_failed_terminal=0,
-        task_succeeded=293,
-        task_skipped=0,
-        task_eligible_now=706,
-        artifact_succeeded=221,
-        artifact_skipped=72,
-        artifact_failed=0,
-        artifact_missing=707,
+    result = gateway.retry_task_failures(
+        RetryTaskFailuresCommand(task_type="translate", error_category="invalid_llm_output", limit=5000)
     )
-    with pytest.raises(AssetBlockedByActiveTasksError) as exc:
-        gateway.assert_asset_complete(BrregAssetName.DOMAIN_RESULTS, max_parallel_tasks=1)
-    assert exc.value.asset is BrregAssetName.DOMAIN_RESULTS
-    assert exc.value.active_running == 1
-    assert exc.value.eligible_now == 706
+
+    assert result.retried_rows == 1
+    assert connection.commits == 1
+    assert any("retried AS" in sql for sql, _ in connection.cursor_instance.calls)
 
 
-def test_gateway_asset_incomplete_error_when_artifacts_missing_without_active_block() -> None:
-    class IncompleteCursor(FakeCursor):
-        def fetchone(self):
-            if "fetch_raw_task_state_summary" in self.last_sql:
-                return (1000, 1000, 0, 707, 0, 0, 0, 0, 0, 0, 293, 0, 0, 707)
-            if "fetch_domain_result_summary" in self.last_sql:
-                return (221, 0, 72, 0, 707)
-            return super().fetchone()
+def test_gateway_fetches_and_upserts_translation_cache() -> None:
+    connection = FakeConnection()
+    gateway = BrregAssetGateway(connection)
 
-    class IncompleteConnection(FakeConnection):
-        def __init__(self) -> None:
-            self.cursor_instance = IncompleteCursor()
-            self.commits = 0
-            self.rollbacks = 0
+    gateway.upsert_cached_translations(
+        UpsertCachedTranslationsCommand(
+            rows=[
+                UpsertCachedTranslation(
+                    category="activity",
+                    source_lang="no",
+                    target_lang="en",
+                    original_hash="hash",
+                    original_text="Aksjer",
+                    translated_text="Shares",
+                    model="qwen3:6b",
+                    prompt_version="v1",
+                    metadata={},
+                )
+            ]
+        )
+    )
+    result = gateway.fetch_cached_translations(
+        FetchCachedTranslationsCommand(
+            keys=[
+                TranslationCacheKey(
+                    category="activity",
+                    source_lang="no",
+                    target_lang="en",
+                    original_hash="hash",
+                )
+            ],
+            model="qwen3:6b",
+            prompt_version="v1",
+        )
+    )
 
-    gateway = BrregAssetGateway(IncompleteConnection())
-
-    with pytest.raises(AssetIncompleteError) as exc:
-        gateway.assert_asset_complete(BrregAssetName.DOMAIN_RESULTS, max_parallel_tasks=1)
-
-    assert exc.value.missing == 707
-    assert exc.value.failed == 0
+    assert result == {}
+    assert connection.commits == 1
+    assert any("translation_cache" in sql for sql, _ in connection.cursor_instance.calls)
 
 
 def test_gateway_claims_and_submits_enhanced_records() -> None:

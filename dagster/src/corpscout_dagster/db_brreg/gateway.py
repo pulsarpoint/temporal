@@ -5,10 +5,14 @@ from enum import StrEnum
 from typing import Any
 
 from corpscout_dagster.db_brreg.models import BrregWorkingRawRecordRow
+from corpscout_dagster.brreg.translation_terms import CachedTermTranslation, TranslationCacheKey
 from corpscout_dagster.db_brreg.store import (
     BrregWorkingStore,
+    CreateBulkSnapshot,
+    CreateEnrichmentRun,
     CreateTaskAttempt,
     EnhancedBuildRecord,
+    FinishEnrichmentRun,
     IncrementEnrichmentRunProgress,
     InsertCurrencyResult,
     InsertDomainResult,
@@ -16,6 +20,7 @@ from corpscout_dagster.db_brreg.store import (
     InsertTranslationResult,
     RawTaskRecord,
     TaskAttempt,
+    UpsertCachedTranslation,
     UpsertResult,
 )
 
@@ -78,6 +83,72 @@ class IngestRawRecordsResult:
 
 
 @dataclass(frozen=True)
+class SmokeIngestRawRecordCommand:
+    dagster_run_id: str
+    source_url: str
+    row: BrregWorkingRawRecordRow
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class BeginRawIngestCommand:
+    dagster_run_id: str
+    source_url: str
+    run_metadata: dict[str, Any] = field(default_factory=dict)
+    snapshot_metadata: dict[str, Any] = field(default_factory=dict)
+    content_length_bytes: int | None = None
+    compressed_payload_hash: str | None = None
+    storage_uri: str | None = None
+
+
+@dataclass(frozen=True)
+class RawIngestContext:
+    enrichment_run_id: str
+    bulk_snapshot_id: str
+
+
+@dataclass(frozen=True)
+class BeginActionRunCommand:
+    dagster_run_id: str
+    run_type: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ActionRunContext:
+    enrichment_run_id: str
+
+
+@dataclass(frozen=True)
+class FinishActionRunCommand:
+    enrichment_run_id: str
+    status: str
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class ReconcileTranslationTasksCommand:
+    model: str
+    prompt_version: str
+
+
+@dataclass(frozen=True)
+class ReconcileTranslationTasksResult:
+    reconciled_rows: int
+
+
+@dataclass(frozen=True)
+class ResetUnstartedRunningTasksCommand:
+    task_type: str
+    raw_record_ids: list[str]
+
+
+@dataclass(frozen=True)
+class ResetUnstartedRunningTasksResult:
+    reset_rows: int
+
+
+@dataclass(frozen=True)
 class ClaimTaskBatchCommand:
     run_id: str
     batch_size: int
@@ -120,7 +191,6 @@ class ClaimedRawRecord:
 class ClaimedRawRecordBatch:
     asset: BrregAssetName
     records: list[ClaimedRawRecord]
-    state: BrregAssetState
 
 
 @dataclass(frozen=True)
@@ -133,45 +203,6 @@ class ClaimedEnhancedBuildRecord:
 @dataclass(frozen=True)
 class ClaimedEnhancedBuildBatch:
     records: list[ClaimedEnhancedBuildRecord]
-    state: BrregAssetState
-
-
-@dataclass(frozen=True)
-class BrregAssetState:
-    asset: BrregAssetName
-    raw_records_current: int
-    task_no_state: int
-    task_pending: int
-    task_running_active: int
-    task_running_stale: int
-    task_failed_retryable: int
-    task_failed_terminal: int
-    task_succeeded: int
-    task_skipped: int
-    task_eligible_now: int
-    artifact_succeeded: int
-    artifact_skipped: int
-    artifact_failed: int
-    artifact_missing: int
-
-    def metadata(self, *, prefix: str | None = None) -> dict[str, int | str]:
-        name = prefix or self.asset.value
-        return {
-            f"live_{name}_raw_records_current": self.raw_records_current,
-            f"live_{name}_task_no_state": self.task_no_state,
-            f"live_{name}_task_pending": self.task_pending,
-            f"live_{name}_task_running_active": self.task_running_active,
-            f"live_{name}_task_running_stale": self.task_running_stale,
-            f"live_{name}_task_failed_retryable": self.task_failed_retryable,
-            f"live_{name}_task_failed_terminal": self.task_failed_terminal,
-            f"live_{name}_task_succeeded": self.task_succeeded,
-            f"live_{name}_task_skipped": self.task_skipped,
-            f"live_{name}_task_eligible_now": self.task_eligible_now,
-            f"live_{name}_artifact_succeeded": self.artifact_succeeded,
-            f"live_{name}_artifact_skipped": self.artifact_skipped,
-            f"live_{name}_artifact_failed": self.artifact_failed,
-            f"live_{name}_artifact_missing": self.artifact_missing,
-        }
 
 
 @dataclass(frozen=True)
@@ -248,38 +279,28 @@ class SubmitTaskFailureCommand:
     artifact_payload: dict[str, Any] | None = None
 
 
-class AssetIncompleteError(RuntimeError):
-    def __init__(self, asset: BrregAssetName, *, missing: int, failed: int) -> None:
-        self.asset = asset
-        self.missing = missing
-        self.failed = failed
-        super().__init__(
-            f"BRREG {_asset_label(asset)} materialization live table incomplete: missing={missing}, failed={failed}"
-        )
+@dataclass(frozen=True)
+class RetryTaskFailuresCommand:
+    task_type: str | None
+    error_category: str
+    limit: int
 
 
-class AssetBlockedByActiveTasksError(RuntimeError):
-    def __init__(
-        self,
-        asset: BrregAssetName,
-        *,
-        active_running: int,
-        max_parallel_tasks: int,
-        eligible_now: int,
-        missing: int,
-        failed: int,
-    ) -> None:
-        self.asset = asset
-        self.active_running = active_running
-        self.max_parallel_tasks = max_parallel_tasks
-        self.eligible_now = eligible_now
-        self.missing = missing
-        self.failed = failed
-        super().__init__(
-            f"BRREG {_asset_label(asset)} materialization blocked by active tasks: "
-            f"active_running={active_running}, max_parallel_tasks={max_parallel_tasks}, "
-            f"eligible_now={eligible_now}, missing={missing}, failed={failed}"
-        )
+@dataclass(frozen=True)
+class RetryTaskFailuresResult:
+    retried_rows: int
+
+
+@dataclass(frozen=True)
+class FetchCachedTranslationsCommand:
+    keys: list[TranslationCacheKey]
+    model: str
+    prompt_version: str
+
+
+@dataclass(frozen=True)
+class UpsertCachedTranslationsCommand:
+    rows: list[UpsertCachedTranslation]
 
 
 class BrregAssetGateway:
@@ -307,6 +328,87 @@ class BrregAssetGateway:
                     )
                 )
         self._connection.commit()
+        return IngestRawRecordsResult.from_upsert_result(result)
+
+    def begin_raw_ingest(self, command: BeginRawIngestCommand) -> RawIngestContext:
+        with self._connection.cursor() as cursor:
+            store = BrregWorkingStore(cursor)
+            enrichment_run_id = store.create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=command.dagster_run_id,
+                    run_type="bulk_ingest",
+                    metadata=command.run_metadata,
+                )
+            )
+            bulk_snapshot_id = store.create_bulk_snapshot(
+                CreateBulkSnapshot(
+                    enrichment_run_id=enrichment_run_id,
+                    source_url=command.source_url,
+                    content_length_bytes=command.content_length_bytes,
+                    compressed_payload_hash=command.compressed_payload_hash,
+                    storage_uri=command.storage_uri,
+                    metadata=command.snapshot_metadata,
+                )
+            )
+        self._connection.commit()
+        return RawIngestContext(enrichment_run_id=enrichment_run_id, bulk_snapshot_id=bulk_snapshot_id)
+
+    def begin_action_run(self, command: BeginActionRunCommand) -> ActionRunContext:
+        with self._connection.cursor() as cursor:
+            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=command.dagster_run_id,
+                    run_type=command.run_type,
+                    metadata=command.metadata,
+                )
+            )
+        self._connection.commit()
+        return ActionRunContext(enrichment_run_id=enrichment_run_id)
+
+    def finish_action_run(self, command: FinishActionRunCommand) -> None:
+        with self._connection.cursor() as cursor:
+            BrregWorkingStore(cursor).finish_enrichment_run(
+                FinishEnrichmentRun(
+                    enrichment_run_id=command.enrichment_run_id,
+                    status=command.status,
+                    error=command.error,
+                )
+            )
+        self._connection.commit()
+
+    def reconcile_translation_tasks(
+        self,
+        command: ReconcileTranslationTasksCommand,
+    ) -> ReconcileTranslationTasksResult:
+        with self._connection.cursor() as cursor:
+            reconciled_rows = BrregWorkingStore(cursor).reconcile_translation_task_states(
+                model=command.model,
+                prompt_version=command.prompt_version,
+            )
+        self._connection.commit()
+        return ReconcileTranslationTasksResult(reconciled_rows=reconciled_rows)
+
+    def smoke_ingest_raw_record(self, command: SmokeIngestRawRecordCommand) -> IngestRawRecordsResult:
+        with self._connection.cursor() as cursor:
+            store = BrregWorkingStore(cursor)
+            enrichment_run_id = store.create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=command.dagster_run_id,
+                    run_type="bulk_ingest",
+                    metadata=command.metadata,
+                )
+            )
+            bulk_snapshot_id = store.create_bulk_snapshot(
+                CreateBulkSnapshot(
+                    enrichment_run_id=enrichment_run_id,
+                    source_url=command.source_url,
+                    content_length_bytes=None,
+                    compressed_payload_hash=None,
+                    storage_uri=None,
+                    metadata=command.metadata,
+                )
+            )
+            result = store.upsert_raw_records([command.row], bulk_snapshot_id=bulk_snapshot_id)
         return IngestRawRecordsResult.from_upsert_result(result)
 
     def claim_translation_batch(self, command: ClaimTaskBatchCommand) -> ClaimedRawRecordBatch:
@@ -345,9 +447,8 @@ class BrregAssetGateway:
                     )
                 ]
             ]
-            state = self._state_for_asset(store, BrregAssetName.ENHANCED_RECORDS)
         self._connection.commit()
-        return ClaimedEnhancedBuildBatch(records=claimed, state=state)
+        return ClaimedEnhancedBuildBatch(records=claimed)
 
     def submit_translation_result(self, command: SubmitTranslationResultCommand) -> SubmitTaskResult:
         status = BrregResultStatus(command.status)
@@ -537,28 +638,70 @@ class BrregAssetGateway:
         self._connection.commit()
         return _failure_result(command)
 
-    def get_asset_state(self, asset: BrregAssetName) -> BrregAssetState:
+    def retry_task_failures(self, command: RetryTaskFailuresCommand) -> RetryTaskFailuresResult:
         with self._connection.cursor() as cursor:
-            return self._state_for_asset(BrregWorkingStore(cursor), asset)
-
-    def assert_asset_complete(self, asset: BrregAssetName, *, max_parallel_tasks: int | None = None) -> None:
-        state = self.get_asset_state(asset)
-        if state.artifact_missing == 0 and state.artifact_failed == 0:
-            return
-        if (
-            max_parallel_tasks is not None
-            and state.task_eligible_now > 0
-            and state.task_running_active >= max_parallel_tasks
-        ):
-            raise AssetBlockedByActiveTasksError(
-                asset,
-                active_running=state.task_running_active,
-                max_parallel_tasks=max_parallel_tasks,
-                eligible_now=state.task_eligible_now,
-                missing=state.artifact_missing,
-                failed=state.artifact_failed,
+            retried_rows = BrregWorkingStore(cursor).retry_task_failures(
+                task_type=command.task_type,
+                error_category=command.error_category,
+                limit=command.limit,
             )
-        raise AssetIncompleteError(asset, missing=state.artifact_missing, failed=state.artifact_failed)
+        self._connection.commit()
+        return RetryTaskFailuresResult(retried_rows=retried_rows)
+
+    def fetch_cached_translations(
+        self,
+        command: FetchCachedTranslationsCommand,
+    ) -> dict[TranslationCacheKey, CachedTermTranslation]:
+        with self._connection.cursor() as cursor:
+            return BrregWorkingStore(cursor).fetch_cached_translations(
+                command.keys,
+                model=command.model,
+                prompt_version=command.prompt_version,
+            )
+
+    def upsert_cached_translations(self, command: UpsertCachedTranslationsCommand) -> None:
+        with self._connection.cursor() as cursor:
+            BrregWorkingStore(cursor).upsert_cached_translations(command.rows)
+        self._connection.commit()
+
+    def reset_unstarted_running_tasks(
+        self,
+        command: ResetUnstartedRunningTasksCommand,
+    ) -> ResetUnstartedRunningTasksResult:
+        with self._connection.cursor() as cursor:
+            reset_rows = BrregWorkingStore(cursor).reset_unstarted_running_task_records(
+                task_type=command.task_type,
+                raw_record_ids=command.raw_record_ids,
+            )
+        self._connection.commit()
+        return ResetUnstartedRunningTasksResult(reset_rows=reset_rows)
+
+    def fetch_task_failure_summary(self, *, task_type: str) -> dict[str, int]:
+        with self._connection.cursor() as cursor:
+            return BrregWorkingStore(cursor).fetch_task_failure_summary(task_type=task_type)
+
+    def fetch_raw_task_state_summary(self, *, task_type: str) -> dict[str, int]:
+        with self._connection.cursor() as cursor:
+            return BrregWorkingStore(cursor).fetch_raw_task_state_summary(task_type=task_type)
+
+    def fetch_translation_artifact_summary(self, *, model: str, prompt_version: str) -> dict[str, int]:
+        with self._connection.cursor() as cursor:
+            return BrregWorkingStore(cursor).fetch_translation_artifact_summary(
+                model=model,
+                prompt_version=prompt_version,
+            )
+
+    def fetch_domain_result_summary(self) -> dict[str, int]:
+        with self._connection.cursor() as cursor:
+            return BrregWorkingStore(cursor).fetch_domain_result_summary()
+
+    def fetch_currency_result_summary(self) -> dict[str, int]:
+        with self._connection.cursor() as cursor:
+            return BrregWorkingStore(cursor).fetch_currency_result_summary()
+
+    def fetch_enhanced_record_summary(self) -> dict[str, int]:
+        with self._connection.cursor() as cursor:
+            return BrregWorkingStore(cursor).fetch_enhanced_record_summary()
 
     def _claim_raw_task_batch(self, asset: BrregAssetName, command: ClaimTaskBatchCommand) -> ClaimedRawRecordBatch:
         task_type = _task_type_for_asset(asset)
@@ -589,50 +732,8 @@ class BrregAssetGateway:
                     )
                 ]
             ]
-            state = self._state_for_asset(store, asset)
         self._connection.commit()
-        return ClaimedRawRecordBatch(asset=asset, records=claimed, state=state)
-
-    def _state_for_asset(self, store: BrregWorkingStore, asset: BrregAssetName) -> BrregAssetState:
-        task_summary = store.fetch_raw_task_state_summary(task_type=_task_type_for_asset(asset))
-        artifact_summary = self._artifact_summary(store, asset)
-        artifact_succeeded, artifact_skipped, artifact_failed, artifact_missing = _artifact_counts(asset, artifact_summary)
-        return BrregAssetState(
-            asset=asset,
-            raw_records_current=task_summary["raw_records_current"],
-            task_no_state=task_summary["task_no_state"],
-            task_pending=task_summary["task_pending"],
-            task_running_active=task_summary["task_running_active"],
-            task_running_stale=task_summary["task_running_stale"],
-            task_failed_retryable=task_summary["task_failed_retryable"],
-            task_failed_terminal=task_summary["task_failed_terminal"],
-            task_succeeded=task_summary["task_succeeded"],
-            task_skipped=task_summary["task_skipped"],
-            task_eligible_now=task_summary["task_eligible_now"],
-            artifact_succeeded=artifact_succeeded,
-            artifact_skipped=artifact_skipped,
-            artifact_failed=artifact_failed,
-            artifact_missing=artifact_missing,
-        )
-
-    def _artifact_summary(self, store: BrregWorkingStore, asset: BrregAssetName) -> dict[str, int]:
-        if asset is BrregAssetName.TRANSLATION_RESULTS:
-            return store.fetch_translation_artifact_summary(
-                model=self._translation_model or "",
-                prompt_version=self._translation_prompt_version or "",
-            )
-        if asset is BrregAssetName.DOMAIN_RESULTS:
-            return store.fetch_domain_result_summary()
-        if asset is BrregAssetName.CURRENCY_RESULTS:
-            return store.fetch_currency_result_summary()
-        if asset is BrregAssetName.ENHANCED_RECORDS:
-            return store.fetch_enhanced_record_summary()
-        return {
-            "raw_record_succeeded": store.fetch_raw_task_state_summary(task_type="translate")["raw_records_current"],
-            "raw_record_skipped": 0,
-            "raw_record_failed": 0,
-            "raw_record_missing": 0,
-        }
+        return ClaimedRawRecordBatch(asset=asset, records=claimed)
 
     def _finish_success(self, store: BrregWorkingStore, command, task_status: BrregTaskStatus) -> None:
         store.finish_task_attempt(task_attempt_id=command.task_attempt_id, status=task_status.value, error=None)
@@ -722,50 +823,3 @@ def _task_type_for_asset(asset: BrregAssetName) -> str:
         BrregAssetName.CURRENCY_RESULTS: "currency_conversion",
         BrregAssetName.ENHANCED_RECORDS: "build_enhanced",
     }[asset]
-
-
-def _asset_label(asset: BrregAssetName) -> str:
-    return {
-        BrregAssetName.RAW_RECORDS: "raw record",
-        BrregAssetName.TRANSLATION_RESULTS: "translation",
-        BrregAssetName.DOMAIN_RESULTS: "domain result",
-        BrregAssetName.CURRENCY_RESULTS: "currency",
-        BrregAssetName.ENHANCED_RECORDS: "enhanced record",
-    }[asset]
-
-
-def _artifact_counts(asset: BrregAssetName, summary: dict[str, int]) -> tuple[int, int, int, int]:
-    if asset is BrregAssetName.TRANSLATION_RESULTS:
-        return (
-            summary.get("translation_result_succeeded", 0),
-            summary.get("translation_result_skipped", 0),
-            summary.get("translation_result_failed", 0),
-            summary.get("translation_result_missing", 0),
-        )
-    if asset is BrregAssetName.DOMAIN_RESULTS:
-        return (
-            summary.get("domain_result_succeeded", 0),
-            summary.get("domain_result_partial", 0) + summary.get("domain_result_not_found", 0),
-            summary.get("domain_result_failed", 0),
-            summary.get("domain_result_missing", 0),
-        )
-    if asset is BrregAssetName.CURRENCY_RESULTS:
-        return (
-            summary.get("currency_result_succeeded", 0),
-            summary.get("currency_result_skipped", 0) + summary.get("currency_result_not_available", 0),
-            summary.get("currency_result_failed", 0),
-            summary.get("currency_result_missing", 0),
-        )
-    if asset is BrregAssetName.ENHANCED_RECORDS:
-        return (
-            summary.get("enhanced_record_built", 0) + summary.get("enhanced_record_published", 0),
-            summary.get("enhanced_record_superseded", 0),
-            summary.get("enhanced_record_publish_failed", 0),
-            summary.get("enhanced_record_missing", 0),
-        )
-    return (
-        summary.get("raw_record_succeeded", 0),
-        summary.get("raw_record_skipped", 0),
-        summary.get("raw_record_failed", 0),
-        summary.get("raw_record_missing", 0),
-    )

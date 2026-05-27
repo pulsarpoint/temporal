@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from corpscout_dagster.db_brreg.store import DomainResultCandidateRow, RawTaskRecord
+from corpscout_dagster.db_brreg import DomainResultCandidateRow, RawTaskRecord
 
 
 BRREG_ENHANCED_SCHEMA_VERSION = "brreg.enhanced.v1"

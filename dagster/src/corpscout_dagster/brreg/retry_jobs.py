@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from dagster import Field, Int, job, op
 
-from corpscout_dagster.db_brreg.store import BrregWorkingStore
+from corpscout_dagster.db_brreg import BrregAssetGateway, RetryTaskFailuresCommand
 
 
 DEFAULT_RETRY_LIMIT = 5000
@@ -36,13 +36,14 @@ def retry_brreg_task_failures(
         limit,
     )
     with connection_factory(database_url) as conn:
-        with conn.cursor() as cursor:
-            retried_rows = BrregWorkingStore(cursor).retry_task_failures(
+        result = BrregAssetGateway(conn).retry_task_failures(
+            RetryTaskFailuresCommand(
                 task_type=task_type,
                 error_category=error_category,
                 limit=limit,
             )
-        conn.commit()
+        )
+        retried_rows = result.retried_rows
     result = {
         "retried_rows": retried_rows,
         "limit": limit,
