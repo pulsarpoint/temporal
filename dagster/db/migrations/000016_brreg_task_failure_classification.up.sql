@@ -131,6 +131,9 @@ JOIN dagster_brreg.raw_records rr
 LEFT JOIN dagster_brreg.task_attempts ta
   ON ta.id = tr.task_attempt_id;
 
+DROP VIEW IF EXISTS dagster_brreg.v_failed_task_states;
+DROP VIEW IF EXISTS dagster_brreg.v_raw_record_task_overview;
+
 CREATE OR REPLACE VIEW dagster_brreg.v_failed_task_states AS
 SELECT
   rr.id AS raw_record_id,

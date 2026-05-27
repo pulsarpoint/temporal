@@ -312,7 +312,7 @@ def materialize_brreg_translation_results(
                         FinishEnrichmentRun(
                             enrichment_run_id=enrichment_run_id,
                             status="failed",
-                    error=exc,
+                            error=str(exc),
                         )
                     )
                 conn.commit()

@@ -2,6 +2,8 @@ DROP INDEX IF EXISTS dagster_brreg.idx_dagster_brreg_task_states_failure_retry;
 
 DROP VIEW IF EXISTS dagster_brreg.v_task_failure_summary;
 DROP VIEW IF EXISTS dagster_brreg.v_translation_result_detail;
+DROP VIEW IF EXISTS dagster_brreg.v_failed_task_states;
+DROP VIEW IF EXISTS dagster_brreg.v_raw_record_task_overview;
 
 CREATE OR REPLACE VIEW dagster_brreg.v_failed_task_states AS
 SELECT
