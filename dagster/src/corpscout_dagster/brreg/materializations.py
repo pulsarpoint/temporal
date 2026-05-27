@@ -77,6 +77,14 @@ class TaskFailureClassification:
     retry_strategy: str
 
 
+class StructuredTaskError(RuntimeError):
+    def __init__(self, message: str, classification: TaskFailureClassification) -> None:
+        super().__init__(message)
+        self.error_category = classification.error_category
+        self.error_code = classification.error_code
+        self.retry_strategy = classification.retry_strategy
+
+
 def materialize_brreg_raw_records(
     context,
     *,
@@ -304,7 +312,7 @@ def materialize_brreg_translation_results(
                         FinishEnrichmentRun(
                             enrichment_run_id=enrichment_run_id,
                             status="failed",
-                            error=str(exc),
+                    error=exc,
                         )
                     )
                 conn.commit()
@@ -405,6 +413,56 @@ def _build_translation_asset_metadata(
     }
 
 
+def _build_standard_task_asset_metadata(
+    *,
+    run_id: str,
+    task_type: str,
+    rows_claimed: int,
+    rows_succeeded: int,
+    rows_failed: int,
+    batches_processed: int,
+    result_counter_name: str,
+    result_counter_value: int,
+    live_prefix: str,
+    max_batches_per_run: int,
+    max_parallel_tasks: int,
+    stopped_reason: str,
+    task_summary: dict[str, int],
+    failure_summary: dict[str, int],
+    live_metadata: dict[str, int],
+) -> dict[str, int | str]:
+    live_failure_metadata = {
+        f"live_{live_prefix}_failures_{category}": failure_summary.get(category, 0)
+        for category in ERROR_CATEGORIES
+    }
+    return {
+        "run_dagster_run_id": run_id,
+        "run_task_type": task_type,
+        "run_rows_claimed": rows_claimed,
+        "run_rows_succeeded": rows_succeeded,
+        "run_rows_failed": rows_failed,
+        "run_batches_processed": batches_processed,
+        f"run_{result_counter_name}": result_counter_value,
+        "run_max_batches_per_run": max_batches_per_run,
+        "run_max_parallel_tasks": max_parallel_tasks,
+        "run_stopped_reason": stopped_reason,
+        f"live_{task_type}_task_no_state": task_summary.get("task_no_state", 0),
+        f"live_{task_type}_task_pending": task_summary.get("task_pending", 0),
+        f"live_{task_type}_task_running": task_summary.get("task_running", 0),
+        f"live_{task_type}_task_running_active": task_summary.get("task_running_active", 0),
+        f"live_{task_type}_task_running_stale": task_summary.get("task_running_stale", 0),
+        f"live_{task_type}_task_failed_retryable": task_summary.get("task_failed_retryable", 0),
+        f"live_{task_type}_task_failed_terminal": task_summary.get("task_failed_terminal", 0),
+        f"live_{task_type}_task_succeeded": task_summary.get("task_succeeded", 0),
+        f"live_{task_type}_task_skipped": task_summary.get("task_skipped", 0),
+        f"live_{task_type}_task_cancelled": task_summary.get("task_cancelled", 0),
+        f"live_{task_type}_task_eligible_now": task_summary.get("task_eligible_now", 0),
+        f"live_{live_prefix}_failures_total": sum(failure_summary.values()),
+        **live_failure_metadata,
+        **live_metadata,
+    }
+
+
 def materialize_brreg_domain_results(
     context,
     *,
@@ -428,6 +486,9 @@ def materialize_brreg_domain_results(
     batches_processed = 0
     stopped_reason = "max_batches_reached"
     task_type = "domain_results"
+    task_summary: dict[str, int] = {}
+    artifact_summary: dict[str, int] = {}
+    failure_summary: dict[str, int] = {}
     enrichment_run_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
@@ -503,13 +564,17 @@ def materialize_brreg_domain_results(
             )
 
             with conn.cursor() as cursor:
-                BrregWorkingStore(cursor).finish_enrichment_run(
+                store = BrregWorkingStore(cursor)
+                store.finish_enrichment_run(
                     FinishEnrichmentRun(
                         enrichment_run_id=enrichment_run_id,
                         status="succeeded" if rows_failed == 0 else "failed",
                         error=None if rows_failed == 0 else f"{rows_failed} domain result rows failed",
                     )
                 )
+                task_summary = store.fetch_raw_task_state_summary(task_type=task_type)
+                artifact_summary = store.fetch_domain_result_summary()
+                failure_summary = store.fetch_task_failure_summary(task_type=task_type)
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -533,14 +598,29 @@ def materialize_brreg_domain_results(
         "batches_processed": batches_processed,
     }
     context.add_output_metadata(
-        {
-            **result,
-            "dagster_run_id": context.run_id,
-            "task_type": task_type,
-            "max_batches_per_run": max_batches_per_run,
-            "max_parallel_tasks": max_parallel_tasks,
-            "stopped_reason": stopped_reason,
-        }
+        _build_standard_task_asset_metadata(
+            run_id=context.run_id,
+            task_type=task_type,
+            rows_claimed=rows_seen,
+            rows_succeeded=rows_completed,
+            rows_failed=rows_failed,
+            batches_processed=batches_processed,
+            result_counter_name="domain_results_written",
+            result_counter_value=domain_results_written,
+            live_prefix="domain",
+            max_batches_per_run=max_batches_per_run,
+            max_parallel_tasks=max_parallel_tasks,
+            stopped_reason=stopped_reason,
+            task_summary=task_summary,
+            failure_summary=failure_summary,
+            live_metadata={
+                "live_domain_results_succeeded": artifact_summary.get("domain_result_succeeded", 0),
+                "live_domain_results_partial": artifact_summary.get("domain_result_partial", 0),
+                "live_domain_results_not_found": artifact_summary.get("domain_result_not_found", 0),
+                "live_domain_results_failed": artifact_summary.get("domain_result_failed", 0),
+                "live_domain_results_missing": artifact_summary.get("domain_result_missing", 0),
+            },
+        )
     )
     return result
 
@@ -569,6 +649,9 @@ def materialize_brreg_currency_results(
     batches_processed = 0
     stopped_reason = "max_batches_reached"
     task_type = "currency_conversion"
+    task_summary: dict[str, int] = {}
+    artifact_summary: dict[str, int] = {}
+    failure_summary: dict[str, int] = {}
     enrichment_run_id: str | None = None
     fx_rates: FxRateSet | None = None
     with connection_factory(database_url) as conn:
@@ -644,13 +727,17 @@ def materialize_brreg_currency_results(
             )
 
             with conn.cursor() as cursor:
-                BrregWorkingStore(cursor).finish_enrichment_run(
+                store = BrregWorkingStore(cursor)
+                store.finish_enrichment_run(
                     FinishEnrichmentRun(
                         enrichment_run_id=enrichment_run_id,
                         status="succeeded" if rows_failed == 0 else "failed",
                         error=None if rows_failed == 0 else f"{rows_failed} currency rows failed",
                     )
                 )
+                task_summary = store.fetch_raw_task_state_summary(task_type=task_type)
+                artifact_summary = store.fetch_currency_result_summary()
+                failure_summary = store.fetch_task_failure_summary(task_type=task_type)
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -674,14 +761,29 @@ def materialize_brreg_currency_results(
         "batches_processed": batches_processed,
     }
     context.add_output_metadata(
-        {
-            **result,
-            "dagster_run_id": context.run_id,
-            "task_type": task_type,
-            "max_batches_per_run": max_batches_per_run,
-            "max_parallel_tasks": max_parallel_tasks,
-            "stopped_reason": stopped_reason,
-        }
+        _build_standard_task_asset_metadata(
+            run_id=context.run_id,
+            task_type=task_type,
+            rows_claimed=rows_seen,
+            rows_succeeded=rows_completed,
+            rows_failed=rows_failed,
+            batches_processed=batches_processed,
+            result_counter_name="currency_results_written",
+            result_counter_value=currency_results_written,
+            live_prefix="currency",
+            max_batches_per_run=max_batches_per_run,
+            max_parallel_tasks=max_parallel_tasks,
+            stopped_reason=stopped_reason,
+            task_summary=task_summary,
+            failure_summary=failure_summary,
+            live_metadata={
+                "live_currency_results_succeeded": artifact_summary.get("currency_result_succeeded", 0),
+                "live_currency_results_skipped": artifact_summary.get("currency_result_skipped", 0),
+                "live_currency_results_not_available": artifact_summary.get("currency_result_not_available", 0),
+                "live_currency_results_failed": artifact_summary.get("currency_result_failed", 0),
+                "live_currency_results_missing": artifact_summary.get("currency_result_missing", 0),
+            },
+        )
     )
     return result
 
@@ -701,6 +803,9 @@ def materialize_brreg_enhanced_records(
     enhanced_records_built = 0
     enrichment_run_id: str | None = None
     task_type = "build_enhanced"
+    task_summary: dict[str, int] = {}
+    artifact_summary: dict[str, int] = {}
+    failure_summary: dict[str, int] = {}
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
             enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
@@ -742,7 +847,7 @@ def materialize_brreg_enhanced_records(
                         attempt=attempt,
                         record=build_record.record,
                         task_type=task_type,
-                        error=str(exc),
+                        error=exc,
                     )
                     rows_failed += 1
 
@@ -755,13 +860,17 @@ def materialize_brreg_enhanced_records(
             )
 
             with conn.cursor() as cursor:
-                BrregWorkingStore(cursor).finish_enrichment_run(
+                store = BrregWorkingStore(cursor)
+                store.finish_enrichment_run(
                     FinishEnrichmentRun(
                         enrichment_run_id=enrichment_run_id,
                         status="succeeded" if rows_failed == 0 else "failed",
                         error=None if rows_failed == 0 else f"{rows_failed} enhanced record rows failed",
                     )
                 )
+                task_summary = store.fetch_raw_task_state_summary(task_type=task_type)
+                artifact_summary = store.fetch_enhanced_record_summary()
+                failure_summary = store.fetch_task_failure_summary(task_type=task_type)
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -783,7 +892,31 @@ def materialize_brreg_enhanced_records(
         "rows_failed": rows_failed,
         "enhanced_records_built": enhanced_records_built,
     }
-    context.add_output_metadata({**result, "dagster_run_id": context.run_id, "task_type": task_type})
+    context.add_output_metadata(
+        _build_standard_task_asset_metadata(
+            run_id=context.run_id,
+            task_type=task_type,
+            rows_claimed=rows_seen,
+            rows_succeeded=rows_completed,
+            rows_failed=rows_failed,
+            batches_processed=1 if rows_seen else 0,
+            result_counter_name="enhanced_records_built",
+            result_counter_value=enhanced_records_built,
+            live_prefix="enhanced",
+            max_batches_per_run=1,
+            max_parallel_tasks=1,
+            stopped_reason="completed",
+            task_summary=task_summary,
+            failure_summary=failure_summary,
+            live_metadata={
+                "live_enhanced_records_built": artifact_summary.get("enhanced_record_built", 0),
+                "live_enhanced_records_published": artifact_summary.get("enhanced_record_published", 0),
+                "live_enhanced_records_publish_failed": artifact_summary.get("enhanced_record_publish_failed", 0),
+                "live_enhanced_records_superseded": artifact_summary.get("enhanced_record_superseded", 0),
+                "live_enhanced_records_missing": artifact_summary.get("enhanced_record_missing", 0),
+            },
+        )
+    )
     return result
 
 
@@ -884,7 +1017,7 @@ def _translate_record_batch(
                 attempt=attempts_by_record_id[record.id],
                 record=record,
                 task_type="translate",
-                error=str(exc),
+                error=exc,
             )
         return 0, len(records)
 
@@ -926,7 +1059,7 @@ def _translate_record_batch(
                 attempt=attempts_by_record_id[record.id],
                 record=record,
                 task_type="translate",
-                error=str(exc),
+                error=exc,
             )
             rows_failed += 1
     return rows_completed, rows_failed
@@ -1037,7 +1170,10 @@ def _write_domain_result(
                 store=store,
                 attempt=attempt,
                 task_type="domain_results",
-                error=error or "domain service returned failed status",
+                error=_structured_error_from_payload(
+                    payload,
+                    fallback_message=error or "domain service returned failed status",
+                ),
             )
         else:
             store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=error)
@@ -1112,6 +1248,32 @@ def _domain_result_error(payload: dict) -> str | None:
         return str(first)
     message = first.get("message") or first.get("code")
     return str(message) if message else None
+
+
+def _structured_error_from_payload(payload: dict, *, fallback_message: str) -> object:
+    errors = payload.get("errors")
+    if not isinstance(errors, list) or not errors or not isinstance(errors[0], dict):
+        return fallback_message
+    first = errors[0]
+    category = _optional_payload_text(first.get("error_category") or first.get("category"))
+    code = _optional_payload_text(first.get("error_code") or first.get("code"))
+    retry_strategy = _optional_payload_text(first.get("retry_strategy"))
+    if not category and not code and not retry_strategy:
+        return fallback_message
+    message = _optional_payload_text(first.get("message")) or fallback_message
+    return StructuredTaskError(
+        message,
+        TaskFailureClassification(
+            category or "unknown",
+            code or "task_failed",
+            retry_strategy or "automatic",
+        ),
+    )
+
+
+def _optional_payload_text(value) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _write_currency_result(
@@ -1192,8 +1354,17 @@ def _build_currency_result(
     )
 
 
-def classify_task_error(*, task_type: str, error: str | None) -> TaskFailureClassification:
-    text = str(error or "").strip()
+def classify_task_error(*, task_type: str, error: object | None) -> TaskFailureClassification:
+    structured_category = _optional_error_attr(error, "error_category")
+    structured_code = _optional_error_attr(error, "error_code")
+    structured_retry_strategy = _optional_error_attr(error, "retry_strategy")
+    if structured_category or structured_code or structured_retry_strategy:
+        return TaskFailureClassification(
+            structured_category or "unknown",
+            structured_code or "task_failed",
+            structured_retry_strategy or "automatic",
+        )
+    text = _task_error_message(error)
     normalized = text.lower()
     if not normalized:
         return TaskFailureClassification("unknown", "unknown_error", "automatic")
@@ -1226,18 +1397,28 @@ def classify_task_error(*, task_type: str, error: str | None) -> TaskFailureClas
     return TaskFailureClassification("unknown", "task_failed", "automatic")
 
 
+def _optional_error_attr(error: object | None, name: str) -> str | None:
+    text = str(getattr(error, name, "") or "").strip()
+    return text or None
+
+
+def _task_error_message(error: object | None) -> str:
+    return str(error or "").strip()
+
+
 def _finish_failed_task_attempt(
     *,
     store: BrregWorkingStore,
     attempt: TaskAttempt,
     task_type: str,
-    error: str,
+    error: object,
 ) -> TaskFailureClassification:
+    error_message = _task_error_message(error)
     classification = classify_task_error(task_type=task_type, error=error)
     store.finish_task_attempt(
         task_attempt_id=attempt.id,
         status="failed",
-        error=error,
+        error=error_message,
         error_category=classification.error_category,
         error_code=classification.error_code,
         retry_strategy=classification.retry_strategy,
@@ -1415,7 +1596,7 @@ def _mark_record_task_failed(
     attempt: TaskAttempt,
     record: RawTaskRecord,
     task_type: str,
-    error: str,
+    error: object,
 ) -> None:
     with conn.cursor() as cursor:
         store = BrregWorkingStore(cursor)
@@ -1425,6 +1606,7 @@ def _mark_record_task_failed(
             task_type=task_type,
             error=error,
         )
+        error_message = _task_error_message(error)
         if task_type == "translate":
             store.insert_translation_result(
                 InsertTranslationResult(
@@ -1434,7 +1616,7 @@ def _mark_record_task_failed(
                     translated_payload=None,
                     model=None,
                     prompt_version=None,
-                    error=error,
+                    error=error_message,
                     metadata={
                         "error_category": classification.error_category,
                         "error_code": classification.error_code,

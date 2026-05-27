@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import httpx
+import pytest
 
 from corpscout_dagster.brreg.translation_terms import (
     CachedTermTranslation,
     HttpTranslationServiceTermTranslator,
+    TranslationServiceError,
     TranslationItem,
     build_translation_payload,
     extract_translation_items,
@@ -156,6 +158,45 @@ def test_http_translation_service_term_translator_calls_external_service() -> No
 
     assert translated == {translation_item_id(item): "Engage in rental of real estate"}
     assert len(requests) == 1
+
+
+def test_http_translation_service_term_translator_preserves_structured_failure() -> None:
+    item = TranslationItem(category="activity", text="Drive utleie")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "failed",
+                "error": {
+                    "message": "LLM returned malformed JSON",
+                    "code": "malformed_llm_response",
+                    "category": "invalid_llm_output",
+                    "retry_strategy": "change_model_or_prompt",
+                },
+            },
+        )
+
+    translator = HttpTranslationServiceTermTranslator(
+        base_url="http://translation-service.test",
+        provider="deepseek",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(TranslationServiceError) as exc_info:
+        translator.translate_terms(
+            category="mixed",
+            items=[item],
+            source_lang="no",
+            target_lang="en",
+            model="deepseek-v4-flash",
+            prompt_version="v2",
+        )
+
+    assert str(exc_info.value) == "LLM returned malformed JSON"
+    assert exc_info.value.error_category == "invalid_llm_output"
+    assert exc_info.value.error_code == "malformed_llm_response"
+    assert exc_info.value.retry_strategy == "change_model_or_prompt"
 
 
 def json_from_request(request: httpx.Request) -> dict:

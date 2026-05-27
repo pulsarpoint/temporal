@@ -108,6 +108,7 @@ def test_working_store_migration_creates_observability_views() -> None:
         "v_enrichment_run_summary",
         "v_task_state_summary",
         "v_task_failure_summary",
+        "v_translation_result_detail",
         "v_failed_task_states",
         "v_raw_record_task_overview",
     ]:

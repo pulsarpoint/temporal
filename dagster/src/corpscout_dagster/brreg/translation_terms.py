@@ -38,6 +38,34 @@ class CachedTermTranslation:
     prompt_version: str
 
 
+class TranslationServiceError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_category: str | None = None,
+        error_code: str | None = None,
+        retry_strategy: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.error_category = error_category
+        self.error_code = error_code
+        self.retry_strategy = retry_strategy
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "TranslationServiceError":
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            return cls("translation service failed")
+        message = error.get("message") or error.get("code") or "translation service failed"
+        return cls(
+            str(message),
+            error_category=_optional_error_text(error.get("category") or error.get("error_category")),
+            error_code=_optional_error_text(error.get("code") or error.get("error_code")),
+            retry_strategy=_optional_error_text(error.get("retry_strategy")),
+        )
+
+
 class TermTranslator(Protocol):
     def translate_terms(
         self,
@@ -111,7 +139,7 @@ class HttpTranslationServiceTermTranslator:
         if not isinstance(payload, dict):
             raise RuntimeError("translation service returned a non-object response")
         if payload.get("status") == "failed":
-            raise RuntimeError(_translation_service_error_message(payload))
+            raise TranslationServiceError.from_payload(payload)
         translations = payload.get("translations")
         if not isinstance(translations, list):
             raise RuntimeError("translation service response is missing translations")
@@ -236,9 +264,6 @@ def _deduplicate_items(items: list[TranslationItem]) -> list[TranslationItem]:
     return unique
 
 
-def _translation_service_error_message(payload: dict[str, Any]) -> str:
-    error = payload.get("error")
-    if not isinstance(error, dict):
-        return "translation service failed"
-    message = error.get("message") or error.get("code")
-    return str(message) if message else "translation service failed"
+def _optional_error_text(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None

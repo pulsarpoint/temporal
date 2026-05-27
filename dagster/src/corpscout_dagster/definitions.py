@@ -16,6 +16,15 @@ from corpscout_dagster.brreg.resources import (
     postgres_resource,
     translation_service_resource,
 )
+from corpscout_dagster.brreg.retry_jobs import (
+    brreg_retry_currency_transient_external_job,
+    brreg_retry_domain_rate_limited_job,
+    brreg_retry_domain_transient_external_job,
+    brreg_retry_interrupted_failures_job,
+    brreg_retry_translation_invalid_llm_output_job,
+    brreg_retry_translation_rate_limited_job,
+    brreg_retry_translation_transient_external_job,
+)
 
 defs = Definitions(
     assets=[
@@ -41,6 +50,13 @@ defs = Definitions(
                 brreg_enhanced_records,
             ),
         ),
+        brreg_retry_translation_invalid_llm_output_job,
+        brreg_retry_translation_transient_external_job,
+        brreg_retry_translation_rate_limited_job,
+        brreg_retry_domain_rate_limited_job,
+        brreg_retry_domain_transient_external_job,
+        brreg_retry_currency_transient_external_job,
+        brreg_retry_interrupted_failures_job,
     ],
     resources={
         "postgres": postgres_resource,

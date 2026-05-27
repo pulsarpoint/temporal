@@ -109,6 +109,28 @@ GROUP BY
   coalesce(rts.error_code, 'unknown_error'),
   coalesce(rts.retry_strategy, 'automatic');
 
+CREATE OR REPLACE VIEW dagster_brreg.v_translation_result_detail AS
+SELECT
+  tr.id AS translation_result_id,
+  rr.id AS raw_record_id,
+  rr.organization_number,
+  rr.organization_name,
+  rr.is_current,
+  tr.status,
+  tr.model,
+  tr.prompt_version,
+  coalesce(tr.metadata->>'error_category', ta.error_category, 'unknown') AS error_category,
+  coalesce(tr.metadata->>'error_code', ta.error_code, 'unknown_error') AS error_code,
+  coalesce(tr.metadata->>'retry_strategy', ta.retry_strategy, 'automatic') AS retry_strategy,
+  tr.error,
+  tr.created_at,
+  tr.metadata
+FROM dagster_brreg.translation_results tr
+JOIN dagster_brreg.raw_records rr
+  ON rr.id = tr.raw_record_id
+LEFT JOIN dagster_brreg.task_attempts ta
+  ON ta.id = tr.task_attempt_id;
+
 CREATE OR REPLACE VIEW dagster_brreg.v_failed_task_states AS
 SELECT
   rr.id AS raw_record_id,

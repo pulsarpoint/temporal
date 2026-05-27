@@ -74,6 +74,12 @@ class FakeCursor:
             return (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         if "fetch_translation_artifact_summary" in self.last_sql:
             return (0, 0, 0, 0, 0)
+        if "fetch_domain_result_summary" in self.last_sql:
+            return (0, 0, 0, 0, 0)
+        if "fetch_currency_result_summary" in self.last_sql:
+            return (0, 0, 0, 0, 0)
+        if "fetch_enhanced_record_summary" in self.last_sql:
+            return (0, 0, 0, 0, 0)
         return self.fetchone_values.pop(0)
 
     def fetchall(self):
@@ -234,6 +240,13 @@ def test_definitions_expose_only_operational_brreg_jobs() -> None:
         "brreg_currency_job",
         "brreg_build_enhanced_job",
         "brreg_full_enrichment_job",
+        "brreg_retry_translation_invalid_llm_output_job",
+        "brreg_retry_translation_transient_external_job",
+        "brreg_retry_translation_rate_limited_job",
+        "brreg_retry_domain_rate_limited_job",
+        "brreg_retry_domain_transient_external_job",
+        "brreg_retry_currency_transient_external_job",
+        "brreg_retry_interrupted_failures_job",
     }
 
 
@@ -712,6 +725,14 @@ def test_materialize_brreg_domain_results_writes_single_service_artifact() -> No
         and params.get("best_domain") == "bortigard.no"
         for sql, params in params_by_sql
     )
+    metadata = context.metadata[-1]
+    assert metadata["run_task_type"] == "domain_results"
+    assert metadata["run_rows_claimed"] == 1
+    assert metadata["run_rows_succeeded"] == 1
+    assert metadata["run_domain_results_written"] == 1
+    assert "live_domain_results_succeeded" in metadata
+    assert "live_domain_failures_total" in metadata
+    assert "rows_completed" not in metadata
 
 
 def test_materialize_brreg_currency_results_writes_single_currency_artifact() -> None:
@@ -775,6 +796,14 @@ def test_materialize_brreg_currency_results_writes_single_currency_artifact() ->
         and params.get("original_currency") == "NOK"
         for sql, params in params_by_sql
     )
+    metadata = context.metadata[-1]
+    assert metadata["run_task_type"] == "currency_conversion"
+    assert metadata["run_rows_claimed"] == 1
+    assert metadata["run_rows_succeeded"] == 1
+    assert metadata["run_currency_results_written"] == 1
+    assert "live_currency_results_succeeded" in metadata
+    assert "live_currency_failures_total" in metadata
+    assert "rows_completed" not in metadata
 
 
 def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() -> None:
@@ -864,4 +893,11 @@ def test_materialize_brreg_enhanced_records_builds_payloads_for_ready_records() 
     assert enhanced_payload["schema_version"] == "brreg.enhanced.v1"
     assert enhanced_payload["enhancement"]["section_statuses"]["domains"] == "not_available"
     assert enhanced_payload["capital"]["amount_usd_cents"] == 886864
-    assert context.metadata[-1]["rows_completed"] == 1
+    metadata = context.metadata[-1]
+    assert metadata["run_task_type"] == "build_enhanced"
+    assert metadata["run_rows_claimed"] == 1
+    assert metadata["run_rows_succeeded"] == 1
+    assert metadata["run_enhanced_records_built"] == 1
+    assert "live_enhanced_records_built" in metadata
+    assert "live_enhanced_failures_total" in metadata
+    assert "rows_completed" not in metadata

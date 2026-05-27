@@ -426,6 +426,30 @@ def test_working_store_fetches_task_failure_summary_by_category() -> None:
     assert params == {"task_type": "translate"}
 
 
+def test_working_store_retries_task_failures_by_category() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = [(7,)]
+    store = BrregWorkingStore(cursor)
+
+    retried = store.retry_task_failures(
+        task_type="translate",
+        error_category="invalid_llm_output",
+        limit=100,
+    )
+
+    assert retried == 7
+    sql, params = cursor.calls[0]
+    assert "retry_candidates AS" in sql
+    assert "status = 'pending'" in sql
+    assert "error_category = NULL" in sql
+    assert "error_code = NULL" in sql
+    assert params == {
+        "task_type": "translate",
+        "error_category": "invalid_llm_output",
+        "limit": 100,
+    }
+
+
 def test_working_store_upserts_translation_cache_and_results() -> None:
     cursor = FakeCursor()
     store = BrregWorkingStore(cursor)

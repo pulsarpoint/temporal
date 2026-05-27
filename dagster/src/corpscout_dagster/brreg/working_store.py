@@ -342,6 +342,48 @@ class BrregWorkingStore:
         ]
         return {key: int(value or 0) for key, value in zip(keys, row, strict=True)}
 
+    def fetch_domain_result_summary(self) -> dict[str, int]:
+        self._cursor.execute(FETCH_DOMAIN_RESULT_SUMMARY_SQL, {})
+        row = self._cursor.fetchone()
+        keys = [
+            "domain_result_succeeded",
+            "domain_result_partial",
+            "domain_result_not_found",
+            "domain_result_failed",
+            "domain_result_missing",
+        ]
+        if row is None:
+            return {key: 0 for key in keys}
+        return {key: int(value or 0) for key, value in zip(keys, row, strict=True)}
+
+    def fetch_currency_result_summary(self) -> dict[str, int]:
+        self._cursor.execute(FETCH_CURRENCY_RESULT_SUMMARY_SQL, {})
+        row = self._cursor.fetchone()
+        keys = [
+            "currency_result_succeeded",
+            "currency_result_skipped",
+            "currency_result_not_available",
+            "currency_result_failed",
+            "currency_result_missing",
+        ]
+        if row is None:
+            return {key: 0 for key in keys}
+        return {key: int(value or 0) for key, value in zip(keys, row, strict=True)}
+
+    def fetch_enhanced_record_summary(self) -> dict[str, int]:
+        self._cursor.execute(FETCH_ENHANCED_RECORD_SUMMARY_SQL, {})
+        row = self._cursor.fetchone()
+        keys = [
+            "enhanced_record_built",
+            "enhanced_record_published",
+            "enhanced_record_publish_failed",
+            "enhanced_record_superseded",
+            "enhanced_record_missing",
+        ]
+        if row is None:
+            return {key: 0 for key in keys}
+        return {key: int(value or 0) for key, value in zip(keys, row, strict=True)}
+
     def fetch_pending_raw_task_records(
         self,
         *,
@@ -432,6 +474,19 @@ class BrregWorkingStore:
             str(row[0] or "unknown"): int(row[1] or 0)
             for row in self._cursor.fetchall()
         }
+
+    def retry_task_failures(self, *, task_type: str | None, error_category: str, limit: int) -> int:
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        self._cursor.execute(
+            RETRY_TASK_FAILURES_SQL,
+            {
+                "task_type": task_type,
+                "error_category": error_category,
+                "limit": limit,
+            },
+        )
+        return int(_single_value(self._cursor.fetchone()))
 
     def fetch_cached_translations(
         self,
@@ -936,6 +991,39 @@ GROUP BY coalesce(rts.error_category, 'unknown')
 ORDER BY error_category
 """
 
+RETRY_TASK_FAILURES_SQL = """
+WITH retry_candidates AS (
+    SELECT rts.raw_record_id, rts.task_type
+    FROM dagster_brreg.raw_record_task_states rts
+    JOIN dagster_brreg.raw_records rr ON rr.id = rts.raw_record_id
+    WHERE rr.is_current = true
+      AND rts.status IN ('failed_retryable', 'failed_terminal')
+      AND rts.error_category = %(error_category)s
+      AND (%(task_type)s IS NULL OR rts.task_type = %(task_type)s)
+    ORDER BY rts.next_retry_at NULLS FIRST, rts.updated_at ASC, rts.raw_record_id ASC
+    LIMIT %(limit)s
+),
+retried AS (
+    UPDATE dagster_brreg.raw_record_task_states rts
+    SET
+        status = 'pending',
+        last_started_at = NULL,
+        last_finished_at = NULL,
+        next_retry_at = now(),
+        lease_until = NULL,
+        last_error = NULL,
+        error_category = NULL,
+        error_code = NULL,
+        retry_strategy = NULL,
+        updated_at = now()
+    FROM retry_candidates rc
+    WHERE rts.raw_record_id = rc.raw_record_id
+      AND rts.task_type = rc.task_type
+    RETURNING rts.raw_record_id
+)
+SELECT count(*)::int FROM retried
+"""
+
 FETCH_TRANSLATION_ARTIFACT_SUMMARY_SQL = """
 -- fetch_translation_artifact_summary
 WITH current_raw AS (
@@ -968,6 +1056,105 @@ SELECT
     translation_result_missing,
     translation_result_failed + translation_result_missing AS translation_artifact_missing
 FROM translation_counts
+"""
+
+FETCH_DOMAIN_RESULT_SUMMARY_SQL = """
+-- fetch_domain_result_summary
+WITH current_raw AS (
+    SELECT id
+    FROM dagster_brreg.raw_records
+    WHERE is_current = true
+),
+latest_domain_result AS (
+    SELECT DISTINCT ON (raw_record_id)
+        raw_record_id,
+        status
+    FROM dagster_brreg.domain_results
+    ORDER BY raw_record_id, created_at DESC
+),
+domain_counts AS (
+    SELECT
+        count(*) FILTER (WHERE ldr.status = 'succeeded')::int AS domain_result_succeeded,
+        count(*) FILTER (WHERE ldr.status = 'partial')::int AS domain_result_partial,
+        count(*) FILTER (WHERE ldr.status = 'not_found')::int AS domain_result_not_found,
+        count(*) FILTER (WHERE ldr.status = 'failed')::int AS domain_result_failed,
+        count(*) FILTER (WHERE ldr.raw_record_id IS NULL)::int AS domain_result_missing
+    FROM current_raw cr
+    LEFT JOIN latest_domain_result ldr ON ldr.raw_record_id = cr.id
+)
+SELECT
+    domain_result_succeeded,
+    domain_result_partial,
+    domain_result_not_found,
+    domain_result_failed,
+    domain_result_missing
+FROM domain_counts
+"""
+
+FETCH_CURRENCY_RESULT_SUMMARY_SQL = """
+-- fetch_currency_result_summary
+WITH current_raw AS (
+    SELECT id
+    FROM dagster_brreg.raw_records
+    WHERE is_current = true
+),
+latest_currency_result AS (
+    SELECT DISTINCT ON (raw_record_id)
+        raw_record_id,
+        status
+    FROM dagster_brreg.currency_results
+    ORDER BY raw_record_id, created_at DESC
+),
+currency_counts AS (
+    SELECT
+        count(*) FILTER (WHERE lcr.status = 'succeeded')::int AS currency_result_succeeded,
+        count(*) FILTER (WHERE lcr.status = 'skipped')::int AS currency_result_skipped,
+        count(*) FILTER (WHERE lcr.status = 'not_available')::int AS currency_result_not_available,
+        count(*) FILTER (WHERE lcr.status = 'failed')::int AS currency_result_failed,
+        count(*) FILTER (WHERE lcr.raw_record_id IS NULL)::int AS currency_result_missing
+    FROM current_raw cr
+    LEFT JOIN latest_currency_result lcr ON lcr.raw_record_id = cr.id
+)
+SELECT
+    currency_result_succeeded,
+    currency_result_skipped,
+    currency_result_not_available,
+    currency_result_failed,
+    currency_result_missing
+FROM currency_counts
+"""
+
+FETCH_ENHANCED_RECORD_SUMMARY_SQL = """
+-- fetch_enhanced_record_summary
+WITH current_raw AS (
+    SELECT id
+    FROM dagster_brreg.raw_records
+    WHERE is_current = true
+),
+latest_enhanced_record AS (
+    SELECT DISTINCT ON (raw_record_id)
+        raw_record_id,
+        status
+    FROM dagster_brreg.enhanced_records
+    ORDER BY raw_record_id, built_at DESC
+),
+enhanced_counts AS (
+    SELECT
+        count(*) FILTER (WHERE ler.status = 'built')::int AS enhanced_record_built,
+        count(*) FILTER (WHERE ler.status = 'published')::int AS enhanced_record_published,
+        count(*) FILTER (WHERE ler.status = 'publish_failed')::int AS enhanced_record_publish_failed,
+        count(*) FILTER (WHERE ler.status = 'superseded')::int AS enhanced_record_superseded,
+        count(*) FILTER (WHERE ler.raw_record_id IS NULL)::int AS enhanced_record_missing
+    FROM current_raw cr
+    LEFT JOIN latest_enhanced_record ler ON ler.raw_record_id = cr.id
+)
+SELECT
+    enhanced_record_built,
+    enhanced_record_published,
+    enhanced_record_publish_failed,
+    enhanced_record_superseded,
+    enhanced_record_missing
+FROM enhanced_counts
 """
 
 FETCH_PENDING_RAW_TASK_RECORDS_SQL = """
