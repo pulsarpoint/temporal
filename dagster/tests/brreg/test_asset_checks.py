@@ -87,6 +87,23 @@ def test_definitions_expose_live_table_asset_checks() -> None:
     }
 
 
+def test_operational_asset_jobs_do_not_run_live_table_checks() -> None:
+    assert set(defs.resolve_job_def("brreg_translate_job").graph.node_dict) == {"brreg_translation_results"}
+    assert set(defs.resolve_job_def("brreg_domain_job").graph.node_dict) == {"brreg_domain_results"}
+    assert set(defs.resolve_job_def("brreg_currency_job").graph.node_dict) == {"brreg_currency_results"}
+    assert set(defs.resolve_job_def("brreg_build_enhanced_job").graph.node_dict) == {"brreg_enhanced_records"}
+
+
+def test_live_table_checks_job_runs_only_checks() -> None:
+    assert set(defs.resolve_job_def("brreg_live_table_checks_job").graph.node_dict) == {
+        "brreg_raw_records_live_table_state",
+        "brreg_translation_results_live_table_state",
+        "brreg_domain_results_live_table_state",
+        "brreg_currency_results_live_table_state",
+        "brreg_enhanced_records_live_table_state",
+    }
+
+
 def test_raw_records_live_table_check_fails_without_current_rows() -> None:
     context = _context({"fetch_raw_task_state_summary": (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)})
 

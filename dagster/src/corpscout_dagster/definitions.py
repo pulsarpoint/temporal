@@ -34,8 +34,8 @@ from corpscout_dagster.brreg.retry_jobs import (
 )
 
 
-def _asset_and_live_checks(*assets):
-    return AssetSelection.assets(*assets) | AssetSelection.checks_for_assets(*assets)
+def _assets_without_checks(*assets):
+    return AssetSelection.assets(*assets).without_checks()
 
 
 defs = Definitions(
@@ -54,14 +54,14 @@ defs = Definitions(
         brreg_enhanced_records_live_table_state,
     ],
     jobs=[
-        define_asset_job("brreg_ingest_raw_job", selection=_asset_and_live_checks(brreg_raw_records)),
-        define_asset_job("brreg_translate_job", selection=_asset_and_live_checks(brreg_translation_results)),
-        define_asset_job("brreg_domain_job", selection=_asset_and_live_checks(brreg_domain_results)),
-        define_asset_job("brreg_currency_job", selection=_asset_and_live_checks(brreg_currency_results)),
-        define_asset_job("brreg_build_enhanced_job", selection=_asset_and_live_checks(brreg_enhanced_records)),
+        define_asset_job("brreg_ingest_raw_job", selection=_assets_without_checks(brreg_raw_records)),
+        define_asset_job("brreg_translate_job", selection=_assets_without_checks(brreg_translation_results)),
+        define_asset_job("brreg_domain_job", selection=_assets_without_checks(brreg_domain_results)),
+        define_asset_job("brreg_currency_job", selection=_assets_without_checks(brreg_currency_results)),
+        define_asset_job("brreg_build_enhanced_job", selection=_assets_without_checks(brreg_enhanced_records)),
         define_asset_job(
             "brreg_full_enrichment_job",
-            selection=_asset_and_live_checks(
+            selection=_assets_without_checks(
                 brreg_raw_records,
                 brreg_translation_results,
                 brreg_domain_results,
