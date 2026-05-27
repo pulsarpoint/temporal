@@ -144,6 +144,22 @@ class MissingCurrencyArtifactConnection(FakeConnection):
         self.rollbacks = 0
 
 
+class BlockedDomainArtifactCursor(FakeCursor):
+    def fetchone(self):
+        if "fetch_raw_task_state_summary" in self.last_sql:
+            return (1000, 1000, 0, 706, 0, 1, 1, 0, 0, 0, 293, 0, 0, 706)
+        if "fetch_domain_result_summary" in self.last_sql:
+            return (221, 0, 72, 0, 707)
+        return super().fetchone()
+
+
+class BlockedDomainArtifactConnection(FakeConnection):
+    def __init__(self) -> None:
+        self.cursor_instance = BlockedDomainArtifactCursor()
+        self.commits = 0
+        self.rollbacks = 0
+
+
 class FakeTranslator:
     def translate_terms(
         self,
@@ -700,17 +716,8 @@ def test_materialize_brreg_translation_results_requeues_unstarted_claims_when_at
             prompt_version="v1",
         )
 
-    reset_calls = [
-        params
-        for sql, params in connection.cursor_instance.calls
-        if "reset_rows AS" in sql
-    ]
-    assert reset_calls == [
-        {
-            "task_type": "translate",
-            "raw_record_ids": [raw_record_id],
-        }
-    ]
+    assert connection.rollbacks >= 1
+    assert not any("reset_rows AS" in sql for sql, _ in connection.cursor_instance.calls)
 
 
 def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -> None:
@@ -844,6 +851,37 @@ def test_materialize_brreg_domain_results_writes_single_service_artifact() -> No
         for message in context.log.messages
     )
     assert any("BRREG domain result record completed batch=1 batch_index=1" in message for message in context.log.messages)
+
+
+def test_materialize_brreg_domain_results_reports_active_task_slot_blocking_incomplete_artifacts() -> None:
+    context = FakeContext()
+    connection = BlockedDomainArtifactConnection()
+    connection.cursor_instance.fetchall_values = [[]]
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "BRREG domain result materialization blocked by active tasks: "
+            "active_running=1, max_parallel_tasks=1, eligible_now=706, missing=707, failed=0"
+        ),
+    ):
+        materialize_brreg_domain_results(
+            context,
+            connection_factory=lambda _: connection,
+            database_url="postgresql://example.invalid/corpscout",
+            crawl_service_client=FakeCrawlServiceClient(),
+            batch_size=10,
+            max_parallel_tasks=1,
+        )
+
+    metadata = context.metadata[-1]
+    assert metadata["run_rows_claimed"] == 0
+    assert metadata["run_stopped_reason"] == "no_claimable_records"
+    assert metadata["live_domain_results_succeeded"] == 221
+    assert metadata["live_domain_results_not_found"] == 72
+    assert metadata["live_domain_results_partial"] == 0
+    assert metadata["live_domain_results_missing"] == 707
+    assert metadata["live_domain_results_failed"] == 0
 
 
 def test_materialize_brreg_currency_results_writes_single_currency_artifact() -> None:

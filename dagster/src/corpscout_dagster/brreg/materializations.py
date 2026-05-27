@@ -5,6 +5,19 @@ from dataclasses import dataclass
 from datetime import date
 
 from corpscout_dagster.brreg.crawl_service import CrawlServiceClient
+from corpscout_dagster.brreg.asset_gateway import (
+    BrregAssetGateway,
+    BrregAssetName,
+    ClaimEnhancedBatchCommand,
+    ClaimTaskBatchCommand,
+    ClaimedRawRecord,
+    IngestRawRecordsCommand,
+    SubmitCurrencyResultCommand,
+    SubmitDomainResultCommand,
+    SubmitEnhancedRecordCommand,
+    SubmitTaskFailureCommand,
+    SubmitTranslationResultCommand,
+)
 from corpscout_dagster.brreg.enhanced_payload import (
     BRREG_ENHANCED_SCHEMA_VERSION,
     build_brreg_enhanced_payload,
@@ -31,13 +44,8 @@ from corpscout_dagster.brreg.working_store import (
     BrregWorkingStore,
     CreateBulkSnapshot,
     CreateEnrichmentRun,
-    CreateTaskAttempt,
     FinishEnrichmentRun,
-    IncrementEnrichmentRunProgress,
-    InsertDomainResult,
-    InsertEnhancedRecord,
     InsertCurrencyResult,
-    InsertTranslationResult,
     RawTaskRecord,
     TaskAttempt,
     UpsertCachedTranslation,
@@ -337,16 +345,22 @@ def materialize_brreg_translation_results(
 
         try:
             while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
-                with conn.cursor() as cursor:
-                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
-                        task_type="translate",
-                        limit=batch_size,
-                        include_new_records=True,
+                claimed_batch = BrregAssetGateway(
+                    conn,
+                    translation_model=model,
+                    translation_prompt_version=prompt_version,
+                ).claim_translation_batch(
+                    ClaimTaskBatchCommand(
+                        run_id=context.run_id,
+                        batch_size=batch_size,
                         max_parallel_tasks=max_parallel_tasks,
                         lease_seconds=DEFAULT_TASK_LEASE_SECONDS,
+                        metadata={"model": model, "prompt_version": prompt_version},
+                        enrichment_run_id=enrichment_run_id,
+                    )
                 )
-                conn.commit()
-                claimed_record_ids.update(record.id for record in records)
+                records = [claimed.record for claimed in claimed_batch.records]
+                claimed_record_ids.update(claimed.raw_record_id for claimed in claimed_batch.records)
 
                 if not records:
                     stopped_reason = "no_claimable_records"
@@ -371,7 +385,7 @@ def materialize_brreg_translation_results(
                 completed, failed, batch_failure_summary = _translate_record_batch(
                     conn=conn,
                     enrichment_run_id=enrichment_run_id,
-                    records=records,
+                    claimed_records=claimed_batch.records,
                     translator=translator,
                     model=model,
                     prompt_version=prompt_version,
@@ -466,12 +480,12 @@ def materialize_brreg_translation_results(
         )
     )
     _raise_if_materialization_rows_failed(task_label="translation", rows_failed=rows_failed)
-    _raise_if_live_artifacts_incomplete(
-        task_label="translation",
-        artifact_summary=artifact_summary,
-        missing_key="translation_result_missing",
-        failed_key="translation_result_failed",
-    )
+    with connection_factory(database_url) as state_conn:
+        BrregAssetGateway(
+            state_conn,
+            translation_model=model,
+            translation_prompt_version=prompt_version,
+        ).assert_asset_complete(BrregAssetName.TRANSLATION_RESULTS, max_parallel_tasks=max_parallel_tasks)
     return result
 
 
@@ -596,21 +610,6 @@ def _raise_if_materialization_rows_failed(*, task_label: str, rows_failed: int) 
         raise RuntimeError(f"BRREG {task_label} materialization failed with {rows_failed} failed rows")
 
 
-def _raise_if_live_artifacts_incomplete(
-    *,
-    task_label: str,
-    artifact_summary: dict[str, int],
-    missing_key: str,
-    failed_key: str,
-) -> None:
-    missing = int(artifact_summary.get(missing_key, 0) or 0)
-    failed = int(artifact_summary.get(failed_key, 0) or 0)
-    if missing > 0 or failed > 0:
-        raise RuntimeError(
-            f"BRREG {task_label} materialization live table incomplete: missing={missing}, failed={failed}"
-        )
-
-
 def materialize_brreg_domain_results(
     context,
     *,
@@ -657,15 +656,17 @@ def materialize_brreg_domain_results(
 
         try:
             while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
-                with conn.cursor() as cursor:
-                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
-                        task_type=task_type,
-                        limit=batch_size,
-                        include_new_records=True,
+                claimed_batch = BrregAssetGateway(conn).claim_domain_batch(
+                    ClaimTaskBatchCommand(
+                        run_id=context.run_id,
+                        batch_size=batch_size,
                         max_parallel_tasks=max_parallel_tasks,
                         lease_seconds=DEFAULT_TASK_LEASE_SECONDS,
+                        metadata={"service": "crawl-service"},
+                        enrichment_run_id=enrichment_run_id,
                     )
-                conn.commit()
+                )
+                records = [claimed.record for claimed in claimed_batch.records]
                 if not records:
                     stopped_reason = "no_claimable_records"
                     context.log.info(
@@ -687,7 +688,8 @@ def materialize_brreg_domain_results(
                     rows_completed,
                     rows_failed,
                 )
-                for index, record in enumerate(records, start=1):
+                for index, claimed in enumerate(claimed_batch.records, start=1):
+                    record = claimed.record
                     context.log.info(
                         "BRREG domain result record started batch=%s batch_index=%s records_in_batch=%s organization_number=%s",
                         batches_processed,
@@ -695,11 +697,10 @@ def materialize_brreg_domain_results(
                         len(records),
                         record.organization_number,
                     )
-                    attempt = _create_task_attempt(
-                        conn=conn,
-                        enrichment_run_id=enrichment_run_id,
-                        record=record,
-                        task_type=task_type,
+                    attempt = TaskAttempt(
+                        id=claimed.task_attempt_id,
+                        raw_record_id=claimed.raw_record_id,
+                        attempt=claimed.attempt,
                     )
                     try:
                         payload = crawl_service_client.discover_brreg_domain(record)
@@ -828,12 +829,11 @@ def materialize_brreg_domain_results(
         )
     )
     _raise_if_materialization_rows_failed(task_label="domain result", rows_failed=rows_failed)
-    _raise_if_live_artifacts_incomplete(
-        task_label="domain result",
-        artifact_summary=artifact_summary,
-        missing_key="domain_result_missing",
-        failed_key="domain_result_failed",
-    )
+    with connection_factory(database_url) as state_conn:
+        BrregAssetGateway(state_conn).assert_asset_complete(
+            BrregAssetName.DOMAIN_RESULTS,
+            max_parallel_tasks=max_parallel_tasks,
+        )
     return result
 
 
@@ -886,15 +886,17 @@ def materialize_brreg_currency_results(
 
         try:
             while max_batches_per_run == 0 or batches_processed < max_batches_per_run:
-                with conn.cursor() as cursor:
-                    records = BrregWorkingStore(cursor).fetch_pending_raw_task_records(
-                        task_type=task_type,
-                        limit=batch_size,
-                        include_new_records=True,
+                claimed_batch = BrregAssetGateway(conn).claim_currency_batch(
+                    ClaimTaskBatchCommand(
+                        run_id=context.run_id,
+                        batch_size=batch_size,
                         max_parallel_tasks=max_parallel_tasks,
                         lease_seconds=DEFAULT_TASK_LEASE_SECONDS,
+                        metadata={"fx_source": "ECB"},
+                        enrichment_run_id=enrichment_run_id,
                     )
-                conn.commit()
+                )
+                records = [claimed.record for claimed in claimed_batch.records]
                 if not records:
                     stopped_reason = "no_claimable_records"
                     context.log.info(
@@ -916,12 +918,12 @@ def materialize_brreg_currency_results(
                     rows_completed,
                     rows_failed,
                 )
-                for record in records:
-                    attempt = _create_task_attempt(
-                        conn=conn,
-                        enrichment_run_id=enrichment_run_id,
-                        record=record,
-                        task_type=task_type,
+                for claimed in claimed_batch.records:
+                    record = claimed.record
+                    attempt = TaskAttempt(
+                        id=claimed.task_attempt_id,
+                        raw_record_id=claimed.raw_record_id,
+                        attempt=claimed.attempt,
                     )
                     try:
                         if _record_needs_currency_conversion(record) and fx_rates is None:
@@ -1029,12 +1031,11 @@ def materialize_brreg_currency_results(
         )
     )
     _raise_if_materialization_rows_failed(task_label="currency", rows_failed=rows_failed)
-    _raise_if_live_artifacts_incomplete(
-        task_label="currency",
-        artifact_summary=artifact_summary,
-        missing_key="currency_result_missing",
-        failed_key="currency_result_failed",
-    )
+    with connection_factory(database_url) as state_conn:
+        BrregAssetGateway(state_conn).assert_asset_complete(
+            BrregAssetName.CURRENCY_RESULTS,
+            max_parallel_tasks=max_parallel_tasks,
+        )
     return result
 
 
@@ -1072,23 +1073,27 @@ def materialize_brreg_enhanced_records(
         )
 
         try:
-            with conn.cursor() as cursor:
-                store = BrregWorkingStore(cursor)
-                store.refresh_enhanced_ready_records()
-                records = store.fetch_pending_enhanced_build_records(limit=batch_size)
-            conn.commit()
+            claimed_batch = BrregAssetGateway(conn).claim_enhanced_batch(
+                ClaimEnhancedBatchCommand(
+                    run_id=context.run_id,
+                    batch_size=batch_size,
+                    metadata={"source": "dagster"},
+                    enrichment_run_id=enrichment_run_id,
+                )
+            )
+            records = [claimed.build_record for claimed in claimed_batch.records]
             context.log.info(
                 "BRREG enhanced record batch claimed records=%s",
                 len(records),
             )
 
-            for build_record in records:
+            for claimed in claimed_batch.records:
+                build_record = claimed.build_record
                 rows_seen += 1
-                attempt = _create_task_attempt(
-                    conn=conn,
-                    enrichment_run_id=enrichment_run_id,
-                    record=build_record.record,
-                    task_type=task_type,
+                attempt = TaskAttempt(
+                    id=claimed.task_attempt_id,
+                    raw_record_id=build_record.record.id,
+                    attempt=claimed.attempt,
                 )
                 try:
                     _build_record_enhanced_payload(
@@ -1189,27 +1194,6 @@ def materialize_brreg_enhanced_records(
     return result
 
 
-def _create_task_attempt(
-    *,
-    conn,
-    enrichment_run_id: str,
-    record: RawTaskRecord,
-    task_type: str,
-) -> TaskAttempt:
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        attempt = store.create_task_attempt(
-            CreateTaskAttempt(
-                enrichment_run_id=enrichment_run_id,
-                raw_record_id=record.id,
-                task_type=task_type,
-                metadata={"organization_number": record.organization_number},
-            )
-        )
-    conn.commit()
-    return attempt
-
-
 def _write_raw_record_batch(
     *,
     conn,
@@ -1217,25 +1201,20 @@ def _write_raw_record_batch(
     bulk_snapshot_id: str,
     rows,
 ):
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        result = store.upsert_raw_records(rows, bulk_snapshot_id=bulk_snapshot_id)
-        store.increment_enrichment_run_progress(
-            IncrementEnrichmentRunProgress(
-                enrichment_run_id=enrichment_run_id,
-                records_seen=result.rows_seen,
-                records_completed=result.rows_written,
-            )
+    return BrregAssetGateway(conn).ingest_raw_records(
+        IngestRawRecordsCommand(
+            bulk_snapshot_id=bulk_snapshot_id,
+            rows=rows,
+            enrichment_run_id=enrichment_run_id,
         )
-    conn.commit()
-    return result
+    )
 
 
 def _translate_record_batch(
     *,
     conn,
     enrichment_run_id: str,
-    records: list[RawTaskRecord],
+    claimed_records: list[ClaimedRawRecord],
     translator: TermTranslator,
     model: str,
     prompt_version: str,
@@ -1243,13 +1222,14 @@ def _translate_record_batch(
     attempts_by_record_id: dict[str, TaskAttempt] = {}
     items_by_record_id: dict[str, list[TranslationItem]] = {}
     failure_log_summary: TaskFailureLogSummary = {}
-    for record in records:
-        attempts_by_record_id[record.id] = _create_task_attempt(
-            conn=conn,
-            enrichment_run_id=enrichment_run_id,
-            record=record,
-            task_type="translate",
+    records = [claimed.record for claimed in claimed_records]
+    for claimed in claimed_records:
+        attempts_by_record_id[claimed.raw_record_id] = TaskAttempt(
+            id=claimed.task_attempt_id,
+            raw_record_id=claimed.raw_record_id,
+            attempt=claimed.attempt,
         )
+        record = claimed.record
         items_by_record_id[record.id] = extract_translation_items(record.raw_payload)
 
     unique_items = _unique_translation_items(
@@ -1385,25 +1365,22 @@ def _write_translation_record_result(
         status = "succeeded"
         metadata = {}
 
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        store.insert_translation_result(
-            InsertTranslationResult(
-                raw_record_id=record.id,
-                task_attempt_id=attempt.id,
-                status=status,
-                translated_payload=payload,
-                model=model,
-                prompt_version=prompt_version,
-                error=None,
-                metadata=metadata,
-            )
+    BrregAssetGateway(
+        conn,
+        translation_model=model,
+        translation_prompt_version=prompt_version,
+    ).submit_translation_result(
+        SubmitTranslationResultCommand(
+            raw_record_id=record.id,
+            task_attempt_id=attempt.id,
+            status=status,
+            translated_payload=payload,
+            model=model,
+            prompt_version=prompt_version,
+            metadata=metadata,
+            enrichment_run_id=enrichment_run_id,
         )
-        store.finish_task_attempt(task_attempt_id=attempt.id, status=status, error=None)
-        store.increment_enrichment_run_progress(
-            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
-        )
-    conn.commit()
+    )
 
 
 def _raise_if_missing_translation_terms(
@@ -1431,45 +1408,46 @@ def _write_domain_result(
     status = str(payload.get("status") or "failed")
     task_status = "failed" if status == "failed" else "succeeded"
     error = _domain_result_error(payload)
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        store.insert_domain_result(
-            InsertDomainResult(
+    metadata = {
+        "source": "crawl-service",
+        "service_version": payload.get("service_version"),
+        "model": payload.get("model"),
+        "provider": payload.get("provider"),
+    }
+    gateway = BrregAssetGateway(conn)
+    if task_status == "failed":
+        structured_error = _structured_error_from_payload(
+            payload,
+            fallback_message=error or "domain service returned failed status",
+        )
+        classification = classify_task_error(task_type="domain_results", error=structured_error)
+        gateway.submit_domain_failure(
+            SubmitTaskFailureCommand(
+                asset=BrregAssetName.DOMAIN_RESULTS,
+                raw_record_id=record.id,
+                task_attempt_id=attempt.id,
+                error=_task_error_message(structured_error),
+                error_category=classification.error_category,
+                error_code=classification.error_code,
+                retry_strategy=classification.retry_strategy,
+                metadata=metadata,
+                enrichment_run_id=enrichment_run_id,
+                artifact_payload=payload,
+            )
+        )
+    else:
+        gateway.submit_domain_result(
+            SubmitDomainResultCommand(
                 raw_record_id=record.id,
                 task_attempt_id=attempt.id,
                 status=status,
                 best_domain=payload.get("best_domain"),
                 domain_payload=payload,
                 error=error,
-                metadata={
-                    "source": "crawl-service",
-                    "service_version": payload.get("service_version"),
-                    "model": payload.get("model"),
-                    "provider": payload.get("provider"),
-                },
-            )
-        )
-        if task_status == "failed":
-            _finish_failed_task_attempt(
-                store=store,
-                attempt=attempt,
-                task_type="domain_results",
-                error=_structured_error_from_payload(
-                    payload,
-                    fallback_message=error or "domain service returned failed status",
-                ),
-            )
-        else:
-            store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=error)
-        store.increment_enrichment_run_progress(
-            IncrementEnrichmentRunProgress(
+                metadata=metadata,
                 enrichment_run_id=enrichment_run_id,
-                records_seen=1,
-                records_completed=1 if task_status == "succeeded" else 0,
-                records_failed=0 if task_status == "succeeded" else 1,
             )
         )
-    conn.commit()
     return task_status == "succeeded"
 
 
@@ -1493,34 +1471,21 @@ def _mark_domain_result_failed(
         "errors": [{"code": "dagster_crawl_service_call_failed", "message": "Crawl service call failed.", "detail": {"error": error}}],
         "warnings": [],
     }
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        store.insert_domain_result(
-            InsertDomainResult(
-                raw_record_id=record.id,
-                task_attempt_id=attempt.id,
-                status="failed",
-                best_domain=None,
-                domain_payload=payload,
-                error=error,
-                metadata={"source": "dagster"},
-            )
+    classification = classify_task_error(task_type="domain_results", error=error or "domain service returned failed status")
+    BrregAssetGateway(conn).submit_domain_failure(
+        SubmitTaskFailureCommand(
+            asset=BrregAssetName.DOMAIN_RESULTS,
+            raw_record_id=record.id,
+            task_attempt_id=attempt.id,
+            error=error,
+            error_category=classification.error_category,
+            error_code=classification.error_code,
+            retry_strategy=classification.retry_strategy,
+            metadata={"source": "dagster"},
+            enrichment_run_id=enrichment_run_id,
+            artifact_payload=payload,
         )
-        _finish_failed_task_attempt(
-            store=store,
-            attempt=attempt,
-            task_type="domain_results",
-            error=error or "domain service returned failed status",
-        )
-        store.increment_enrichment_run_progress(
-            IncrementEnrichmentRunProgress(
-                enrichment_run_id=enrichment_run_id,
-                records_seen=1,
-                records_completed=0,
-                records_failed=1,
-            )
-        )
-    conn.commit()
+    )
 
 
 def _domain_result_error(payload: dict) -> str | None:
@@ -1569,15 +1534,21 @@ def _write_currency_result(
     fx_rates: FxRateSet | None,
 ) -> None:
     command = _build_currency_result(record=record, attempt=attempt, fx_rates=fx_rates)
-    task_status = "skipped" if command.status in {"skipped", "not_available"} else "succeeded"
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        store.insert_currency_result(command)
-        store.finish_task_attempt(task_attempt_id=attempt.id, status=task_status, error=None)
-        store.increment_enrichment_run_progress(
-            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
+    BrregAssetGateway(conn).submit_currency_result(
+        SubmitCurrencyResultCommand(
+            raw_record_id=command.raw_record_id,
+            task_attempt_id=command.task_attempt_id,
+            status=command.status,
+            original_currency=command.original_currency,
+            original_payload=command.original_payload,
+            usd_payload=command.usd_payload,
+            fx_metadata=command.fx_metadata,
+            source_uri=command.source_uri,
+            error=command.error,
+            metadata=command.metadata,
+            enrichment_run_id=enrichment_run_id,
         )
-    conn.commit()
+    )
 
 
 def _build_currency_result(
@@ -1735,26 +1706,6 @@ def _safe_log_error_message(error: object | None, *, max_length: int = 240) -> s
     return message[: max_length - 3] + "..."
 
 
-def _finish_failed_task_attempt(
-    *,
-    store: BrregWorkingStore,
-    attempt: TaskAttempt,
-    task_type: str,
-    error: object,
-) -> TaskFailureClassification:
-    error_message = _task_error_message(error)
-    classification = classify_task_error(task_type=task_type, error=error)
-    store.finish_task_attempt(
-        task_attempt_id=attempt.id,
-        status="failed",
-        error=error_message,
-        error_category=classification.error_category,
-        error_code=classification.error_code,
-        retry_strategy=classification.retry_strategy,
-    )
-    return classification
-
-
 def _mark_currency_result_failed(
     *,
     conn,
@@ -1763,37 +1714,23 @@ def _mark_currency_result_failed(
     record: RawTaskRecord,
     error: str,
 ) -> None:
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        store.insert_currency_result(
-            InsertCurrencyResult(
-                raw_record_id=record.id,
-                task_attempt_id=attempt.id,
-                status="failed",
-                original_currency=_capital_original_currency(record),
-                original_payload={},
-                usd_payload={},
-                fx_metadata={},
-                source_uri=None,
-                error=error,
-                metadata={"source": "dagster"},
-            )
-        )
-        _finish_failed_task_attempt(
-            store=store,
-            attempt=attempt,
-            task_type="currency_conversion",
+    classification = classify_task_error(task_type="currency_conversion", error=error)
+    BrregAssetGateway(conn).submit_currency_failure(
+        SubmitTaskFailureCommand(
+            asset=BrregAssetName.CURRENCY_RESULTS,
+            raw_record_id=record.id,
+            task_attempt_id=attempt.id,
             error=error,
+            error_category=classification.error_category,
+            error_code=classification.error_code,
+            retry_strategy=classification.retry_strategy,
+            metadata={
+                "source": "dagster",
+                "original_currency": _capital_original_currency(record),
+            },
+            enrichment_run_id=enrichment_run_id,
         )
-        store.increment_enrichment_run_progress(
-            IncrementEnrichmentRunProgress(
-                enrichment_run_id=enrichment_run_id,
-                records_seen=1,
-                records_completed=0,
-                records_failed=1,
-            )
-        )
-    conn.commit()
+    )
 
 
 def _record_needs_currency_conversion(record: RawTaskRecord) -> bool:
@@ -1889,27 +1826,21 @@ def _build_record_enhanced_payload(
         task_statuses=build_record.task_statuses,
         dagster_run_id=dagster_run_id,
     )
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        store.upsert_enhanced_record(
-            InsertEnhancedRecord(
-                raw_record_id=build_record.record.id,
-                task_attempt_id=attempt.id,
-                schema_version=BRREG_ENHANCED_SCHEMA_VERSION,
-                enhanced_payload=payload,
-                enhanced_payload_hash=enhanced_payload_hash(payload),
-                metadata={
-                    "source": "dagster",
-                    "task_statuses": build_record.task_statuses,
-                    "raw_payload_hash": build_record.payload_hash,
-                },
-            )
+    BrregAssetGateway(conn).submit_enhanced_record(
+        SubmitEnhancedRecordCommand(
+            raw_record_id=build_record.record.id,
+            task_attempt_id=attempt.id,
+            schema_version=BRREG_ENHANCED_SCHEMA_VERSION,
+            enhanced_payload=payload,
+            enhanced_payload_hash=enhanced_payload_hash(payload),
+            metadata={
+                "source": "dagster",
+                "task_statuses": build_record.task_statuses,
+                "raw_payload_hash": build_record.payload_hash,
+            },
+            enrichment_run_id=enrichment_run_id,
         )
-        store.finish_task_attempt(task_attempt_id=attempt.id, status="succeeded", error=None)
-        store.increment_enrichment_run_progress(
-            IncrementEnrichmentRunProgress(enrichment_run_id=enrichment_run_id, records_seen=1, records_completed=1)
-        )
-    conn.commit()
+    )
 
 
 def _load_brreg_fx_rates(rate_date: str | None) -> FxRateSet:
@@ -1929,41 +1860,42 @@ def _mark_record_task_failed(
     translation_model: str | None = None,
     translation_prompt_version: str | None = None,
 ) -> TaskFailureClassification:
-    with conn.cursor() as cursor:
-        store = BrregWorkingStore(cursor)
-        classification = _finish_failed_task_attempt(
-            store=store,
-            attempt=attempt,
-            task_type=task_type,
-            error=error,
-        )
-        error_message = _task_error_message(error)
-        if task_type == "translate":
-            store.insert_translation_result(
-                InsertTranslationResult(
-                    raw_record_id=record.id,
-                    task_attempt_id=attempt.id,
-                    status="failed",
-                    translated_payload=None,
-                    model=translation_model,
-                    prompt_version=translation_prompt_version,
-                    error=error_message,
-                    metadata={
-                        "error_category": classification.error_category,
-                        "error_code": classification.error_code,
-                        "retry_strategy": classification.retry_strategy,
-                    },
-                )
-            )
-        store.increment_enrichment_run_progress(
-            IncrementEnrichmentRunProgress(
+    classification = classify_task_error(task_type=task_type, error=error)
+    error_message = _task_error_message(error)
+    if task_type == "translate":
+        BrregAssetGateway(
+            conn,
+            translation_model=translation_model,
+            translation_prompt_version=translation_prompt_version,
+        ).submit_translation_failure(
+            SubmitTaskFailureCommand(
+                asset=BrregAssetName.TRANSLATION_RESULTS,
+                raw_record_id=record.id,
+                task_attempt_id=attempt.id,
+                error=error_message,
+                error_category=classification.error_category,
+                error_code=classification.error_code,
+                retry_strategy=classification.retry_strategy,
+                metadata={},
                 enrichment_run_id=enrichment_run_id,
-                records_seen=1,
-                records_completed=0,
-                records_failed=1,
+                model=translation_model,
+                prompt_version=translation_prompt_version,
             )
         )
-    conn.commit()
+    else:
+        BrregAssetGateway(conn).submit_enhanced_failure(
+            SubmitTaskFailureCommand(
+                asset=BrregAssetName.ENHANCED_RECORDS,
+                raw_record_id=record.id,
+                task_attempt_id=attempt.id,
+                error=error_message,
+                error_category=classification.error_category,
+                error_code=classification.error_code,
+                retry_strategy=classification.retry_strategy,
+                metadata={},
+                enrichment_run_id=enrichment_run_id,
+            )
+        )
     return classification
 
 
