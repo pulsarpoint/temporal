@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from corpscout_dagster.brreg.models import CorpscoutBrregRawInputRow
-from corpscout_dagster.brreg.writer import BrregRawInputWriter, UpsertResult
+from corpscout_dagster.db_brreg.models import CorpscoutBrregRawInputRow
+from corpscout_dagster.db_brreg.writer import BrregRawInputWriter, UpsertResult
 
 
 class FakeCursor:

@@ -6,9 +6,10 @@ from typing import Callable
 
 import psycopg
 
-from corpscout_dagster.brreg.models import BrregRawRecord, BrregWorkingRawRecordRow
+from corpscout_dagster.brreg.models import BrregRawRecord
+from corpscout_dagster.db_brreg.models import BrregWorkingRawRecordRow
 from corpscout_dagster.brreg.source import BRREG_API_BASE_URL, BRREG_BULK_PATH
-from corpscout_dagster.brreg.working_store import (
+from corpscout_dagster.db_brreg.store import (
     BrregWorkingStore,
     CreateBulkSnapshot,
     CreateEnrichmentRun,

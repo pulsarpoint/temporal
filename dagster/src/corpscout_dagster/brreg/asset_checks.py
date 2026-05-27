@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dagster import AssetCheckResult, asset_check
 
-from corpscout_dagster.brreg.working_store import BrregWorkingStore
+from corpscout_dagster.db_brreg.store import BrregWorkingStore
 
 
 def _postgres_resource(context):

@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from corpscout_dagster.brreg.crawl_service import CrawlServiceClient
-from corpscout_dagster.brreg.asset_gateway import (
+from corpscout_dagster.db_brreg.gateway import (
     BrregAssetGateway,
     BrregAssetName,
     ClaimEnhancedBatchCommand,
@@ -40,7 +40,7 @@ from corpscout_dagster.brreg.translation_terms import (
     translation_cache_key,
     translation_item_id,
 )
-from corpscout_dagster.brreg.working_store import (
+from corpscout_dagster.db_brreg.store import (
     BrregWorkingStore,
     CreateBulkSnapshot,
     CreateEnrichmentRun,

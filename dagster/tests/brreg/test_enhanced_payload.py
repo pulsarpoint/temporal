@@ -5,7 +5,7 @@ from corpscout_dagster.brreg.enhanced_payload import (
     build_brreg_enhanced_payload,
     enhanced_payload_hash,
 )
-from corpscout_dagster.brreg.working_store import DomainResultCandidateRow, RawTaskRecord
+from corpscout_dagster.db_brreg.store import DomainResultCandidateRow, RawTaskRecord
 
 
 def test_build_brreg_enhanced_payload_matches_corpscout_contract() -> None:

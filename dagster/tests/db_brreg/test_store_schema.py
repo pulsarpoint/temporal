@@ -140,7 +140,7 @@ def test_working_store_migration_down_drops_schema() -> None:
 
 
 def test_runtime_task_state_finished_sql_marks_manual_retry_strategies_terminal() -> None:
-    from corpscout_dagster.brreg.working_store import UPDATE_TASK_STATE_FINISHED_SQL
+    from corpscout_dagster.db_brreg.store import UPDATE_TASK_STATE_FINISHED_SQL
 
     assert "retry_strategy)s IN (" in UPDATE_TASK_STATE_FINISHED_SQL
     assert "'change_model_or_prompt'" in UPDATE_TASK_STATE_FINISHED_SQL
@@ -150,7 +150,7 @@ def test_runtime_task_state_finished_sql_marks_manual_retry_strategies_terminal(
 
 
 def test_runtime_retry_failures_sql_casts_optional_task_type_parameter() -> None:
-    from corpscout_dagster.brreg.working_store import RETRY_TASK_FAILURES_SQL
+    from corpscout_dagster.db_brreg.store import RETRY_TASK_FAILURES_SQL
 
     assert "%(task_type)s::text IS NULL" in RETRY_TASK_FAILURES_SQL
     assert "rts.task_type = %(task_type)s::text" in RETRY_TASK_FAILURES_SQL

@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Protocol
 
-from corpscout_dagster.brreg.models import CorpscoutBrregRawInputRow
+from corpscout_dagster.db_brreg.models import CorpscoutBrregRawInputRow
 
 
 class Cursor(Protocol):

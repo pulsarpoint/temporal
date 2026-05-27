@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from corpscout_dagster.brreg.asset_gateway import (
+from corpscout_dagster.db_brreg.gateway import (
     AssetBlockedByActiveTasksError,
     AssetIncompleteError,
     BrregAssetGateway,
@@ -19,7 +19,7 @@ from corpscout_dagster.brreg.asset_gateway import (
     SubmitTaskFailureCommand,
     SubmitTranslationResultCommand,
 )
-from corpscout_dagster.brreg.working_store import EnhancedBuildRecord, RawTaskRecord
+from corpscout_dagster.db_brreg.store import EnhancedBuildRecord, RawTaskRecord
 
 
 class FakeCursor:

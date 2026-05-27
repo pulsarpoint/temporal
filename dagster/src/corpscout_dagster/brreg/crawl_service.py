@@ -6,7 +6,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from corpscout_dagster.brreg.working_store import RawTaskRecord
+from corpscout_dagster.db_brreg.store import RawTaskRecord
 
 
 DEFAULT_CRAWL_SERVICE_URL = "http://crawl-service:8096"

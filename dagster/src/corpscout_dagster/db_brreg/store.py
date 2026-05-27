@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from corpscout_dagster.brreg.models import BrregWorkingRawRecordRow
+from corpscout_dagster.db_brreg.models import BrregWorkingRawRecordRow
 from corpscout_dagster.brreg.translation_terms import CachedTermTranslation, TranslationCacheKey
 
 

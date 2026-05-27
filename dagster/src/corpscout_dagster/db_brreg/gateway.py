@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from corpscout_dagster.brreg.models import BrregWorkingRawRecordRow
-from corpscout_dagster.brreg.working_store import (
+from corpscout_dagster.db_brreg.models import BrregWorkingRawRecordRow
+from corpscout_dagster.db_brreg.store import (
     BrregWorkingStore,
     CreateTaskAttempt,
     EnhancedBuildRecord,

@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from dagster import Field, Int, job, op
 
-from corpscout_dagster.brreg.working_store import BrregWorkingStore
+from corpscout_dagster.db_brreg.store import BrregWorkingStore
 
 
 DEFAULT_RETRY_LIMIT = 5000

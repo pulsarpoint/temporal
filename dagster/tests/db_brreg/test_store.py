@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from corpscout_dagster.brreg.models import BrregRawRecord
-from corpscout_dagster.brreg.working_store import (
+from corpscout_dagster.db_brreg.store import (
     BrregWorkingStore,
     CreateBulkSnapshot,
     CreateEnrichmentRun,
