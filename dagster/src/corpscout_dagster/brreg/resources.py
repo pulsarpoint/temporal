@@ -12,7 +12,7 @@ from dagster import resource
 from corpscout_dagster.brreg.asset_config import corpscout_database_url
 from corpscout_dagster.brreg.crawl_service import CrawlServiceClient, HttpCrawlServiceClient
 from corpscout_dagster.brreg.fx_rates import FxRateSet, load_ecb_rates_for_date, load_latest_ecb_rates
-from corpscout_dagster.brreg.source import BrregBulkClient, BrregBulkRecordClient
+from corpscout_dagster.brreg.source import BrregBulkClient, BrregBulkRecordClient, FixtureBrregBulkClient
 from corpscout_dagster.brreg.translation_terms import (
     DEFAULT_LLM_MODEL,
     DEFAULT_PROMPT_VERSION,
@@ -47,8 +47,11 @@ class BrregBulkResource:
 @dataclass(frozen=True)
 class FxResource:
     rate_date: str | None = None
+    provider: str = "ecb"
 
     def load_rates(self, rate_date: str | None = None) -> FxRateSet:
+        if self.provider == "mock":
+            return mock_fx_rates()
         selected_rate_date = rate_date or self.rate_date
         if not selected_rate_date:
             return load_latest_ecb_rates()
@@ -83,9 +86,27 @@ def crawl_service_resource(_context) -> CrawlServiceResource:
 
 @resource
 def brreg_bulk_resource(_context) -> BrregBulkResource:
+    fixture_path = os.environ.get("BRREG_BULK_FIXTURE_PATH")
+    if fixture_path:
+        return BrregBulkResource(client=FixtureBrregBulkClient(fixture_path))
     return BrregBulkResource(client=BrregBulkClient())
 
 
 @resource
 def fx_resource(_context) -> FxResource:
-    return FxResource(rate_date=os.environ.get("BRREG_FX_RATE_DATE"))
+    return FxResource(
+        rate_date=os.environ.get("BRREG_FX_RATE_DATE"),
+        provider=(os.environ.get("BRREG_FX_PROVIDER") or "ecb").strip().lower(),
+    )
+
+
+def mock_fx_rates() -> FxRateSet:
+    return FxRateSet(
+        source="MOCK",
+        rate_date="2026-05-21",
+        eur_per={
+            "EUR": 1.0,
+            "USD": 1.1,
+            "NOK": 11.0,
+        },
+    )

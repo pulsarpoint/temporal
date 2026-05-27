@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from corpscout_dagster.brreg.assets import (
     brreg_currency_results,
     brreg_domain_results,
@@ -70,6 +72,8 @@ class FakeCursor:
             return (self.seed_pending_count,)
         if "reconcile_translation_task_states" in self.last_sql:
             return (0,)
+        if "reset_rows AS" in self.last_sql:
+            return (1,)
         if "fetch_raw_task_state_summary" in self.last_sql:
             return (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         if "fetch_translation_artifact_summary" in self.last_sql:
@@ -108,6 +112,20 @@ class FakeConnection:
 
     def rollback(self) -> None:
         self.rollbacks += 1
+
+
+class FailingTaskAttemptCursor(FakeCursor):
+    def execute(self, sql: str, params: dict) -> None:
+        super().execute(sql, params)
+        if "INSERT INTO dagster_brreg.task_attempts" in sql:
+            raise RuntimeError("task attempt insert failed")
+
+
+class FailingTaskAttemptConnection(FakeConnection):
+    def __init__(self) -> None:
+        self.cursor_instance = FailingTaskAttemptCursor()
+        self.commits = 0
+        self.rollbacks = 0
 
 
 class FakeTranslator:
@@ -622,6 +640,52 @@ def test_materialize_brreg_translation_results_drains_multiple_batches_until_emp
         },
     ]
     assert not any("seeded_raw_records" in sql for sql, _ in connection.cursor_instance.calls)
+
+
+def test_materialize_brreg_translation_results_requeues_unstarted_claims_when_attempt_creation_fails() -> None:
+    context = FakeContext()
+    connection = FailingTaskAttemptConnection()
+    raw_record_id = "00000000-0000-0000-0000-000000000010"
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+    ]
+    connection.cursor_instance.fetchall_values = [
+        [
+            (
+                raw_record_id,
+                "810202572",
+                "BORTIGARD AS",
+                None,
+                {
+                    "organisasjonsnummer": "810202572",
+                    "organisasjonsform": {"kode": "AS", "beskrivelse": "Aksjeselskap"},
+                },
+            )
+        ],
+    ]
+
+    with pytest.raises(RuntimeError, match="task attempt insert failed"):
+        materialize_brreg_translation_results(
+            context,
+            connection_factory=lambda _: connection,
+            database_url="postgresql://example.invalid/corpscout",
+            translator=FakeTranslator(),
+            batch_size=50,
+            model="qwen3:6b",
+            prompt_version="v1",
+        )
+
+    reset_calls = [
+        params
+        for sql, params in connection.cursor_instance.calls
+        if "reset_rows AS" in sql
+    ]
+    assert reset_calls == [
+        {
+            "task_type": "translate",
+            "raw_record_ids": [raw_record_id],
+        }
+    ]
 
 
 def test_materialize_brreg_translation_results_marks_existing_attempt_failed() -> None:

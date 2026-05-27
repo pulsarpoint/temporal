@@ -70,8 +70,26 @@ def test_compose_uses_published_dagster_image_without_remote_build() -> None:
     assert "image: ${CRAWL_SERVICE_IMAGE:-ghcr.io/pulsarpoint/corpscout-crawl-service:latest}" in compose
     assert "$(COMPOSE) pull dagster-webserver dagster-daemon translation-service crawl-service" in makefile
     assert "$(COMPOSE) up -d" in makefile
-    assert "--build" not in makefile
+    assert "$(COMPOSE) up -d --build" not in makefile
 
 
 def test_migrations_directory_is_committed() -> None:
     assert (PROJECT_ROOT / "db" / "migrations").is_dir()
+
+
+def test_mock_compose_is_fully_local_and_exposes_mock_ports() -> None:
+    compose = read_project_file("docker-compose.mock.yml")
+    env_example = read_project_file(".env.mock.example")
+    makefile = read_project_file("Makefile")
+
+    assert "postgres:16" in compose
+    assert "companycollect" not in compose
+    assert "BRREG_BULK_FIXTURE_PATH" in compose
+    assert "CRAWL_SERVICE_MODE" in compose
+    assert "TRANSLATION_MOCK_ENABLED" in compose
+    assert "15432" in env_example
+    assert "18095" in env_example
+    assert "18096" in env_example
+    assert "DAGSTER_PORT=3001" in env_example
+    assert "mock-e2e" in makefile
+    assert "scripts/run_mock_e2e.py" in makefile

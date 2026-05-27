@@ -5,6 +5,7 @@ from datetime import date
 import pytest
 
 from corpscout_dagster.brreg.fx_rates import FxRateSet, parse_ecb_rates
+from corpscout_dagster.brreg.resources import fx_resource
 
 
 ECB_FIXTURE = """<?xml version="1.0" encoding="UTF-8"?>
@@ -70,3 +71,14 @@ def test_fx_rate_set_rejects_invalid_conversion_inputs() -> None:
 
     with pytest.raises(ValueError, match="USD rate not found"):
         FxRateSet(source="ECB", rate_date="2026-05-21", eur_per={"EUR": 1.0}).to_usd_cents(100, "NOK")
+
+
+def test_fx_resource_can_use_mock_rates(monkeypatch) -> None:
+    monkeypatch.setenv("BRREG_FX_PROVIDER", "mock")
+
+    rates = fx_resource(None).load_rates()
+
+    assert rates.source == "MOCK"
+    assert rates.rate_date == "2026-05-21"
+    assert rates.to_usd_cents(100, "USD") == 10000
+    assert rates.to_usd_cents(100, "EUR") == 11000

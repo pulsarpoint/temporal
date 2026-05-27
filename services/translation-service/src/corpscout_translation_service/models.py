@@ -52,6 +52,8 @@ class LLMTermTranslation(BaseModel):
 class TranslationError(BaseModel):
     code: str
     message: str
+    category: str | None = None
+    retry_strategy: str | None = None
     detail: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -13,6 +13,7 @@ from corpscout_translation_service.brreg import (
     translation_item_id,
 )
 from corpscout_translation_service.llm import LLMClient, OpenAICompatibleLLMClient, default_model, default_provider
+from corpscout_translation_service.mocking import MockTranslationController, mock_enabled_from_env
 from corpscout_translation_service.models import (
     BrregRecord,
     BrregRecordTranslationResult,
@@ -35,11 +36,20 @@ class TranslationService:
         *,
         llm_client: LLMClient | None = None,
         max_llm_items_per_request: int = 50,
+        mock_controller: MockTranslationController | None = None,
     ) -> None:
         if max_llm_items_per_request <= 0:
             raise ValueError("max_llm_items_per_request must be positive")
         self._llm_client = llm_client or OpenAICompatibleLLMClient.from_env()
         self._max_llm_items_per_request = max_llm_items_per_request
+        self._mock_controller = mock_controller or MockTranslationController.from_env()
+        self.mock_enabled = mock_enabled_from_env()
+
+    def reset_mock_state(self) -> None:
+        self._mock_controller.reset()
+
+    def mock_state(self) -> dict[str, object]:
+        return self._mock_controller.state()
 
     async def translate_brreg_records(self, request: BrregTranslateRequest) -> BrregTranslateResponse:
         started = time.monotonic()
@@ -101,8 +111,11 @@ class TranslationService:
         model = request.model if request.model != "default" else default_model()
         llm_request = request.model_copy(update={"provider": provider, "model": model})
 
+        if provider == "mock":
+            return self._mock_controller.translate_terms_response(llm_request)
+
         try:
-            translated_by_id = await self._llm_client.translate_terms(llm_request)
+            translated_by_id = await self._translate_terms(llm_request)
         except Exception as exc:
             logger.exception("Term translation request failed")
             return LLMTranslateResponse(
@@ -184,7 +197,7 @@ class TranslationService:
                     target_lang=target_lang,
                     items=chunk,
                 )
-                translated_by_id.update(await self._llm_client.translate_terms(request))
+                translated_by_id.update(await self._translate_terms(request))
             pending = [item for item in llm_items if item.id not in translated_by_id]
             if pending:
                 logger.warning(
@@ -192,6 +205,16 @@ class TranslationService:
                     extra={"missing_terms": len(pending), "attempt": attempt + 1},
                 )
         return translated_by_id
+
+    async def _translate_terms(self, request: LLMTranslationRequest) -> dict[str, str]:
+        if request.provider == "mock":
+            response = self._mock_controller.translate_terms_response(request)
+            if response.status == "failed":
+                error = response.error
+                message = error.message if error is not None else "mock translation failed"
+                raise RuntimeError(message)
+            return {item.id: item.translation for item in response.translations}
+        return await self._llm_client.translate_terms(request)
 
     def _build_record_result(
         self,

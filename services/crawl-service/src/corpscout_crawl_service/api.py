@@ -4,15 +4,16 @@ from contextlib import asynccontextmanager
 import logging
 from typing import Annotated
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 
 from corpscout_crawl_service.models import BrregDomainDiscoveryRequest, DomainDiscoverRequest
+from corpscout_crawl_service.mocking import MockCrawlService, mock_enabled_from_env
 from corpscout_crawl_service.service import CrawlService
 
 
 def create_app(*, crawl_service: CrawlService | None = None) -> FastAPI:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-    service = crawl_service or CrawlService()
+    service = crawl_service or (MockCrawlService.from_env() if mock_enabled_from_env() else CrawlService())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -27,6 +28,19 @@ def create_app(*, crawl_service: CrawlService | None = None) -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/__mock/state")
+    async def mock_state():
+        if not isinstance(service, MockCrawlService):
+            raise HTTPException(status_code=404, detail="mock mode is not enabled")
+        return service.state()
+
+    @app.post("/__mock/reset")
+    async def mock_reset():
+        if not isinstance(service, MockCrawlService):
+            raise HTTPException(status_code=404, detail="mock mode is not enabled")
+        service.reset()
+        return service.state()
 
     @app.post("/v1/domains/discover")
     async def discover_domains(request: DomainDiscoverRequest):

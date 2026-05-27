@@ -230,6 +230,7 @@ def materialize_brreg_translation_results(
     artifact_summary: dict[str, int] = {}
     failure_summary: dict[str, int] = {}
     enrichment_run_id: str | None = None
+    claimed_record_ids: set[str] = set()
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
             store = BrregWorkingStore(cursor)
@@ -260,8 +261,9 @@ def materialize_brreg_translation_results(
                         include_new_records=True,
                         max_parallel_tasks=max_parallel_tasks,
                         lease_seconds=DEFAULT_TASK_LEASE_SECONDS,
-                    )
+                )
                 conn.commit()
+                claimed_record_ids.update(record.id for record in records)
 
                 if not records:
                     stopped_reason = "no_claimable_records"
@@ -308,7 +310,12 @@ def materialize_brreg_translation_results(
             conn.rollback()
             if enrichment_run_id is not None:
                 with conn.cursor() as cursor:
-                    BrregWorkingStore(cursor).finish_enrichment_run(
+                    store = BrregWorkingStore(cursor)
+                    store.reset_unstarted_running_task_records(
+                        task_type="translate",
+                        raw_record_ids=sorted(claimed_record_ids),
+                    )
+                    store.finish_enrichment_run(
                         FinishEnrichmentRun(
                             enrichment_run_id=enrichment_run_id,
                             status="failed",

@@ -217,3 +217,21 @@ make smoke-brreg-db
 
 The container image is built by `.github/workflows/dagster-image.yml` and pushed
 to `ghcr.io/pulsarpoint/corpscout-dagster`.
+
+## Local Mock E2E
+
+Use the mock compose stack to exercise the BRREG Dagster flow without remote
+Postgres, real LLMs, live BRREG bulk downloads, search engines, crawl4ai, or
+ECB network calls:
+
+```bash
+make mock-e2e
+```
+
+The target creates `.env.mock` from `.env.mock.example` when needed, starts
+local Postgres on `15432`, Dagster on `3001`, translation-service on `18095`,
+and crawl-service on `18096`. It loads `fixtures/brreg_raw_records_1000.json.gz`,
+runs raw ingest, translation, domain discovery, currency conversion, retry jobs,
+and enhanced-record build, then prints a JSON summary with task states and
+artifact counts. Use `make mock-reset` to remove the local mock DB volume and
+Dagster home.

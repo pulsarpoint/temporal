@@ -10,3 +10,5 @@ __pycache__/
 dist/
 services/python-worker/testing/.perf-results/
 dagster/.dagster_home/
+dagster/.dagster_home_mock/
+dagster/.env.mock

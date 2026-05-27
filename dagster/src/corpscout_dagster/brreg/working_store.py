@@ -409,6 +409,18 @@ class BrregWorkingStore:
         )
         return [_raw_task_record_from_row(row) for row in self._cursor.fetchall()]
 
+    def reset_unstarted_running_task_records(self, *, task_type: str, raw_record_ids: list[str]) -> int:
+        if not raw_record_ids:
+            return 0
+        self._cursor.execute(
+            RESET_UNSTARTED_RUNNING_TASK_RECORDS_SQL,
+            {
+                "task_type": task_type,
+                "raw_record_ids": raw_record_ids,
+            },
+        )
+        return int(_single_value(self._cursor.fetchone()))
+
     def create_task_attempt(self, command: CreateTaskAttempt) -> TaskAttempt:
         self._cursor.execute(
             CREATE_TASK_ATTEMPT_SQL,
@@ -999,7 +1011,7 @@ WITH retry_candidates AS (
     WHERE rr.is_current = true
       AND rts.status IN ('failed_retryable', 'failed_terminal')
       AND rts.error_category = %(error_category)s
-      AND (%(task_type)s IS NULL OR rts.task_type = %(task_type)s)
+      AND (%(task_type)s::text IS NULL OR rts.task_type = %(task_type)s::text)
     ORDER BY rts.next_retry_at NULLS FIRST, rts.updated_at ASC, rts.raw_record_id ASC
     LIMIT %(limit)s
 ),
@@ -1295,6 +1307,26 @@ ORDER BY rr.last_seen_at ASC, claimed_task_ids.id ASC
 LIMIT %(limit)s
 """
 
+RESET_UNSTARTED_RUNNING_TASK_RECORDS_SQL = """
+WITH reset_rows AS (
+    UPDATE dagster_brreg.raw_record_task_states
+    SET
+        status = 'pending',
+        last_started_at = NULL,
+        last_finished_at = NULL,
+        next_retry_at = now(),
+        lease_until = NULL,
+        last_error = NULL,
+        updated_at = now()
+    WHERE task_type = %(task_type)s
+      AND raw_record_id = ANY(%(raw_record_ids)s::uuid[])
+      AND status = 'running'
+      AND last_attempt_id IS NULL
+    RETURNING raw_record_id
+)
+SELECT count(*)::int FROM reset_rows
+"""
+
 CREATE_TASK_ATTEMPT_SQL = """
 INSERT INTO dagster_brreg.task_attempts (
     enrichment_run_id,
@@ -1383,7 +1415,16 @@ UPDATE_TASK_STATE_FINISHED_SQL = """
 UPDATE dagster_brreg.raw_record_task_states rts
 SET
     status = CASE
-        WHEN %(status)s = 'failed' AND ta.attempt >= 5 THEN 'failed_terminal'
+        WHEN %(status)s = 'failed'
+          AND (
+            ta.attempt >= 5
+            OR %(retry_strategy)s IN (
+              'change_model_or_prompt',
+              'manual_config',
+              'manual_input',
+              'not_retryable'
+            )
+          ) THEN 'failed_terminal'
         WHEN %(status)s = 'failed' THEN 'failed_retryable'
         WHEN %(status)s = 'succeeded' THEN 'succeeded'
         WHEN %(status)s = 'skipped' THEN 'skipped'
@@ -1395,7 +1436,14 @@ SET
     last_finished_at = now(),
     lease_until = NULL,
     next_retry_at = CASE
-        WHEN %(status)s <> 'failed' OR ta.attempt >= 5 THEN NULL
+        WHEN %(status)s <> 'failed'
+          OR ta.attempt >= 5
+          OR %(retry_strategy)s IN (
+            'change_model_or_prompt',
+            'manual_config',
+            'manual_input',
+            'not_retryable'
+          ) THEN NULL
         WHEN ta.attempt = 1 THEN now() + interval '5 minutes'
         WHEN ta.attempt = 2 THEN now() + interval '30 minutes'
         WHEN ta.attempt = 3 THEN now() + interval '6 hours'

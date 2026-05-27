@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import io
 from collections.abc import Iterable, Iterator
+from pathlib import Path
 from typing import Protocol
 
 import httpx
@@ -40,6 +41,14 @@ class BrregBulkClient:
         ) as response:
             response.raise_for_status()
             yield from iter_brreg_bulk_payload(response.iter_bytes())
+
+
+class FixtureBrregBulkClient:
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+
+    def iter_records(self) -> Iterator[BrregRawRecord]:
+        yield from iter_brreg_bulk_payload([self._path.read_bytes()])
 
 
 def parse_brreg_bulk_payload(content: bytes) -> list[BrregRawRecord]:

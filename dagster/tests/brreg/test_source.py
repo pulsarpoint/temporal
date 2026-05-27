@@ -7,8 +7,10 @@ import httpx
 import pytest
 
 from corpscout_dagster.brreg.models import BrregRawRecord
+from corpscout_dagster.brreg.resources import brreg_bulk_resource
 from corpscout_dagster.brreg.source import (
     BrregBulkClient,
+    FixtureBrregBulkClient,
     iter_brreg_bulk_payload,
     iter_brreg_bulk_records,
     parse_brreg_bulk_payload,
@@ -207,3 +209,24 @@ def test_iter_brreg_bulk_records_sync_wrapper_yields_records() -> None:
     records = list(iter_brreg_bulk_records(client=FakeClient()))
 
     assert [record.organization_number for record in records] == ["810202572", "910202572"]
+
+
+def test_fixture_brreg_bulk_client_reads_gzipped_fixture(tmp_path) -> None:
+    fixture = tmp_path / "brreg.json.gz"
+    payload = [{"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"}]
+    fixture.write_bytes(gzip.compress(json.dumps(payload).encode("utf-8")))
+
+    records = list(FixtureBrregBulkClient(fixture).iter_records())
+
+    assert [record.organization_number for record in records] == ["810202572"]
+
+
+def test_brreg_bulk_resource_uses_fixture_when_configured(monkeypatch, tmp_path) -> None:
+    fixture = tmp_path / "brreg.json.gz"
+    payload = [{"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"}]
+    fixture.write_bytes(gzip.compress(json.dumps(payload).encode("utf-8")))
+    monkeypatch.setenv("BRREG_BULK_FIXTURE_PATH", str(fixture))
+
+    resource = brreg_bulk_resource(None)
+
+    assert [record.organization_number for record in resource.client.iter_records()] == ["810202572"]

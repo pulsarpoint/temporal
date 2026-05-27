@@ -46,7 +46,7 @@ async def test_company_website_becomes_owned_domain_and_related_site() -> None:
             }
         }
     )
-    service = CrawlService(crawl4ai_service=fake_crawler, site_analyzer=analyzer)
+    service = _crawl_service_with_fake_analyzers(fake_crawler, analyzer)
 
     response = await service.discover_domains({"company_name": "SERVI GROUP AS", "country": "NO"})
 
@@ -98,7 +98,7 @@ async def test_directory_profile_is_related_site_but_not_owned_domain() -> None:
             }
         }
     )
-    service = CrawlService(crawl4ai_service=fake_crawler, site_analyzer=analyzer)
+    service = _crawl_service_with_fake_analyzers(fake_crawler, analyzer)
 
     response = await service.discover_domains({"company_name": "BORTIGARD AS", "country": "NO"})
 
@@ -149,7 +149,7 @@ async def test_social_profile_can_be_primary_web_presence_but_not_owned_domain()
             }
         }
     )
-    service = CrawlService(crawl4ai_service=fake_crawler, site_analyzer=analyzer)
+    service = _crawl_service_with_fake_analyzers(fake_crawler, analyzer)
 
     response = await service.discover_domains({"company_name": "ALSTRA AS", "country": "NO"})
 
@@ -204,7 +204,7 @@ async def test_brreg_business_context_is_passed_to_site_analyzer() -> None:
             }
         }
     )
-    service = CrawlService(crawl4ai_service=fake_crawler, site_analyzer=analyzer)
+    service = _crawl_service_with_fake_analyzers(fake_crawler, analyzer)
 
     await service.discover_brreg_domain(
         {
@@ -294,7 +294,7 @@ async def test_conflicting_activity_without_identity_signal_is_not_owned_domain(
             }
         }
     )
-    service = CrawlService(crawl4ai_service=fake_crawler, site_analyzer=analyzer)
+    service = _crawl_service_with_fake_analyzers(fake_crawler, analyzer)
 
     response = await service.discover_domains(
         {
@@ -315,6 +315,23 @@ async def test_conflicting_activity_without_identity_signal_is_not_owned_domain(
     assert response.site_checks[0].owned_domain is False
     assert response.site_checks[0].relationship == "unrelated"
     assert response.site_checks[0].score < 70
+
+
+@dataclass
+class FakeSearchAnalyzer:
+    async def analyze_search(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {"candidates": []}
+
+
+def _crawl_service_with_fake_analyzers(
+    fake_crawler: "FakeCrawl4AiService",
+    analyzer: "FakeSiteAnalyzer",
+) -> CrawlService:
+    return CrawlService(
+        crawl4ai_service=fake_crawler,
+        search_analyzer=FakeSearchAnalyzer(),
+        site_analyzer=analyzer,
+    )
 
 
 @dataclass

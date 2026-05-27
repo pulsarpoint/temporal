@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 
 from corpscout_translation_service.models import BrregTranslateRequest, LLMSelection, LLMTranslationRequest
 from corpscout_translation_service.service import TranslationService
@@ -17,6 +17,19 @@ def create_app(*, translation_service: TranslationService | None = None) -> Fast
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/__mock/state")
+    async def mock_state():
+        if not service.mock_enabled:
+            raise HTTPException(status_code=404, detail="mock mode is not enabled")
+        return service.mock_state()
+
+    @app.post("/__mock/reset")
+    async def mock_reset():
+        if not service.mock_enabled:
+            raise HTTPException(status_code=404, detail="mock mode is not enabled")
+        service.reset_mock_state()
+        return service.mock_state()
 
     @app.post("/v1/translate/brreg-records")
     async def translate_brreg_records(

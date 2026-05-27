@@ -1,11 +1,13 @@
 COMPOSE ?= docker compose
+MOCK_ENV_FILE ?= .env.mock
+MOCK_COMPOSE_FILE ?= docker-compose.mock.yml
 DAGSTER_PORT ?= 3000
 DAGSTER_IMAGE ?= ghcr.io/pulsarpoint/corpscout-dagster:latest
 TRANSLATION_SERVICE_IMAGE ?= ghcr.io/pulsarpoint/corpscout-translation-service:latest
 CRAWL_SERVICE_IMAGE ?= ghcr.io/pulsarpoint/corpscout-crawl-service:latest
 BRREG_STALE_RUN_CLEANUP_MINUTES ?= 30
 
-.PHONY: sync test validate smoke-brreg-db cleanup-stale-brreg-runs webserver daemon build pull up run down migrate-up migrate-down migrate-version logs logs-webserver logs-daemon logs-translation logs-crawl shell
+.PHONY: sync test validate smoke-brreg-db cleanup-stale-brreg-runs webserver daemon build pull up run down migrate-up migrate-down migrate-version logs logs-webserver logs-daemon logs-translation logs-crawl shell mock-env mock-up mock-down mock-reset mock-e2e mock-logs
 
 sync:
 	uv sync
@@ -67,3 +69,22 @@ logs-crawl:
 
 shell:
 	$(COMPOSE) run --rm dagster-webserver bash
+
+mock-env:
+	@test -f $(MOCK_ENV_FILE) || cp .env.mock.example $(MOCK_ENV_FILE)
+
+mock-up: mock-env
+	$(COMPOSE) --env-file $(MOCK_ENV_FILE) -f $(MOCK_COMPOSE_FILE) up -d --build
+
+mock-down: mock-env
+	$(COMPOSE) --env-file $(MOCK_ENV_FILE) -f $(MOCK_COMPOSE_FILE) down
+
+mock-reset: mock-env
+	$(COMPOSE) --env-file $(MOCK_ENV_FILE) -f $(MOCK_COMPOSE_FILE) down -v --remove-orphans
+	rm -rf .dagster_home_mock
+
+mock-e2e: mock-env
+	uv run python scripts/run_mock_e2e.py
+
+mock-logs: mock-env
+	$(COMPOSE) --env-file $(MOCK_ENV_FILE) -f $(MOCK_COMPOSE_FILE) logs -f
