@@ -220,6 +220,90 @@ def test_working_store_fetches_pending_task_records_with_indexed_candidate_branc
     }
 
 
+def test_working_store_fetches_raw_task_state_summary_for_dagster_metadata() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = [
+        (
+            1000,
+            1000,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            228,
+            772,
+            0,
+            0,
+            0,
+        )
+    ]
+    store = BrregWorkingStore(cursor)
+
+    summary = store.fetch_raw_task_state_summary(task_type="translate")
+
+    assert summary == {
+        "raw_records_total": 1000,
+        "raw_records_current": 1000,
+        "raw_records_not_current": 0,
+        "task_no_state": 0,
+        "task_pending": 0,
+        "task_running": 0,
+        "task_running_active": 0,
+        "task_running_stale": 0,
+        "task_failed_retryable": 0,
+        "task_failed_terminal": 228,
+        "task_succeeded": 772,
+        "task_skipped": 0,
+        "task_cancelled": 0,
+        "task_eligible_now": 0,
+    }
+    sql, params = cursor.calls[0]
+    assert "LEFT JOIN dagster_brreg.raw_record_task_states ts" in sql
+    assert "task_eligible_now" in sql
+    assert params == {"task_type": "translate"}
+
+
+def test_working_store_reconciles_translation_tasks_from_results_not_terminal_state() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = [(428,)]
+    store = BrregWorkingStore(cursor)
+
+    reconciled = store.reconcile_translation_task_states(model="qwen3:6b", prompt_version="v1")
+
+    assert reconciled == 428
+    sql, params = cursor.calls[0]
+    assert "latest_usable_translation" in sql
+    assert "status IN ('succeeded', 'skipped')" in sql
+    assert "task_type = 'translate'" in sql
+    assert "status = 'pending'" in sql
+    assert "status = 'running'" in sql
+    assert params == {"model": "qwen3:6b", "prompt_version": "v1"}
+
+
+def test_working_store_fetches_translation_artifact_summary_for_current_model() -> None:
+    cursor = FakeCursor()
+    cursor.fetchone_values = [(572, 0, 228, 200, 428)]
+    store = BrregWorkingStore(cursor)
+
+    summary = store.fetch_translation_artifact_summary(model="qwen3:6b", prompt_version="v1")
+
+    assert summary == {
+        "translation_result_succeeded": 572,
+        "translation_result_skipped": 0,
+        "translation_result_failed": 228,
+        "translation_result_missing": 200,
+        "translation_artifact_missing": 428,
+    }
+    sql, params = cursor.calls[0]
+    assert "latest_translation_result" in sql
+    assert "model = %(model)s" in sql
+    assert "prompt_version = %(prompt_version)s" in sql
+    assert params == {"model": "qwen3:6b", "prompt_version": "v1"}
+
+
 def test_working_store_creates_task_attempts_with_next_attempt_number() -> None:
     cursor = FakeCursor()
     cursor.fetchone_values = [

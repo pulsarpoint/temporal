@@ -12,6 +12,7 @@ from dagster import resource
 from corpscout_dagster.brreg.asset_config import corpscout_database_url
 from corpscout_dagster.brreg.crawl_service import CrawlServiceClient, HttpCrawlServiceClient
 from corpscout_dagster.brreg.fx_rates import FxRateSet, load_ecb_rates_for_date, load_latest_ecb_rates
+from corpscout_dagster.brreg.source import BrregBulkClient, BrregBulkRecordClient
 from corpscout_dagster.brreg.translation_terms import (
     DEFAULT_LLM_MODEL,
     DEFAULT_PROMPT_VERSION,
@@ -36,6 +37,11 @@ class TranslationServiceResource:
 @dataclass(frozen=True)
 class CrawlServiceResource:
     client: CrawlServiceClient
+
+
+@dataclass(frozen=True)
+class BrregBulkResource:
+    client: BrregBulkRecordClient
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,11 @@ def translation_service_resource(_context) -> TranslationServiceResource:
 @resource
 def crawl_service_resource(_context) -> CrawlServiceResource:
     return CrawlServiceResource(client=HttpCrawlServiceClient.from_env())
+
+
+@resource
+def brreg_bulk_resource(_context) -> BrregBulkResource:
+    return BrregBulkResource(client=BrregBulkClient())
 
 
 @resource

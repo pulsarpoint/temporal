@@ -56,6 +56,7 @@ def test_working_store_migration_tracks_task_outputs() -> None:
     assert "UNIQUE (category, source_lang, target_lang, original_hash, model, prompt_version)" in sql
     assert "idx_dagster_brreg_translation_cache_lookup" in sql
     assert "idx_dagster_brreg_translation_success" in sql
+    assert "idx_dagster_brreg_translation_results_model_prompt_raw_latest" in sql
     assert "idx_dagster_brreg_domain_results_raw_created" in sql
     assert "idx_dagster_brreg_currency_results_raw_created" in sql
     assert "idx_dagster_brreg_task_states_queue" in sql

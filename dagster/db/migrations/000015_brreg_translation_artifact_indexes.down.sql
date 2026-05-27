@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS dagster_brreg.idx_dagster_brreg_translation_results_model_prompt_raw_latest;

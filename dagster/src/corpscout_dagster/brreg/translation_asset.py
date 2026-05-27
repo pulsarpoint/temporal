@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dagster import asset
+from dagster import AssetKey, asset
 
 from corpscout_dagster.brreg.asset_config import (
     brreg_batch_run_config_schema,
@@ -17,6 +17,7 @@ from corpscout_dagster.brreg.materializations import (
 
 @asset(
     name="brreg_translation_results",
+    deps=[AssetKey("brreg_raw_records")],
     config_schema=brreg_batch_run_config_schema(
         batch_size_default=env_int("BRREG_TRANSLATION_BATCH_SIZE", DEFAULT_TRANSLATION_RECORD_BATCH_SIZE),
         max_batches_default=env_int(

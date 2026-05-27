@@ -248,6 +248,80 @@ class BrregWorkingStore:
             },
         )
 
+    def reconcile_translation_task_states(self, *, model: str, prompt_version: str) -> int:
+        self._cursor.execute(
+            RECONCILE_TRANSLATION_TASK_STATES_SQL,
+            {
+                "model": model,
+                "prompt_version": prompt_version,
+            },
+        )
+        return int(_single_value(self._cursor.fetchone()))
+
+    def fetch_raw_task_state_summary(self, *, task_type: str) -> dict[str, int]:
+        self._cursor.execute(FETCH_RAW_TASK_STATE_SUMMARY_SQL, {"task_type": task_type})
+        row = self._cursor.fetchone()
+        if row is None:
+            return {
+                "raw_records_total": 0,
+                "raw_records_current": 0,
+                "raw_records_not_current": 0,
+                "task_no_state": 0,
+                "task_pending": 0,
+                "task_running": 0,
+                "task_running_active": 0,
+                "task_running_stale": 0,
+                "task_failed_retryable": 0,
+                "task_failed_terminal": 0,
+                "task_succeeded": 0,
+                "task_skipped": 0,
+                "task_cancelled": 0,
+                "task_eligible_now": 0,
+            }
+        keys = [
+            "raw_records_total",
+            "raw_records_current",
+            "raw_records_not_current",
+            "task_no_state",
+            "task_pending",
+            "task_running",
+            "task_running_active",
+            "task_running_stale",
+            "task_failed_retryable",
+            "task_failed_terminal",
+            "task_succeeded",
+            "task_skipped",
+            "task_cancelled",
+            "task_eligible_now",
+        ]
+        return {key: int(value or 0) for key, value in zip(keys, row, strict=True)}
+
+    def fetch_translation_artifact_summary(self, *, model: str, prompt_version: str) -> dict[str, int]:
+        self._cursor.execute(
+            FETCH_TRANSLATION_ARTIFACT_SUMMARY_SQL,
+            {
+                "model": model,
+                "prompt_version": prompt_version,
+            },
+        )
+        row = self._cursor.fetchone()
+        if row is None:
+            return {
+                "translation_result_succeeded": 0,
+                "translation_result_skipped": 0,
+                "translation_result_failed": 0,
+                "translation_result_missing": 0,
+                "translation_artifact_missing": 0,
+            }
+        keys = [
+            "translation_result_succeeded",
+            "translation_result_skipped",
+            "translation_result_failed",
+            "translation_result_missing",
+            "translation_artifact_missing",
+        ]
+        return {key: int(value or 0) for key, value in zip(keys, row, strict=True)}
+
     def fetch_pending_raw_task_records(
         self,
         *,
@@ -642,6 +716,174 @@ SET
     finished_at = now(),
     error = %(error)s
 WHERE id = %(enrichment_run_id)s
+"""
+
+RECONCILE_TRANSLATION_TASK_STATES_SQL = """
+-- reconcile_translation_task_states
+WITH latest_usable_translation AS (
+    SELECT DISTINCT ON (raw_record_id)
+        raw_record_id
+    FROM dagster_brreg.translation_results
+    WHERE status IN ('succeeded', 'skipped')
+      AND model = %(model)s
+      AND prompt_version = %(prompt_version)s
+    ORDER BY raw_record_id, created_at DESC
+),
+missing_usable_translation AS (
+    SELECT rr.id AS raw_record_id
+    FROM dagster_brreg.raw_records rr
+    LEFT JOIN latest_usable_translation tr ON tr.raw_record_id = rr.id
+    WHERE rr.is_current = true
+      AND tr.raw_record_id IS NULL
+),
+reconciled AS (
+    INSERT INTO dagster_brreg.raw_record_task_states (
+        raw_record_id,
+        task_type,
+        status,
+        attempt_count,
+        last_attempt_id,
+        last_started_at,
+        last_finished_at,
+        next_retry_at,
+        lease_until,
+        last_error,
+        result_summary
+    )
+    SELECT
+        raw_record_id,
+        'translate',
+        'pending',
+        0,
+        NULL,
+        NULL,
+        NULL,
+        now(),
+        NULL,
+        NULL,
+        '{}'::jsonb
+    FROM missing_usable_translation
+    ON CONFLICT (raw_record_id, task_type) DO UPDATE
+    SET
+        status = 'pending',
+        next_retry_at = now(),
+        lease_until = NULL,
+        updated_at = now()
+    WHERE dagster_brreg.raw_record_task_states.task_type = 'translate'
+      AND NOT (
+          dagster_brreg.raw_record_task_states.status = 'running'
+          AND coalesce(
+              dagster_brreg.raw_record_task_states.lease_until,
+              dagster_brreg.raw_record_task_states.last_started_at + interval '30 minutes'
+          ) > now()
+      )
+    RETURNING raw_record_id
+)
+SELECT count(*) FROM reconciled
+"""
+
+FETCH_RAW_TASK_STATE_SUMMARY_SQL = """
+-- fetch_raw_task_state_summary
+WITH raw_counts AS (
+    SELECT
+        count(*)::int AS raw_records_total,
+        count(*) FILTER (WHERE is_current)::int AS raw_records_current,
+        count(*) FILTER (WHERE NOT is_current)::int AS raw_records_not_current
+    FROM dagster_brreg.raw_records
+),
+current_task_rows AS (
+    SELECT
+        rr.id,
+        ts.status,
+        ts.next_retry_at,
+        ts.lease_until,
+        ts.last_started_at
+    FROM dagster_brreg.raw_records rr
+    LEFT JOIN dagster_brreg.raw_record_task_states ts
+      ON ts.raw_record_id = rr.id
+     AND ts.task_type = %(task_type)s
+    WHERE rr.is_current = true
+),
+task_counts AS (
+    SELECT
+        count(*) FILTER (WHERE status IS NULL)::int AS task_no_state,
+        count(*) FILTER (WHERE status = 'pending')::int AS task_pending,
+        count(*) FILTER (WHERE status = 'running')::int AS task_running,
+        count(*) FILTER (
+            WHERE status = 'running'
+              AND coalesce(lease_until, last_started_at + interval '30 minutes') > now()
+        )::int AS task_running_active,
+        count(*) FILTER (
+            WHERE status = 'running'
+              AND coalesce(lease_until, last_started_at + interval '30 minutes') <= now()
+        )::int AS task_running_stale,
+        count(*) FILTER (WHERE status = 'failed_retryable')::int AS task_failed_retryable,
+        count(*) FILTER (WHERE status = 'failed_terminal')::int AS task_failed_terminal,
+        count(*) FILTER (WHERE status = 'succeeded')::int AS task_succeeded,
+        count(*) FILTER (WHERE status = 'skipped')::int AS task_skipped,
+        count(*) FILTER (WHERE status = 'cancelled')::int AS task_cancelled,
+        count(*) FILTER (
+            WHERE status IS NULL
+               OR status = 'pending'
+               OR (status = 'failed_retryable' AND next_retry_at <= now())
+               OR (
+                   status = 'running'
+                   AND coalesce(lease_until, last_started_at + interval '30 minutes') <= now()
+               )
+        )::int AS task_eligible_now
+    FROM current_task_rows
+)
+SELECT
+    raw_counts.raw_records_total,
+    raw_counts.raw_records_current,
+    raw_counts.raw_records_not_current,
+    task_counts.task_no_state,
+    task_counts.task_pending,
+    task_counts.task_running,
+    task_counts.task_running_active,
+    task_counts.task_running_stale,
+    task_counts.task_failed_retryable,
+    task_counts.task_failed_terminal,
+    task_counts.task_succeeded,
+    task_counts.task_skipped,
+    task_counts.task_cancelled,
+    task_counts.task_eligible_now
+FROM raw_counts
+CROSS JOIN task_counts
+"""
+
+FETCH_TRANSLATION_ARTIFACT_SUMMARY_SQL = """
+-- fetch_translation_artifact_summary
+WITH current_raw AS (
+    SELECT id
+    FROM dagster_brreg.raw_records
+    WHERE is_current = true
+),
+latest_translation_result AS (
+    SELECT DISTINCT ON (raw_record_id)
+        raw_record_id,
+        status
+    FROM dagster_brreg.translation_results
+    WHERE model = %(model)s
+      AND prompt_version = %(prompt_version)s
+    ORDER BY raw_record_id, created_at DESC
+),
+translation_counts AS (
+    SELECT
+        count(*) FILTER (WHERE ltr.status = 'succeeded')::int AS translation_result_succeeded,
+        count(*) FILTER (WHERE ltr.status = 'skipped')::int AS translation_result_skipped,
+        count(*) FILTER (WHERE ltr.status = 'failed')::int AS translation_result_failed,
+        count(*) FILTER (WHERE ltr.raw_record_id IS NULL)::int AS translation_result_missing
+    FROM current_raw cr
+    LEFT JOIN latest_translation_result ltr ON ltr.raw_record_id = cr.id
+)
+SELECT
+    translation_result_succeeded,
+    translation_result_skipped,
+    translation_result_failed,
+    translation_result_missing,
+    translation_result_failed + translation_result_missing AS translation_artifact_missing
+FROM translation_counts
 """
 
 FETCH_PENDING_RAW_TASK_RECORDS_SQL = """

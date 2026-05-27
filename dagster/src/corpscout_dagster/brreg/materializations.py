@@ -10,6 +10,12 @@ from corpscout_dagster.brreg.enhanced_payload import (
     enhanced_payload_hash,
 )
 from corpscout_dagster.brreg.fx_rates import FxRateSet, load_ecb_rates_for_date, load_latest_ecb_rates
+from corpscout_dagster.brreg.source import (
+    BRREG_API_BASE_URL,
+    BRREG_BULK_PATH,
+    BrregBulkRecordClient,
+    iter_brreg_bulk_records,
+)
 from corpscout_dagster.brreg.translation_terms import (
     CachedTermTranslation,
     TermTranslator,
@@ -22,6 +28,7 @@ from corpscout_dagster.brreg.translation_terms import (
 )
 from corpscout_dagster.brreg.working_store import (
     BrregWorkingStore,
+    CreateBulkSnapshot,
     CreateEnrichmentRun,
     CreateTaskAttempt,
     FinishEnrichmentRun,
@@ -36,6 +43,7 @@ from corpscout_dagster.brreg.working_store import (
 )
 
 
+DEFAULT_RAW_RECORD_BATCH_SIZE = 5000
 DEFAULT_TRANSLATION_RECORD_BATCH_SIZE = 50
 DEFAULT_TRANSLATION_MAX_BATCHES_PER_RUN = 0
 DEFAULT_DOMAIN_RESULT_BATCH_SIZE = 10
@@ -47,6 +55,93 @@ DEFAULT_TASK_LEASE_SECONDS = 1800
 DEFAULT_TRANSLATION_MAX_PARALLEL_TASKS = DEFAULT_TRANSLATION_RECORD_BATCH_SIZE
 DEFAULT_DOMAIN_RESULT_MAX_PARALLEL_TASKS = 1
 DEFAULT_CURRENCY_RESULT_MAX_PARALLEL_TASKS = 100
+
+
+def materialize_brreg_raw_records(
+    context,
+    *,
+    connection_factory,
+    database_url: str,
+    bulk_client: BrregBulkRecordClient,
+    batch_size: int = DEFAULT_RAW_RECORD_BATCH_SIZE,
+) -> dict[str, int]:
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    rows_seen = 0
+    rows_written = 0
+    batches_processed = 0
+    source_url = f"{BRREG_API_BASE_URL}{BRREG_BULK_PATH}"
+    with connection_factory(database_url) as conn:
+        with conn.cursor() as cursor:
+            store = BrregWorkingStore(cursor)
+            enrichment_run_id = store.create_enrichment_run(
+                CreateEnrichmentRun(
+                    dagster_run_id=_enrichment_run_key(context, "bulk_ingest"),
+                    run_type="bulk_ingest",
+                    metadata={"source": "brreg", "dagster_run_id": context.run_id},
+                )
+            )
+            bulk_snapshot_id = store.create_bulk_snapshot(
+                CreateBulkSnapshot(
+                    enrichment_run_id=enrichment_run_id,
+                    source_url=source_url,
+                    content_length_bytes=None,
+                    compressed_payload_hash=None,
+                    storage_uri=None,
+                    metadata={"format": "gzip-json", "source": "brreg"},
+                )
+            )
+        conn.commit()
+
+        try:
+            batch = []
+            for record in iter_brreg_bulk_records(client=bulk_client):
+                batch.append(record.to_working_row())
+                if len(batch) < batch_size:
+                    continue
+                result = _write_raw_record_batch(
+                    conn=conn,
+                    enrichment_run_id=enrichment_run_id,
+                    bulk_snapshot_id=bulk_snapshot_id,
+                    rows=batch,
+                )
+                rows_seen += result.rows_seen
+                rows_written += result.rows_written
+                batches_processed += 1
+                batch = []
+
+            if batch:
+                result = _write_raw_record_batch(
+                    conn=conn,
+                    enrichment_run_id=enrichment_run_id,
+                    bulk_snapshot_id=bulk_snapshot_id,
+                    rows=batch,
+                )
+                rows_seen += result.rows_seen
+                rows_written += result.rows_written
+                batches_processed += 1
+
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(enrichment_run_id=enrichment_run_id, status="succeeded", error=None)
+                )
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            with conn.cursor() as cursor:
+                BrregWorkingStore(cursor).finish_enrichment_run(
+                    FinishEnrichmentRun(enrichment_run_id=enrichment_run_id, status="failed", error=str(exc))
+                )
+            conn.commit()
+            raise
+
+    result = {
+        "rows_seen": rows_seen,
+        "rows_written": rows_written,
+        "batches_processed": batches_processed,
+    }
+    context.add_output_metadata({**result, "dagster_run_id": context.run_id, "source_url": source_url})
+    return result
 
 
 def materialize_brreg_translation_results(
@@ -72,10 +167,14 @@ def materialize_brreg_translation_results(
     rows_failed = 0
     batches_processed = 0
     stopped_reason = "max_batches_reached"
+    reconciled_translation_tasks = 0
+    task_summary: dict[str, int] = {}
+    artifact_summary: dict[str, int] = {}
     enrichment_run_id: str | None = None
     with connection_factory(database_url) as conn:
         with conn.cursor() as cursor:
-            enrichment_run_id = BrregWorkingStore(cursor).create_enrichment_run(
+            store = BrregWorkingStore(cursor)
+            enrichment_run_id = store.create_enrichment_run(
                 CreateEnrichmentRun(
                     dagster_run_id=_enrichment_run_key(context, "translate"),
                     run_type="translate",
@@ -86,6 +185,10 @@ def materialize_brreg_translation_results(
                         "prompt_version": prompt_version,
                     },
                 )
+            )
+            reconciled_translation_tasks = store.reconcile_translation_task_states(
+                model=model,
+                prompt_version=prompt_version,
             )
         conn.commit()
 
@@ -102,7 +205,7 @@ def materialize_brreg_translation_results(
                 conn.commit()
 
                 if not records:
-                    stopped_reason = "no_pending_records"
+                    stopped_reason = "no_claimable_records"
                     break
 
                 batches_processed += 1
@@ -130,13 +233,16 @@ def materialize_brreg_translation_results(
             )
 
             with conn.cursor() as cursor:
-                BrregWorkingStore(cursor).finish_enrichment_run(
+                store = BrregWorkingStore(cursor)
+                store.finish_enrichment_run(
                     FinishEnrichmentRun(
                         enrichment_run_id=enrichment_run_id,
                         status="succeeded" if rows_failed == 0 else "failed",
                         error=None if rows_failed == 0 else f"{rows_failed} translation rows failed",
                     )
                 )
+                task_summary = store.fetch_raw_task_state_summary(task_type="translate")
+                artifact_summary = store.fetch_translation_artifact_summary(model=model, prompt_version=prompt_version)
             conn.commit()
         except Exception as exc:
             conn.rollback()
@@ -154,13 +260,17 @@ def materialize_brreg_translation_results(
 
     result = {
         "rows_seen": rows_seen,
+        "rows_claimed_this_run": rows_seen,
         "rows_completed": rows_completed,
         "rows_failed": rows_failed,
         "batches_processed": batches_processed,
+        "reconciled_translation_tasks": reconciled_translation_tasks,
     }
     context.add_output_metadata(
         {
             **result,
+            **task_summary,
+            **artifact_summary,
             "dagster_run_id": context.run_id,
             "max_batches_per_run": max_batches_per_run,
             "max_parallel_tasks": max_parallel_tasks,
@@ -217,7 +327,7 @@ def materialize_brreg_domain_results(
                     )
                 conn.commit()
                 if not records:
-                    stopped_reason = "no_pending_records"
+                    stopped_reason = "no_claimable_records"
                     break
 
                 batches_processed += 1
@@ -359,7 +469,7 @@ def materialize_brreg_currency_results(
                     )
                 conn.commit()
                 if not records:
-                    stopped_reason = "no_pending_records"
+                    stopped_reason = "no_claimable_records"
                     break
 
                 batches_processed += 1
@@ -571,6 +681,27 @@ def _create_task_attempt(
         )
     conn.commit()
     return attempt
+
+
+def _write_raw_record_batch(
+    *,
+    conn,
+    enrichment_run_id: str,
+    bulk_snapshot_id: str,
+    rows,
+):
+    with conn.cursor() as cursor:
+        store = BrregWorkingStore(cursor)
+        result = store.upsert_raw_records(rows, bulk_snapshot_id=bulk_snapshot_id)
+        store.increment_enrichment_run_progress(
+            IncrementEnrichmentRunProgress(
+                enrichment_run_id=enrichment_run_id,
+                records_seen=result.rows_seen,
+                records_completed=result.rows_written,
+            )
+        )
+    conn.commit()
+    return result
 
 
 def _translate_record_batch(

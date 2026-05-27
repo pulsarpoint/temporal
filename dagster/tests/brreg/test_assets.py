@@ -6,14 +6,17 @@ from corpscout_dagster.brreg.assets import (
     brreg_currency_results,
     brreg_domain_results,
     brreg_enhanced_records,
+    brreg_raw_records,
     brreg_translation_results,
     materialize_brreg_currency_results,
     materialize_brreg_enhanced_records,
     materialize_brreg_domain_results,
+    materialize_brreg_raw_records,
     materialize_brreg_translation_results,
     resolve_brreg_batch_run_config,
 )
 from corpscout_dagster.brreg.fx_rates import FxRateSet
+from corpscout_dagster.brreg.models import BrregRawRecord
 from corpscout_dagster.brreg.translation_terms import TranslationItem, translation_item_id
 from corpscout_dagster.definitions import defs
 
@@ -65,6 +68,12 @@ class FakeCursor:
     def fetchone(self):
         if "seeded_raw_records" in self.last_sql:
             return (self.seed_pending_count,)
+        if "reconcile_translation_task_states" in self.last_sql:
+            return (0,)
+        if "fetch_raw_task_state_summary" in self.last_sql:
+            return (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        if "fetch_translation_artifact_summary" in self.last_sql:
+            return (0, 0, 0, 0, 0)
         return self.fetchone_values.pop(0)
 
     def fetchall(self):
@@ -191,6 +200,14 @@ class FakeCrawlServiceClient:
         return self.payload
 
 
+class FakeBulkClient:
+    def __init__(self, records: list[BrregRawRecord | None]) -> None:
+        self.records = records
+
+    def iter_records(self):
+        yield from self.records
+
+
 def test_definitions_expose_only_operational_brreg_assets() -> None:
     asset_keys = {
         key.to_user_string()
@@ -199,6 +216,7 @@ def test_definitions_expose_only_operational_brreg_assets() -> None:
     }
 
     assert asset_keys == {
+        "brreg_raw_records",
         "brreg_translation_results",
         "brreg_domain_results",
         "brreg_currency_results",
@@ -210,6 +228,7 @@ def test_definitions_expose_only_operational_brreg_jobs() -> None:
     job_names = {job.name for job in defs.jobs or []}
 
     assert job_names == {
+        "brreg_ingest_raw_job",
         "brreg_translate_job",
         "brreg_domain_job",
         "brreg_currency_job",
@@ -233,7 +252,19 @@ def test_brreg_task_assets_expose_batch_controls_in_launchpad() -> None:
         assert fields["max_parallel_tasks"].default_provided
 
 
+def test_brreg_raw_asset_exposes_batch_size_control() -> None:
+    fields = brreg_raw_records.node_def.config_schema.config_type.fields
+
+    assert set(fields) == {"batch_size"}
+    assert fields["batch_size"].default_provided
+
+
 def test_brreg_assets_use_dagster_resources_for_external_dependencies() -> None:
+    assert brreg_raw_records.required_resource_keys == {
+        "io_manager",
+        "postgres",
+        "brreg_bulk",
+    }
     assert brreg_translation_results.required_resource_keys == {
         "io_manager",
         "postgres",
@@ -261,6 +292,7 @@ def test_definitions_register_brreg_resources() -> None:
         "translation_service",
         "crawl_service",
         "fx",
+        "brreg_bulk",
     }
 
 
@@ -306,6 +338,41 @@ def test_resolve_brreg_batch_run_config_accepts_launchpad_parallel_task_override
     assert config.batch_size == 7
     assert config.max_batches_per_run == 3
     assert config.max_parallel_tasks == 4
+
+
+def test_materialize_brreg_raw_records_ingests_bulk_records_into_working_table() -> None:
+    context = FakeContext()
+    connection = FakeConnection()
+    connection.cursor_instance.fetchone_values = [
+        ("00000000-0000-0000-0000-000000000001",),
+        ("00000000-0000-0000-0000-000000000002",),
+    ]
+    first = BrregRawRecord.from_payload({"organisasjonsnummer": "810202572", "navn": "BORTIGARD AS"})
+    second = BrregRawRecord.from_payload({"organisasjonsnummer": "910202572", "navn": "NEXT AS"})
+    assert first is not None
+    assert second is not None
+
+    result = materialize_brreg_raw_records(
+        context,
+        connection_factory=lambda _: connection,
+        database_url="postgresql://example.invalid/corpscout",
+        bulk_client=FakeBulkClient([first, None, second]),
+        batch_size=1,
+    )
+
+    assert result["rows_seen"] == 2
+    assert result["rows_written"] == 2
+    assert result["batches_processed"] == 2
+    assert all(isinstance(value, int) for value in result.values())
+    sql_calls = [sql for sql, _ in connection.cursor_instance.calls]
+    assert any("run_type" in sql and "INSERT INTO dagster_brreg.enrichment_runs" in sql for sql in sql_calls)
+    assert any("INSERT INTO dagster_brreg.bulk_snapshots" in sql for sql in sql_calls)
+    assert any("records_seen = records_seen + %(records_seen)s" in sql for sql in sql_calls)
+    assert any("finished_at = now()" in sql for sql in sql_calls)
+    many_sql_calls = [sql for sql, _ in connection.cursor_instance.many_calls]
+    assert sum("UPDATE dagster_brreg.raw_records" in sql for sql in many_sql_calls) == 2
+    assert sum("INSERT INTO dagster_brreg.raw_records" in sql for sql in many_sql_calls) == 2
+    assert context.metadata[-1]["rows_written"] == 2
 
 
 def test_materialize_brreg_translation_results_writes_task_cache_and_result() -> None:
@@ -490,7 +557,9 @@ def test_materialize_brreg_translation_results_drains_multiple_batches_until_emp
     assert result["rows_completed"] == 3
     assert result["rows_failed"] == 0
     assert result["batches_processed"] == 2
-    assert context.metadata[-1]["stopped_reason"] == "no_pending_records"
+    assert context.metadata[-1]["stopped_reason"] == "no_claimable_records"
+    assert context.metadata[-1]["rows_claimed_this_run"] == 3
+    assert "translation_artifact_missing" in context.metadata[-1]
     fetch_calls = [
         params
         for sql, params in connection.cursor_instance.calls

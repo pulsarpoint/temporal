@@ -86,29 +86,41 @@ This cancels stale `dagster_brreg.enrichment_runs`, marks still-running
 `failed_retryable` with `next_retry_at = now()`, and marks matching Dagster run
 records canceled when the local Dagster instance still has them.
 
-## BRREG Working Raw Records
+## BRREG Raw Records
 
-The `brreg_working_raw_records` asset downloads the BRREG bulk gzip payload from
+The `brreg_raw_records` asset downloads the BRREG bulk gzip payload from
 `https://data.brreg.no/enhetsregisteret/api/enheter/lastned` and upserts rows into
 Dagster-owned table `dagster_brreg.raw_records`.
 
-The operator-facing Dagster catalog intentionally exposes only two BRREG jobs:
+The operator-facing Dagster catalog exposes the BRREG source and independent
+enrichment artifacts:
 
+- `brreg_ingest_raw_job` materializes `brreg_raw_records`.
 - `brreg_translate_job` materializes `brreg_translation_results`.
-- `brreg_domain_enhanced_job` calls the crawl service, stores one
-  `dagster_brreg.domain_results` artifact per company, then builds
-  Corpscout-compatible `brreg.enhanced.v1` JSON into
+- `brreg_domain_job` calls the crawl service and stores one
+  `dagster_brreg.domain_results` artifact per company.
+- `brreg_currency_job` converts BRREG capital values to USD artifacts in
+  `dagster_brreg.currency_results`.
+- `brreg_build_enhanced_job` combines the artifacts into
   `dagster_brreg.enhanced_records`.
+- `brreg_full_enrichment_job` runs the source and all artifact assets.
 
-Translation and domain enrichment both read current rows from
-`dagster_brreg.raw_records`; they do not depend on each other. The translation
-job calls the standalone translation service at `TRANSLATION_SERVICE_URL`,
-writes reusable term translations to `dagster_brreg.translation_cache`, and
-records per-row task attempts in `dagster_brreg.task_attempts`. Translation
-keeps claiming `BRREG_TRANSLATION_BATCH_SIZE` chunks until there are no pending
-translation rows left; `BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0` means drain the
-queue fully in one materialization. Domain discovery is one Dagster business
-task inside `brreg_domain_enhanced_job`, backed by the standalone crawl service.
+Translation, domain enrichment, and currency conversion all depend on
+`brreg_raw_records`, but they can run independently after raw ingestion. The
+translation job calls the standalone translation service at
+`TRANSLATION_SERVICE_URL`, writes reusable term translations to
+`dagster_brreg.translation_cache`, and stores per-row artifacts in
+`dagster_brreg.translation_results`. Current `raw_records` are the input set;
+`raw_record_task_states` is execution bookkeeping only. Before each translation
+run, Dagster reconciles task state from actual translation artifacts for the
+current model and prompt version so stale `succeeded` or `failed_terminal` task
+states cannot hide rows that still lack usable translated output. Translation
+keeps claiming `BRREG_TRANSLATION_BATCH_SIZE` chunks until there are no
+claimable rows left; `BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0` means drain the
+claimable work in one materialization.
+
+Domain discovery is one Dagster business task inside `brreg_domain_job`, backed
+by the standalone crawl service.
 The service owns DuckDuckGo/Yandex search, crawl4ai/Chromium crawling, LLM
 verification, scoring, and structured errors. Dagster claims rows, calls the
 service, stores one response artifact per company in `dagster_brreg.domain_results`,
@@ -171,6 +183,7 @@ LIMIT 100;
 Optional environment:
 
 ```bash
+BRREG_RAW_RECORD_BATCH_SIZE=5000
 BRREG_TRANSLATION_BATCH_SIZE=50
 BRREG_TRANSLATION_MAX_BATCHES_PER_RUN=0
 BRREG_TRANSLATION_MAX_PARALLEL_TASKS=50
