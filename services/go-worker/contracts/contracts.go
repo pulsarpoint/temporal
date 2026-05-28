@@ -34,7 +34,6 @@ type PullBrregInput struct {
 	IncrementalFrom string              `json:"incremental_from,omitempty"` // starting date cursor, e.g. "2026-05-21,0"
 	Cursor          string              `json:"cursor,omitempty"`           // ContinueAsNew carry-forward
 	Accumulated     PullCompaniesResult `json:"accumulated,omitempty"`      // ContinueAsNew carry-forward
-	Limit           int                 `json:"limit,omitempty"`            // optional dev/test cap for bulk import
 }
 
 // PullGLEIFInput is the input for the PullGLEIF workflow.
@@ -77,7 +76,6 @@ type ImportBrregBulkParams struct {
 	RunID          string `json:"run_id"`
 	CorpscoutRunID string `json:"corpscout_run_id,omitempty"`
 	Force          bool   `json:"force,omitempty"`
-	Limit          int    `json:"limit,omitempty"`
 }
 
 type DownloadedSourceFile struct {
