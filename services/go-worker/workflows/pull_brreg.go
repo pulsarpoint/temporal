@@ -81,12 +81,17 @@ func pullBrregBulk(ctx workflow.Context, input contracts.PullBrregInput) (contra
 		RunID:          runIDStr,
 		CorpscoutRunID: input.CorpscoutRunID,
 		Force:          input.Force,
+		Limit:          input.Limit,
 	}).Get(ctx, &written); err != nil {
 		return contracts.PullCompaniesResult{}, err
 	}
 	logger.Info("bulk import done", "records_written", written)
 
 	result := contracts.PullCompaniesResult{RecordsWritten: written, PagesFetched: 1}
+	finalCursor := "bulk:" + dlResult.Date
+	if input.Limit > 0 {
+		finalCursor = ""
+	}
 
 	if err := workflow.ExecuteActivity(shortGoCtx, goAct.MarkExecutionComplete, contracts.MarkCompleteParams{
 		RunID:          runIDStr,
@@ -94,7 +99,7 @@ func pullBrregBulk(ctx workflow.Context, input contracts.PullBrregInput) (contra
 		Source:         "brreg",
 		Country:        "NO",
 		Result:         result,
-		FinalCursor:    "bulk:" + dlResult.Date,
+		FinalCursor:    finalCursor,
 	}).Get(ctx, nil); err != nil {
 		return result, err
 	}

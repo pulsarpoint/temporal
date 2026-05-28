@@ -194,6 +194,9 @@ func (a *GoActivities) ImportBrregBulk(ctx context.Context, params contracts.Imp
 	} else if err := json.Unmarshal(raw, &entities); err != nil {
 		return 0, fmt.Errorf("parse bulk JSON: %w", err)
 	}
+	if params.Limit > 0 && params.Limit < len(entities) {
+		entities = entities[:params.Limit]
+	}
 	slog.Info("ImportBrregBulk: parsed entities", "count", len(entities))
 
 	const batchSize = 2000
