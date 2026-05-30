@@ -40,7 +40,7 @@ def _fetch_records(*, database_url: str, limit: int) -> list[dict[str, Any]]:
                     id::text AS record_id,
                     organization_number,
                     raw_payload
-                FROM dagster_brreg.raw_records
+                FROM brreg_workflow.raw_records
                 WHERE is_current = true
                 ORDER BY organization_number ASC
                 LIMIT %s

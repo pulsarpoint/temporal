@@ -1,1 +1,0 @@
-DROP MATERIALIZED VIEW IF EXISTS dagster_brreg.mv_brreg_enhanced_ready_records;

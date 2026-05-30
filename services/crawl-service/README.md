@@ -5,7 +5,7 @@ candidate websites.
 
 The public API is intentionally small. The generic crawl4ai capability is an
 internal Python service used by domain discovery, not a public URL-plus-prompt
-endpoint. Dagster integration is intentionally out of scope for this step.
+endpoint. Pipeline integration is intentionally out of scope for this service.
 
 ## Run
 

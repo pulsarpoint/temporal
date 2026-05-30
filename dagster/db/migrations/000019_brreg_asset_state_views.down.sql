@@ -1,9 +1,0 @@
-DROP VIEW IF EXISTS dagster_brreg.v_enhanced_asset_state;
-DROP VIEW IF EXISTS dagster_brreg.v_financial_asset_state;
-DROP VIEW IF EXISTS dagster_brreg.v_domain_asset_state;
-DROP VIEW IF EXISTS dagster_brreg.v_translation_asset_state;
-DROP VIEW IF EXISTS dagster_brreg.v_enhanced_asset_rows;
-DROP VIEW IF EXISTS dagster_brreg.v_financial_asset_rows;
-DROP VIEW IF EXISTS dagster_brreg.v_domain_asset_rows;
-DROP VIEW IF EXISTS dagster_brreg.v_translation_asset_rows;
-DROP VIEW IF EXISTS dagster_brreg.v_raw_records_asset_state;

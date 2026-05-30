@@ -23,7 +23,7 @@ curl -X POST 'http://localhost:8095/v1/translate/brreg-records?provider=default&
   -d '{"records":[{"record_id":"record-1","organization_number":"810202572","raw_payload":{"organisasjonsnummer":"810202572","navn":"BORTIGARD AS","organisasjonsform":{"kode":"AS","beskrivelse":"Aksjeselskap"}}}]}'
 ```
 
-Term-batch translation used by Dagster cache fills:
+Term-batch translation:
 
 ```bash
 curl -X POST 'http://localhost:8095/v1/translate/terms?provider=default&model=qwen3:6b' \
@@ -64,7 +64,7 @@ Normal test suite uses fake LLMs:
 make test
 ```
 
-The repository includes `tests/data/brreg_raw_records_300.json`, exported from `dagster_brreg.raw_records`, so the real LLM test uses actual BRREG payloads rather than synthetic records.
+The repository includes `tests/data/brreg_raw_records_300.json`, exported from `brreg_workflow.raw_records`, so the real LLM test uses actual BRREG payloads rather than synthetic records.
 
 Refresh the fixture from a database:
 
