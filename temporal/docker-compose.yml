@@ -1,31 +1,19 @@
 services:
-  temporal-postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_USER: temporal
-      POSTGRES_PASSWORD: temporal
-      POSTGRES_DB: temporal
-    volumes:
-      - temporal-postgres:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U temporal"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   temporal:
     image: temporalio/auto-setup:1.24.2
+    extra_hosts:
+      - "companycollect:${POSTGRES_HOST_IP:-100.85.212.113}"
     environment:
       DB: postgres12
-      DB_PORT: 5432
-      POSTGRES_USER: temporal
-      POSTGRES_PWD: temporal
-      POSTGRES_SEEDS: temporal-postgres
-    depends_on:
-      temporal-postgres:
-        condition: service_healthy
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${TEMPORAL_USER:-temporal}
+      POSTGRES_PWD: ${TEMPORAL_PASSWORD:?TEMPORAL_PASSWORD is required}
+      POSTGRES_SEEDS: ${POSTGRES_HOST:-companycollect}
+      DBNAME: ${TEMPORAL_DB:-temporal}
+      VISIBILITY_DBNAME: ${TEMPORAL_VISIBILITY_DB:-temporal_visibility}
+      SKIP_DB_CREATE: "true"
     ports:
-      - "7233:7233"
+      - "${TEMPORAL_GRPC_PORT:-7233}:7233"
 
   temporal-ui:
     image: temporalio/ui:2.28.0
@@ -36,9 +24,6 @@ services:
       TEMPORAL_PERMIT_WRITE_API: "true"
       TEMPORAL_DISABLE_WRITE_ACTIONS: "false"
     ports:
-      - "8089:8080"
+      - "${TEMPORAL_UI_PORT:-8089}:8080"
     depends_on:
       - temporal
-
-volumes:
-  temporal-postgres:

@@ -6,7 +6,7 @@ Temporal-based data pipeline that pulls company records from registries and writ
 
 ```
 data-pipelines/
-├── temporal/                   # Local dev Temporal cluster (docker compose)
+├── temporal/                   # Temporal server compose; uses central Corpscout Postgres
 ├── services/
 │   ├── go-worker/              # Go Temporal worker: WriteRawInputs, MarkExecutionComplete, domain enrichment
 │   └── python-worker/          # Python Temporal worker: FetchPage activities (Companies House, Brreg, …)
@@ -16,7 +16,7 @@ data-pipelines/
 ## Common commands
 
 ```bash
-# Local Temporal cluster (for dev/testing without the server)
+# Temporal server compose; uses central Corpscout Postgres
 make temporal-up     # starts Temporal + UI on localhost:7233 / localhost:8089
 make temporal-down
 
