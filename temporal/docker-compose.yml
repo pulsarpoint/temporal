@@ -12,6 +12,8 @@ services:
       DBNAME: ${TEMPORAL_DB:-temporal}
       VISIBILITY_DBNAME: ${TEMPORAL_VISIBILITY_DB:-temporal_visibility}
       SKIP_DB_CREATE: "true"
+      DEFAULT_NAMESPACE: ${TEMPORAL_NAMESPACE:-corpscout}
+      DEFAULT_NAMESPACE_RETENTION: ${TEMPORAL_NAMESPACE_RETENTION:-168h}
     ports:
       - "${TEMPORAL_GRPC_PORT:-7233}:7233"
 
